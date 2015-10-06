@@ -13,10 +13,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// Timestamp is helper function to get current timestamp as string.
 func Timestamp() string {
 	return strconv.FormatInt(time.Now().Unix(), 10)
 }
 
+// Credentials describe client connection parameters.
 type Credentials struct {
 	User      string
 	Timestamp string
@@ -31,6 +33,7 @@ var (
 	ErrClientUnauthorized = errors.New("client not authorized")
 )
 
+// Config contains various client options.
 type Config struct {
 	Timeout              time.Duration
 	PrivateChannelPrefix string
@@ -60,6 +63,7 @@ type response struct {
 	Body   json.RawMessage `json:"body"`
 }
 
+// Centrifuge describes client connection to Centrifugo server.
 type Centrifuge struct {
 	URL         string
 	msgID       int32
@@ -76,12 +80,16 @@ type Centrifuge struct {
 	waiters     map[string]chan response
 }
 
+// MessageHandler is a function to handle messages in channels.
 type MessageHandler func(libcentrifugo.Message) error
 
+// JoinHandler is a function to handle join messages.
 type JoinHandler func(libcentrifugo.ClientInfo) error
 
+// LeaveHandler is a function to handle leave messages.
 type LeaveHandler func(libcentrifugo.ClientInfo) error
 
+// Subscription on channel.
 type Subscription struct {
 	centrifuge *Centrifuge
 	Channel    string
@@ -90,25 +98,29 @@ type Subscription struct {
 	OnLeave    LeaveHandler
 }
 
-func NewSubscription(c *Centrifuge, channel string) *Subscription {
+func newSubscription(c *Centrifuge, channel string) *Subscription {
 	return &Subscription{
 		centrifuge: c,
 		Channel:    channel,
 	}
 }
 
+// Publish JSON encoded data.
 func (s *Subscription) Publish(data []byte) error {
 	return s.centrifuge.publish(s.Channel, data)
 }
 
+// History allows to extract channel history.
 func (s *Subscription) History() ([]libcentrifugo.Message, error) {
 	return s.centrifuge.history(s.Channel)
 }
 
+// Presence allows to extract presence information for channel.
 func (s *Subscription) Presence() (map[libcentrifugo.ConnID]libcentrifugo.ClientInfo, error) {
 	return s.centrifuge.presence(s.Channel)
 }
 
+// Unsubscribe allows to unsubscribe from channel.
 func (s *Subscription) Unsubscribe() error {
 	return s.centrifuge.unsubscribe(s.Channel)
 }
@@ -117,6 +129,8 @@ func (c *Centrifuge) nextMsgID() int32 {
 	return atomic.AddInt32(&c.msgID, 1)
 }
 
+// NewCenrifuge initializes Centrifuge struct. It accepts URL to Centrifugo server,
+// connection Credentials and Config.
 func NewCentrifuge(u string, creds *Credentials, config *Config) *Centrifuge {
 	c := &Centrifuge{
 		URL:          u,
@@ -134,10 +148,13 @@ func NewCentrifuge(u string, creds *Credentials, config *Config) *Centrifuge {
 	return c
 }
 
-func (c *Centrifuge) ClientID() {
+// ClientID returns client ID of this connection. It only available after connection
+// was established and authorized.
+func (c *Centrifuge) ClientID() string {
 	return string(c.clientID)
 }
 
+// Close closes connection.
 func (c *Centrifuge) Close() {
 	select {
 	case <-c.closed:
@@ -301,6 +318,7 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 	return nil
 }
 
+// Connect connects to Centrifugo and sends connect message to authorize.
 func (c *Centrifuge) Connect() error {
 	wsHeaders := http.Header{}
 	dialer := websocket.DefaultDialer
@@ -361,6 +379,7 @@ func (c *Centrifuge) connectParams() *libcentrifugo.ConnectClientCommand {
 	}
 }
 
+// Subscribe allows to subscribe on channel.
 func (c *Centrifuge) Subscribe(channel string) (*Subscription, error) {
 	if !c.authorized {
 		return nil, ErrClientUnauthorized
@@ -372,8 +391,8 @@ func (c *Centrifuge) Subscribe(channel string) (*Subscription, error) {
 	if !body.Status {
 		return nil, errors.New("wrong subscribe status")
 	}
-	// Subscription successfull
-	sub := NewSubscription(c, channel)
+	// Subscription successfull.
+	sub := newSubscription(c, channel)
 
 	// TODO: protect by mutex!
 	c.subs[channel] = sub
