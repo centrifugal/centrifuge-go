@@ -133,16 +133,14 @@ func (c *Centrifuge) nextMsgID() int32 {
 // connection Credentials and Config.
 func NewCentrifuge(u string, creds *Credentials, config *Config) *Centrifuge {
 	c := &Centrifuge{
-		URL:          u,
-		subs:         make(map[string]*Subscription),
-		msgs:         [][]byte{},
-		authChannels: make(map[string]bool),
-		config:       config,
-		credentials:  creds,
-		receive:      make(chan []byte, 64),
-		write:        make(chan []byte, 64),
-		closed:       make(chan struct{}),
-		waiters:      make(map[string]chan response),
+		URL:         u,
+		subs:        make(map[string]*Subscription),
+		config:      config,
+		credentials: creds,
+		receive:     make(chan []byte, 64),
+		write:       make(chan []byte, 64),
+		closed:      make(chan struct{}),
+		waiters:     make(map[string]chan response),
 	}
 	go c.run()
 	return c
