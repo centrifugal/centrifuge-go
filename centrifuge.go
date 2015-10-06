@@ -27,7 +27,7 @@ type Credentials struct {
 var (
 	ErrTimeout            = errors.New("timed out")
 	ErrWaiterClosed       = errors.New("waiter closed")
-	ErrClientNotConnected = errors.New("client not connected")
+	ErrClientDisconnected = errors.New("client disconnected")
 	ErrClientUnauthorized = errors.New("client not authorized")
 )
 
@@ -66,7 +66,6 @@ type Centrifuge struct {
 	URL          string
 	Timeout      time.Duration
 	msgID        int32
-	status       Status
 	connected    bool
 	authorized   bool
 	clientID     libcentrifugo.ConnID
@@ -98,14 +97,12 @@ type Subscription struct {
 	OnMessage  MessageHandler
 	OnJoin     JoinHandler
 	OnLeave    LeaveHandler
-	closed     chan struct{}
 }
 
 func NewSubscription(c *Centrifuge, channel string) *Subscription {
 	return &Subscription{
 		centrifuge: c,
 		Channel:    channel,
-		closed:     make(chan struct{}),
 	}
 }
 
@@ -125,14 +122,6 @@ func (s *Subscription) Unsubscribe() error {
 	return s.centrifuge.unsubscribe(s.Channel)
 }
 
-func (s *Subscription) Close() {
-	select {
-	case <-s.closed:
-	default:
-		close(s.closed)
-	}
-}
-
 func (c *Centrifuge) nextMsgID() int32 {
 	return atomic.AddInt32(&c.msgID, 1)
 }
@@ -141,14 +130,13 @@ func NewCentrifuge(u string, creds *Credentials, conf *Config) *Centrifuge {
 	c := &Centrifuge{
 		URL:          u,
 		Timeout:      2 * time.Second,
-		status:       StatusDisconnected,
 		subs:         make(map[string]*Subscription),
 		msgs:         [][]byte{},
 		authChannels: make(map[string]bool),
 		config:       conf,
 		credentials:  creds,
-		receive:      make(chan []byte),
-		write:        make(chan []byte),
+		receive:      make(chan []byte, 64),
+		write:        make(chan []byte, 64),
 		closed:       make(chan struct{}),
 		waiters:      make(map[string]chan response),
 	}
@@ -168,7 +156,7 @@ func (c *Centrifuge) Close() {
 	c.connected = false
 }
 
-func (c *Centrifuge) Read() {
+func (c *Centrifuge) read() {
 	defer c.Close()
 	for {
 		_, message, err := c.conn.ReadMessage()
@@ -332,7 +320,7 @@ func (c *Centrifuge) Connect() error {
 	c.connected = true
 	c.conn = conn
 
-	go c.Read()
+	go c.read()
 
 	body, err := c.sendConnect()
 	if err != nil {
@@ -633,7 +621,7 @@ func (c *Centrifuge) sendSync(uid string, msg []byte) (response, error) {
 
 func (c *Centrifuge) send(msg []byte) error {
 	if !c.connected {
-		return ErrClientNotConnected
+		return ErrClientDisconnected
 	}
 	c.write <- msg
 	return nil
@@ -664,6 +652,6 @@ func (c *Centrifuge) wait(ch chan response) (response, error) {
 	case <-time.After(c.Timeout):
 		return response{}, ErrTimeout
 	case <-c.closed:
-		return response{}, ErrClientNotConnected
+		return response{}, ErrClientDisconnected
 	}
 }

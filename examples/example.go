@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/centrifugal/centrifuge-go"
 	"github.com/centrifugal/centrifugo/libcentrifugo"
@@ -33,8 +34,9 @@ func main() {
 		Token:     token,
 	}
 
+	started := time.Now()
+
 	c := centrifuge.NewCentrifuge("ws://localhost:8000/connection/websocket", creds, centrifuge.DefaultConfig)
-	defer c.Close()
 
 	err := c.Connect()
 	if err != nil {
@@ -86,4 +88,9 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	c.Close()
+
+	log.Printf("%s", time.Since(started))
+
 }
