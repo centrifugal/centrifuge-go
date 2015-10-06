@@ -32,21 +32,19 @@ var (
 )
 
 type Config struct {
-	Retry                time.Duration
-	MaxRetry             time.Duration
-	Debug                bool
-	Insecure             bool
+	Timeout              time.Duration
 	PrivateChannelPrefix string
 	RefreshEndpoint      string
 	AuthEndpoint         string
 	AuthHeaders          map[string]string
 	RefreshHeaders       map[string]string
+	Debug                bool
+	Insecure             bool
 }
 
 var DefaultConfig = &Config{
-	Retry:                1 * time.Second,
-	MaxRetry:             10 * time.Second,
 	PrivateChannelPrefix: "$",
+	Timeout:              5 * time.Second,
 }
 
 type clientCommand struct {
@@ -63,26 +61,19 @@ type response struct {
 }
 
 type Centrifuge struct {
-	URL          string
-	Timeout      time.Duration
-	msgID        int32
-	connected    bool
-	authorized   bool
-	clientID     libcentrifugo.ConnID
-	reconnect    bool
-	version      string
-	subs         map[string]*Subscription
-	msgs         [][]byte
-	batching     bool
-	authBatching bool
-	authChannels map[string]bool
-	config       *Config
-	credentials  *Credentials
-	conn         *websocket.Conn
-	receive      chan []byte
-	write        chan []byte
-	closed       chan struct{}
-	waiters      map[string]chan response
+	URL         string
+	msgID       int32
+	connected   bool
+	authorized  bool
+	clientID    libcentrifugo.ConnID
+	subs        map[string]*Subscription
+	config      *Config
+	credentials *Credentials
+	conn        *websocket.Conn
+	receive     chan []byte
+	write       chan []byte
+	closed      chan struct{}
+	waiters     map[string]chan response
 }
 
 type MessageHandler func(libcentrifugo.Message) error
@@ -126,14 +117,13 @@ func (c *Centrifuge) nextMsgID() int32 {
 	return atomic.AddInt32(&c.msgID, 1)
 }
 
-func NewCentrifuge(u string, creds *Credentials, conf *Config) *Centrifuge {
+func NewCentrifuge(u string, creds *Credentials, config *Config) *Centrifuge {
 	c := &Centrifuge{
 		URL:          u,
-		Timeout:      2 * time.Second,
 		subs:         make(map[string]*Subscription),
 		msgs:         [][]byte{},
 		authChannels: make(map[string]bool),
-		config:       conf,
+		config:       config,
 		credentials:  creds,
 		receive:      make(chan []byte, 64),
 		write:        make(chan []byte, 64),
@@ -142,6 +132,10 @@ func NewCentrifuge(u string, creds *Credentials, conf *Config) *Centrifuge {
 	}
 	go c.run()
 	return c
+}
+
+func (c *Centrifuge) ClientID() {
+	return string(c.clientID)
 }
 
 func (c *Centrifuge) Close() {
@@ -178,7 +172,7 @@ func (c *Centrifuge) run() {
 				return
 			}
 		case msg := <-c.write:
-			c.conn.SetWriteDeadline(time.Now().Add(c.Timeout))
+			c.conn.SetWriteDeadline(time.Now().Add(c.config.Timeout))
 			err := c.conn.WriteMessage(websocket.TextMessage, msg)
 			c.conn.SetWriteDeadline(time.Time{})
 			if err != nil {
@@ -327,7 +321,6 @@ func (c *Centrifuge) Connect() error {
 		return err
 	}
 	c.clientID = body.Client
-	c.version = body.Version
 	// TODO: expired check and TTL support.
 	c.authorized = true
 	return nil
@@ -649,7 +642,7 @@ func (c *Centrifuge) wait(ch chan response) (response, error) {
 			return response{}, ErrWaiterClosed
 		}
 		return data, nil
-	case <-time.After(c.Timeout):
+	case <-time.After(c.config.Timeout):
 		return response{}, ErrTimeout
 	case <-c.closed:
 		return response{}, ErrClientDisconnected
