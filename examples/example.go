@@ -37,6 +37,7 @@ func main() {
 	started := time.Now()
 
 	c := centrifuge.NewCentrifuge("ws://localhost:8000/connection/websocket", creds, centrifuge.DefaultConfig)
+	defer c.Close()
 
 	err := c.Connect()
 	if err != nil {
@@ -88,8 +89,6 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-
-	c.Close()
 
 	log.Printf("%s", time.Since(started))
 

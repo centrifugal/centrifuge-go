@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,19 +66,20 @@ type response struct {
 
 // Centrifuge describes client connection to Centrifugo server.
 type Centrifuge struct {
+	sync.RWMutex
 	URL         string
+	config      *Config
+	credentials *Credentials
+	conn        *websocket.Conn
 	msgID       int32
 	connected   bool
 	authorized  bool
 	clientID    libcentrifugo.ConnID
 	subs        map[string]*Subscription
-	config      *Config
-	credentials *Credentials
-	conn        *websocket.Conn
+	waiters     map[string]chan response
 	receive     chan []byte
 	write       chan []byte
 	closed      chan struct{}
-	waiters     map[string]chan response
 }
 
 // MessageHandler is a function to handle messages in channels.
@@ -146,23 +148,52 @@ func NewCentrifuge(u string, creds *Credentials, config *Config) *Centrifuge {
 	return c
 }
 
+// Connected returns true if client is connected at moment.
+func (c *Centrifuge) Connected() bool {
+	c.RLock()
+	defer c.RUnlock()
+	return c.connected
+}
+
+// Authorized returns true if client is authorized at moment.
+func (c *Centrifuge) Authorized() bool {
+	c.RLock()
+	defer c.RUnlock()
+	return c.authorized
+}
+
+// Subscribed returns true if client subscribed on channel.
+func (c *Centrifuge) Subscribed(channel string) bool {
+	c.RLock()
+	defer c.RUnlock()
+	_, ok := c.subs[channel]
+	return ok
+}
+
 // ClientID returns client ID of this connection. It only available after connection
 // was established and authorized.
 func (c *Centrifuge) ClientID() string {
+	c.RLock()
+	defer c.RUnlock()
 	return string(c.clientID)
 }
 
-// Close closes connection.
+// Close closes Centrifuge connection.
 func (c *Centrifuge) Close() {
+	c.Lock()
+	if c.conn != nil {
+		err := c.conn.Close()
+		if err != nil {
+			log.Println(err)
+		}
+	}
+	c.connected = false
 	select {
 	case <-c.closed:
 	default:
 		close(c.closed)
 	}
-	if c.conn != nil {
-		c.conn.Close()
-	}
-	c.connected = false
+	c.Unlock()
 }
 
 func (c *Centrifuge) read() {
@@ -172,7 +203,12 @@ func (c *Centrifuge) read() {
 		if err != nil {
 			break
 		}
-		c.receive <- message
+		select {
+		case <-c.closed:
+			return
+		default:
+			c.receive <- message
+		}
 	}
 }
 
@@ -182,7 +218,7 @@ func (c *Centrifuge) run() {
 		case msg := <-c.receive:
 			err := c.handle(msg)
 			if err != nil {
-				log.Println(err.Error())
+				log.Println(err)
 				c.Close()
 				return
 			}
@@ -191,7 +227,7 @@ func (c *Centrifuge) run() {
 			err := c.conn.WriteMessage(websocket.TextMessage, msg)
 			c.conn.SetWriteDeadline(time.Time{})
 			if err != nil {
-				log.Println(err.Error())
+				log.Println(err)
 				c.Close()
 				return
 			}
@@ -235,10 +271,11 @@ func (c *Centrifuge) handle(msg []byte) error {
 	}
 	for _, resp := range resps {
 		if resp.UID != "" {
-			// TODO: protect waiters by mutex
+			c.RLock()
 			if waiter, ok := c.waiters[resp.UID]; ok {
 				waiter <- resp
 			}
+			c.RUnlock()
 		} else {
 			err := c.handleAsyncResponse(resp)
 			if err != nil {
@@ -255,8 +292,8 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 	errorStr := resp.Error
 	body := resp.Body
 	if errorStr != "" {
-		// Can not occur in usual workflow.
-		log.Println(errorStr)
+		// Should never occur in usual workflow.
+		return errors.New(errorStr)
 	}
 	switch method {
 	case "message":
@@ -264,17 +301,19 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 		err := json.Unmarshal(body, &m)
 		if err != nil {
 			// Malformed message received.
-			// TODO: logging
-			return nil
+			return errors.New("malformed message received from server")
 		}
 		channel := m.Channel
+		c.RLock()
 		sub, ok := c.subs[string(channel)]
 		if !ok {
 			log.Println("message received but client not subscribed on channel")
 			return nil
 		}
-		if sub.OnMessage != nil {
-			sub.OnMessage(m)
+		onMessage := sub.OnMessage
+		c.RUnlock()
+		if onMessage != nil {
+			onMessage(m)
 		}
 	case "join":
 		var b libcentrifugo.JoinLeaveBody
@@ -284,14 +323,18 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 			return nil
 		}
 		channel := b.Channel
+		c.RLock()
 		sub, ok := c.subs[string(channel)]
 		if !ok {
 			log.Println("join received but client not subscribed on channel")
+			c.RUnlock()
 			return nil
 		}
-		info := b.Data
-		if sub.OnJoin != nil {
-			sub.OnJoin(info)
+		onJoin := sub.OnJoin
+		c.RUnlock()
+		if onJoin != nil {
+			info := b.Data
+			onJoin(info)
 		}
 	case "leave":
 		var b libcentrifugo.JoinLeaveBody
@@ -301,14 +344,18 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 			return nil
 		}
 		channel := b.Channel
+		c.RLock()
 		sub, ok := c.subs[string(channel)]
 		if !ok {
 			log.Println("leave received but client not subscribed on channel")
+			c.RUnlock()
 			return nil
 		}
-		info := b.Data
-		if sub.OnLeave != nil {
-			sub.OnLeave(info)
+		onLeave := sub.OnLeave
+		c.RUnlock()
+		if onLeave != nil {
+			info := b.Data
+			onLeave(info)
 		}
 	default:
 		return nil
@@ -318,6 +365,10 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 
 // Connect connects to Centrifugo and sends connect message to authorize.
 func (c *Centrifuge) Connect() error {
+	c.Lock()
+	if c.connected {
+		return errors.New("client already connected")
+	}
 	wsHeaders := http.Header{}
 	dialer := websocket.DefaultDialer
 	conn, resp, err := dialer.Dial(c.URL, wsHeaders)
@@ -329,6 +380,7 @@ func (c *Centrifuge) Connect() error {
 	}
 	c.connected = true
 	c.conn = conn
+	c.Unlock()
 
 	go c.read()
 
@@ -336,9 +388,11 @@ func (c *Centrifuge) Connect() error {
 	if err != nil {
 		return err
 	}
+	c.Lock()
 	c.clientID = body.Client
 	// TODO: expired check and TTL support.
 	c.authorized = true
+	c.Unlock()
 	return nil
 }
 
@@ -379,7 +433,7 @@ func (c *Centrifuge) connectParams() *libcentrifugo.ConnectClientCommand {
 
 // Subscribe allows to subscribe on channel.
 func (c *Centrifuge) Subscribe(channel string) (*Subscription, error) {
-	if !c.authorized {
+	if !c.Authorized() {
 		return nil, ErrClientUnauthorized
 	}
 	body, err := c.sendSubscribe(channel)
@@ -392,8 +446,9 @@ func (c *Centrifuge) Subscribe(channel string) (*Subscription, error) {
 	// Subscription successfull.
 	sub := newSubscription(c, channel)
 
-	// TODO: protect by mutex!
+	c.Lock()
 	c.subs[channel] = sub
+	c.Unlock()
 
 	return sub, nil
 }
@@ -431,7 +486,7 @@ func (c *Centrifuge) sendSubscribe(channel string) (libcentrifugo.SubscribeBody,
 }
 
 func (c *Centrifuge) publish(channel string, data []byte) error {
-	if !c.authorized {
+	if !c.Authorized() {
 		return ErrClientUnauthorized
 	}
 	body, err := c.sendPublish(channel, data)
@@ -478,7 +533,7 @@ func (c *Centrifuge) sendPublish(channel string, data []byte) (libcentrifugo.Pub
 }
 
 func (c *Centrifuge) history(channel string) ([]libcentrifugo.Message, error) {
-	if !c.authorized {
+	if !c.Authorized() {
 		return nil, ErrClientUnauthorized
 	}
 	body, err := c.sendHistory(channel)
@@ -521,7 +576,7 @@ func (c *Centrifuge) sendHistory(channel string) (libcentrifugo.HistoryBody, err
 }
 
 func (c *Centrifuge) presence(channel string) (map[libcentrifugo.ConnID]libcentrifugo.ClientInfo, error) {
-	if !c.authorized {
+	if !c.Authorized() {
 		return nil, ErrClientUnauthorized
 	}
 	body, err := c.sendPresence(channel)
@@ -564,11 +619,10 @@ func (c *Centrifuge) sendPresence(channel string) (libcentrifugo.PresenceBody, e
 }
 
 func (c *Centrifuge) unsubscribe(channel string) error {
-	if !c.authorized {
+	if !c.Authorized() {
 		return ErrClientUnauthorized
 	}
-	_, ok := c.subs[channel]
-	if !ok {
+	if c.Subscribed(channel) {
 		return nil
 	}
 	body, err := c.sendUnsubscribe(channel)
@@ -578,8 +632,9 @@ func (c *Centrifuge) unsubscribe(channel string) error {
 	if !body.Status {
 		return errors.New("wrong unsubscribe status")
 	}
-	// TODO: protect with mutex!
+	c.Lock()
 	delete(c.subs, channel)
+	c.Unlock()
 	return nil
 }
 
@@ -630,15 +685,21 @@ func (c *Centrifuge) sendSync(uid string, msg []byte) (response, error) {
 }
 
 func (c *Centrifuge) send(msg []byte) error {
-	if !c.connected {
+	if !c.Connected() {
 		return ErrClientDisconnected
 	}
-	c.write <- msg
+	select {
+	case <-c.closed:
+		return ErrClientDisconnected
+	default:
+		c.write <- msg
+	}
 	return nil
 }
 
 func (c *Centrifuge) addWaiter(uid string, ch chan response) error {
-	// TODO: protect by mutex
+	c.Lock()
+	defer c.Unlock()
 	if _, ok := c.waiters[uid]; ok {
 		return errors.New("Waiter with uid already exists")
 	}
@@ -647,7 +708,8 @@ func (c *Centrifuge) addWaiter(uid string, ch chan response) error {
 }
 
 func (c *Centrifuge) removeWaiter(uid string) error {
-	// TODO: protect by mutex
+	c.Lock()
+	defer c.Unlock()
 	delete(c.waiters, uid)
 	return nil
 }
