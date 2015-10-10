@@ -181,6 +181,13 @@ func (c *Centrifuge) ClientID() string {
 // Close closes Centrifuge connection.
 func (c *Centrifuge) Close() {
 	c.Lock()
+	select {
+	case <-c.closed:
+		c.Unlock()
+		return
+	default:
+		close(c.closed)
+	}
 	if c.conn != nil {
 		err := c.conn.Close()
 		if err != nil {
@@ -188,11 +195,7 @@ func (c *Centrifuge) Close() {
 		}
 	}
 	c.connected = false
-	select {
-	case <-c.closed:
-	default:
-		close(c.closed)
-	}
+	c.authorized = false
 	c.Unlock()
 }
 
