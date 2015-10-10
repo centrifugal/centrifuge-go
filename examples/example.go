@@ -36,7 +36,8 @@ func main() {
 
 	started := time.Now()
 
-	c := centrifuge.NewCentrifuge("ws://localhost:8000/connection/websocket", creds, centrifuge.DefaultConfig)
+	wsURL := "ws://localhost:8000/connection/websocket"
+	c := centrifuge.NewCentrifuge(wsURL, creds, nil, centrifuge.DefaultConfig)
 	defer c.Close()
 
 	err := c.Connect()
@@ -44,24 +45,30 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	sub, err := c.Subscribe("public:chat")
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	sub.OnMessage = func(msg libcentrifugo.Message) error {
+	onMessage := func(sub *centrifuge.Sub, msg libcentrifugo.Message) error {
 		log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel, msg))
 		return nil
 	}
 
-	sub.OnJoin = func(msg libcentrifugo.ClientInfo) error {
+	onJoin := func(sub *centrifuge.Sub, msg libcentrifugo.ClientInfo) error {
 		log.Println(fmt.Sprintf("User %s joined channel %s with client ID %s", msg.User, sub.Channel, msg.Client))
 		return nil
 	}
 
-	sub.OnLeave = func(msg libcentrifugo.ClientInfo) error {
+	onLeave := func(sub *centrifuge.Sub, msg libcentrifugo.ClientInfo) error {
 		log.Println(fmt.Sprintf("User %s with clientID left channel %s with client ID %s", msg.User, msg.Client, sub.Channel))
 		return nil
+	}
+
+	events := &centrifuge.SubEventHandler{
+		OnMessage: onMessage,
+		OnJoin:    onJoin,
+		OnLeave:   onLeave,
+	}
+
+	sub, err := c.Subscribe("public:chat", events)
+	if err != nil {
+		log.Fatalln(err)
 	}
 
 	data := map[string]string{

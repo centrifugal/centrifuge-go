@@ -37,7 +37,8 @@ func newConnection(n int) *centrifuge.Centrifuge {
 		Token:     token,
 	}
 
-	c := centrifuge.NewCentrifuge("ws://localhost:8000/connection/websocket", creds, centrifuge.DefaultConfig)
+	wsURL := "ws://localhost:8000/connection/websocket"
+	c := centrifuge.NewCentrifuge(wsURL, creds, nil, centrifuge.DefaultConfig)
 
 	err := c.Connect()
 	if err != nil {
@@ -60,20 +61,21 @@ func main() {
 		go func(n int) {
 			c := newConnection(n)
 
-			sub, err := c.Subscribe("test")
-			if err != nil {
-				log.Fatalln(err)
+			events := &centrifuge.SubEventHandler{
+				OnMessage: func(sub *centrifuge.Sub, msg libcentrifugo.Message) error {
+					val := atomic.AddInt32(&msgReceived, 1)
+					go func(currentVal int32) {
+						if currentVal == int32(totalMsg) {
+							close(done)
+						}
+					}(val)
+					return nil
+				},
 			}
 
-			sub.OnMessage = func(msg libcentrifugo.Message) error {
-				//log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel, msg))
-				val := atomic.AddInt32(&msgReceived, 1)
-				go func(currentVal int32) {
-					if currentVal == int32(totalMsg) {
-						close(done)
-					}
-				}(val)
-				return nil
+			_, err := c.Subscribe("test", events)
+			if err != nil {
+				log.Fatalln(err)
 			}
 			wg.Done()
 			<-done
@@ -83,7 +85,7 @@ func main() {
 	wg.Wait()
 
 	c := newConnection(numSubscribers + 1)
-	sub, _ := c.Subscribe("test")
+	sub, _ := c.Subscribe("test", nil)
 	data := map[string]string{"input": "1"}
 	dataBytes, _ := json.Marshal(data)
 

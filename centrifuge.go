@@ -48,7 +48,7 @@ type Config struct {
 
 var DefaultConfig = &Config{
 	PrivateChannelPrefix: "$",
-	Timeout:              5 * time.Second,
+	Timeout:              1 * time.Second,
 }
 
 type clientCommand struct {
@@ -64,6 +64,15 @@ type response struct {
 	Body   json.RawMessage `json:"body"`
 }
 
+// DisconnectHandler is a function to handle disconnect event.
+type DisconnectHandler func(*Centrifuge) error
+
+// EventHandler contains callback functions that will be called when
+// corresponding event happens with connection to Centrifuge.
+type EventHandler struct {
+	OnDisconnect DisconnectHandler
+}
+
 // Centrifuge describes client connection to Centrifugo server.
 type Centrifuge struct {
 	sync.RWMutex
@@ -75,55 +84,67 @@ type Centrifuge struct {
 	connected   bool
 	authorized  bool
 	clientID    libcentrifugo.ConnID
-	subs        map[string]*Subscription
+	subs        map[string]*Sub
 	waiters     map[string]chan response
 	receive     chan []byte
 	write       chan []byte
 	closed      chan struct{}
+	events      *EventHandler
 }
 
 // MessageHandler is a function to handle messages in channels.
-type MessageHandler func(libcentrifugo.Message) error
+type MessageHandler func(*Sub, libcentrifugo.Message) error
 
 // JoinHandler is a function to handle join messages.
-type JoinHandler func(libcentrifugo.ClientInfo) error
+type JoinHandler func(*Sub, libcentrifugo.ClientInfo) error
 
 // LeaveHandler is a function to handle leave messages.
-type LeaveHandler func(libcentrifugo.ClientInfo) error
+type LeaveHandler func(*Sub, libcentrifugo.ClientInfo) error
 
-// Subscription on channel.
-type Subscription struct {
-	centrifuge *Centrifuge
-	Channel    string
-	OnMessage  MessageHandler
-	OnJoin     JoinHandler
-	OnLeave    LeaveHandler
+// UnsubscribeHandler is a function to handle unsubscribe event.
+type UnsubscribeHandler func(*Sub) error
+
+// SubEventHandler contains callback functions that will be called when
+// corresponding event happens with subscription to channel.
+type SubEventHandler struct {
+	OnMessage     MessageHandler
+	OnJoin        JoinHandler
+	OnLeave       LeaveHandler
+	OnUnsubscribe UnsubscribeHandler
 }
 
-func newSubscription(c *Centrifuge, channel string) *Subscription {
-	return &Subscription{
+// Sub respresents subscription on channel.
+type Sub struct {
+	centrifuge *Centrifuge
+	Channel    string
+	events     *SubEventHandler
+}
+
+func (c *Centrifuge) newSub(channel string, events *SubEventHandler) *Sub {
+	return &Sub{
 		centrifuge: c,
 		Channel:    channel,
+		events:     events,
 	}
 }
 
 // Publish JSON encoded data.
-func (s *Subscription) Publish(data []byte) error {
+func (s *Sub) Publish(data []byte) error {
 	return s.centrifuge.publish(s.Channel, data)
 }
 
 // History allows to extract channel history.
-func (s *Subscription) History() ([]libcentrifugo.Message, error) {
+func (s *Sub) History() ([]libcentrifugo.Message, error) {
 	return s.centrifuge.history(s.Channel)
 }
 
 // Presence allows to extract presence information for channel.
-func (s *Subscription) Presence() (map[libcentrifugo.ConnID]libcentrifugo.ClientInfo, error) {
+func (s *Sub) Presence() (map[libcentrifugo.ConnID]libcentrifugo.ClientInfo, error) {
 	return s.centrifuge.presence(s.Channel)
 }
 
 // Unsubscribe allows to unsubscribe from channel.
-func (s *Subscription) Unsubscribe() error {
+func (s *Sub) Unsubscribe() error {
 	return s.centrifuge.unsubscribe(s.Channel)
 }
 
@@ -132,17 +153,18 @@ func (c *Centrifuge) nextMsgID() int32 {
 }
 
 // NewCenrifuge initializes Centrifuge struct. It accepts URL to Centrifugo server,
-// connection Credentials and Config.
-func NewCentrifuge(u string, creds *Credentials, config *Config) *Centrifuge {
+// connection Credentials, event handler and Config.
+func NewCentrifuge(u string, creds *Credentials, events *EventHandler, config *Config) *Centrifuge {
 	c := &Centrifuge{
 		URL:         u,
-		subs:        make(map[string]*Subscription),
+		subs:        make(map[string]*Sub),
 		config:      config,
 		credentials: creds,
 		receive:     make(chan []byte, 64),
 		write:       make(chan []byte, 64),
 		closed:      make(chan struct{}),
 		waiters:     make(map[string]chan response),
+		events:      events,
 	}
 	go c.run()
 	return c
@@ -193,6 +215,10 @@ func (c *Centrifuge) Close() {
 		if err != nil {
 			log.Println(err)
 		}
+	}
+	for uid, ch := range c.waiters {
+		close(ch)
+		delete(c.waiters, uid)
 	}
 	c.connected = false
 	c.authorized = false
@@ -313,10 +339,13 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 			log.Println("message received but client not subscribed on channel")
 			return nil
 		}
-		onMessage := sub.OnMessage
+		var onMessage MessageHandler
+		if sub.events != nil && sub.events.OnMessage != nil {
+			onMessage = sub.events.OnMessage
+		}
 		c.RUnlock()
 		if onMessage != nil {
-			onMessage(m)
+			onMessage(sub, m)
 		}
 	case "join":
 		var b libcentrifugo.JoinLeaveBody
@@ -333,11 +362,14 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 			c.RUnlock()
 			return nil
 		}
-		onJoin := sub.OnJoin
+		var onJoin JoinHandler
+		if sub.events != nil && sub.events.OnJoin != nil {
+			onJoin = sub.events.OnJoin
+		}
 		c.RUnlock()
 		if onJoin != nil {
 			info := b.Data
-			onJoin(info)
+			onJoin(sub, info)
 		}
 	case "leave":
 		var b libcentrifugo.JoinLeaveBody
@@ -354,11 +386,14 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 			c.RUnlock()
 			return nil
 		}
-		onLeave := sub.OnLeave
+		var onLeave LeaveHandler
+		if sub.events != nil && sub.events.OnLeave != nil {
+			onLeave = sub.events.OnLeave
+		}
 		c.RUnlock()
 		if onLeave != nil {
 			info := b.Data
-			onLeave(info)
+			onLeave(sub, info)
 		}
 	default:
 		return nil
@@ -435,24 +470,26 @@ func (c *Centrifuge) connectParams() *libcentrifugo.ConnectClientCommand {
 }
 
 // Subscribe allows to subscribe on channel.
-func (c *Centrifuge) Subscribe(channel string) (*Subscription, error) {
+func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, error) {
 	if !c.Authorized() {
 		return nil, ErrClientUnauthorized
 	}
-	body, err := c.sendSubscribe(channel)
-	if err != nil {
-		return nil, err
-	}
-	if !body.Status {
-		return nil, errors.New("wrong subscribe status")
-	}
-	// Subscription successfull.
-	sub := newSubscription(c, channel)
-
 	c.Lock()
+	sub := c.newSub(channel, events)
 	c.subs[channel] = sub
 	c.Unlock()
 
+	body, err := c.sendSubscribe(channel)
+	if err != nil {
+		delete(c.subs, channel)
+		return nil, err
+	}
+	if !body.Status {
+		delete(c.subs, channel)
+		return nil, errors.New("wrong subscribe status")
+	}
+
+	// Subscription on channel successfull.
 	return sub, nil
 }
 
