@@ -98,20 +98,21 @@ type EventHandler struct {
 // Centrifuge describes client connection to Centrifugo server.
 type Centrifuge struct {
 	sync.RWMutex
-	URL         string
-	config      *Config
-	credentials *Credentials
-	conn        *websocket.Conn
-	msgID       int32
-	connected   bool
-	authorized  bool
-	clientID    libcentrifugo.ConnID
-	subs        map[string]*Sub
-	waiters     map[string]chan response
-	receive     chan []byte
-	write       chan []byte
-	closed      chan struct{}
-	events      *EventHandler
+	URL          string
+	config       *Config
+	credentials  *Credentials
+	conn         *websocket.Conn
+	msgID        int32
+	connected    bool
+	authorized   bool
+	clientID     libcentrifugo.ConnID
+	subs         map[string]*Sub
+	waiters      map[string]chan response
+	receive      chan []byte
+	write        chan []byte
+	closed       chan struct{}
+	events       *EventHandler
+	refreshTimer *time.Timer
 }
 
 // MessageHandler is a function to handle messages in channels.
@@ -225,9 +226,9 @@ func (c *Centrifuge) ClientID() string {
 // Close closes Centrifuge connection.
 func (c *Centrifuge) Close() {
 	c.Lock()
+	defer c.Unlock()
 	select {
 	case <-c.closed:
-		c.Unlock()
 		return
 	default:
 		close(c.closed)
@@ -244,7 +245,14 @@ func (c *Centrifuge) Close() {
 	}
 	c.connected = false
 	c.authorized = false
-	c.Unlock()
+
+	var onDisconnect DisconnectHandler
+	if c.events != nil && c.events.OnDisconnect != nil {
+		onDisconnect = c.events.OnDisconnect
+	}
+	if onDisconnect != nil {
+		defer onDisconnect(c)
+	}
 }
 
 func (c *Centrifuge) read() {
@@ -449,27 +457,49 @@ func (c *Centrifuge) Connect() error {
 		return err
 	}
 	c.Lock()
+	defer c.Unlock()
+	if body.Expires && body.Expired {
+		return c.refresh()
+	}
 	c.clientID = body.Client
-	// TODO: expired check and TTL support.
 	c.authorized = true
-	c.Unlock()
+	if c.refreshTimer != nil {
+		c.refreshTimer.Stop()
+	}
+	if body.Expires {
+		c.refreshTimer = time.AfterFunc(time.Duration(body.TTL)*time.Second, func() {
+			err = c.refresh()
+			if err != nil {
+				log.Println(err)
+			}
+		})
+	}
 	return nil
 }
 
-func (c *Centrifuge) sendRefresh() (libcentrifugo.ConnectBody, error) {
+func (c *Centrifuge) refresh() error {
+	c.Lock()
 	var onRefresh RefreshHandler
 	if c.events != nil && c.events.OnRefresh != nil {
 		onRefresh = c.events.OnRefresh
 	}
 	if onRefresh == nil {
-		return libcentrifugo.ConnectBody{}, errors.New("RefreshHandler must be set to handle expired credentials")
+		c.Unlock()
+		return errors.New("RefreshHandler must be set to handle expired credentials")
 	}
+	c.Unlock()
 	creds, err := onRefresh(c)
 	if err != nil {
-		log.Println(err)
-		return libcentrifugo.ConnectBody{}, err
+		return err
 	}
+	c.Lock()
 	c.credentials = creds
+	if !c.connected {
+		c.Unlock()
+		return c.Connect()
+	}
+	c.Unlock()
+
 	params := c.refreshParams(creds)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -478,21 +508,37 @@ func (c *Centrifuge) sendRefresh() (libcentrifugo.ConnectBody, error) {
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
-		return libcentrifugo.ConnectBody{}, err
+		return err
 	}
 	r, err := c.sendSync(cmd.UID, cmdBytes)
 	if err != nil {
-		return libcentrifugo.ConnectBody{}, err
+		return err
 	}
 	if r.Error != "" {
-		return libcentrifugo.ConnectBody{}, errors.New(r.Error)
+		return errors.New(r.Error)
 	}
 	var body libcentrifugo.ConnectBody
 	err = json.Unmarshal(r.Body, &body)
 	if err != nil {
-		return libcentrifugo.ConnectBody{}, err
+		return err
 	}
-	return body, nil
+	c.Lock()
+	if c.refreshTimer != nil {
+		c.refreshTimer.Stop()
+	}
+	if body.Expires {
+		if body.Expired {
+			return errors.New("connection expired")
+		}
+		c.refreshTimer = time.AfterFunc(time.Duration(body.TTL)*time.Second, func() {
+			err = c.refresh()
+			if err != nil {
+				log.Println(err)
+			}
+		})
+	}
+	c.Unlock()
+	return nil
 }
 
 func (c *Centrifuge) refreshParams(creds *Credentials) *libcentrifugo.RefreshClientCommand {
