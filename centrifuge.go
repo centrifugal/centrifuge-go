@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,10 +39,6 @@ var (
 type Config struct {
 	Timeout              time.Duration
 	PrivateChannelPrefix string
-	RefreshEndpoint      string
-	AuthEndpoint         string
-	AuthHeaders          map[string]string
-	RefreshHeaders       map[string]string
 	Debug                bool
 	Insecure             bool
 }
@@ -67,10 +64,35 @@ type response struct {
 // DisconnectHandler is a function to handle disconnect event.
 type DisconnectHandler func(*Centrifuge) error
 
+type PrivateSign struct {
+	Sign string
+	Info string
+}
+
+type PrivateRequest struct {
+	ClientID string
+	Channel  string
+}
+
+func newPrivateRequest(client string, channel string) *PrivateRequest {
+	return &PrivateRequest{
+		ClientID: client,
+		Channel:  channel,
+	}
+}
+
+// PrivateSubHandler needed to handle private channel subscriptions.
+type PrivateSubHandler func(*Centrifuge, *PrivateRequest) (*PrivateSign, error)
+
+// RefreshHandler handles refresh event when client's credentials expired and must be refreshed.
+type RefreshHandler func(*Centrifuge) (*Credentials, error)
+
 // EventHandler contains callback functions that will be called when
 // corresponding event happens with connection to Centrifuge.
 type EventHandler struct {
 	OnDisconnect DisconnectHandler
+	OnPrivateSub PrivateSubHandler
+	OnRefresh    RefreshHandler
 }
 
 // Centrifuge describes client connection to Centrifugo server.
@@ -434,6 +456,54 @@ func (c *Centrifuge) Connect() error {
 	return nil
 }
 
+func (c *Centrifuge) sendRefresh() (libcentrifugo.ConnectBody, error) {
+	var onRefresh RefreshHandler
+	if c.events != nil && c.events.OnRefresh != nil {
+		onRefresh = c.events.OnRefresh
+	}
+	if onRefresh == nil {
+		return libcentrifugo.ConnectBody{}, errors.New("RefreshHandler must be set to handle expired credentials")
+	}
+	creds, err := onRefresh(c)
+	if err != nil {
+		log.Println(err)
+		return libcentrifugo.ConnectBody{}, err
+	}
+	c.credentials = creds
+	params := c.refreshParams(creds)
+	cmd := clientCommand{
+		UID:    strconv.Itoa(int(c.nextMsgID())),
+		Method: "refresh",
+		Params: params,
+	}
+	cmdBytes, err := json.Marshal(cmd)
+	if err != nil {
+		return libcentrifugo.ConnectBody{}, err
+	}
+	r, err := c.sendSync(cmd.UID, cmdBytes)
+	if err != nil {
+		return libcentrifugo.ConnectBody{}, err
+	}
+	if r.Error != "" {
+		return libcentrifugo.ConnectBody{}, errors.New(r.Error)
+	}
+	var body libcentrifugo.ConnectBody
+	err = json.Unmarshal(r.Body, &body)
+	if err != nil {
+		return libcentrifugo.ConnectBody{}, err
+	}
+	return body, nil
+}
+
+func (c *Centrifuge) refreshParams(creds *Credentials) *libcentrifugo.RefreshClientCommand {
+	return &libcentrifugo.RefreshClientCommand{
+		User:      libcentrifugo.UserID(creds.User),
+		Timestamp: creds.Timestamp,
+		Info:      creds.Info,
+		Token:     creds.Token,
+	}
+}
+
 func (c *Centrifuge) sendConnect() (libcentrifugo.ConnectBody, error) {
 	params := c.connectParams()
 	cmd := clientCommand{
@@ -474,12 +544,25 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 	if !c.Authorized() {
 		return nil, ErrClientUnauthorized
 	}
+	var err error
+	var privateSign *PrivateSign
+	if strings.HasPrefix(channel, c.config.PrivateChannelPrefix) {
+		if c.events != nil && c.events.OnPrivateSub != nil {
+			privateReq := newPrivateRequest(c.ClientID(), channel)
+			privateSign, err = c.events.OnPrivateSub(c, privateReq)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, errors.New("PrivateSubHandler must be set to handle private channel subscriptions")
+		}
+	}
 	c.Lock()
 	sub := c.newSub(channel, events)
 	c.subs[channel] = sub
 	c.Unlock()
 
-	body, err := c.sendSubscribe(channel)
+	body, err := c.sendSubscribe(channel, privateSign)
 	if err != nil {
 		delete(c.subs, channel)
 		return nil, err
@@ -493,14 +576,20 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 	return sub, nil
 }
 
-func (c *Centrifuge) subscribeParams(channel string) *libcentrifugo.SubscribeClientCommand {
-	return &libcentrifugo.SubscribeClientCommand{
+func (c *Centrifuge) subscribeParams(channel string, privateSign *PrivateSign) *libcentrifugo.SubscribeClientCommand {
+	cmd := &libcentrifugo.SubscribeClientCommand{
 		Channel: libcentrifugo.Channel(channel),
 	}
+	if privateSign != nil {
+		cmd.Client = libcentrifugo.ConnID(c.ClientID())
+		cmd.Info = privateSign.Info
+		cmd.Sign = privateSign.Sign
+	}
+	return cmd
 }
 
-func (c *Centrifuge) sendSubscribe(channel string) (libcentrifugo.SubscribeBody, error) {
-	params := c.subscribeParams(channel)
+func (c *Centrifuge) sendSubscribe(channel string, privateSign *PrivateSign) (libcentrifugo.SubscribeBody, error) {
+	params := c.subscribeParams(channel, privateSign)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
 		Method: "subscribe",
