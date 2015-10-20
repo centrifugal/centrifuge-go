@@ -458,6 +458,9 @@ func (c *Centrifuge) Connect() error {
 	}
 	c.Lock()
 	defer c.Unlock()
+	if !c.connected {
+		return ErrClientDisconnected
+	}
 	if body.Expires && body.Expired {
 		return c.refresh()
 	}
@@ -495,8 +498,7 @@ func (c *Centrifuge) refresh() error {
 	c.Lock()
 	c.credentials = creds
 	if !c.connected {
-		c.Unlock()
-		return c.Connect()
+		return ErrClientDisconnected
 	}
 	c.Unlock()
 
@@ -523,6 +525,9 @@ func (c *Centrifuge) refresh() error {
 		return err
 	}
 	c.Lock()
+	if !c.connected {
+		return ErrClientDisconnected
+	}
 	if c.refreshTimer != nil {
 		c.refreshTimer.Stop()
 	}
@@ -609,6 +614,10 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 	c.Unlock()
 
 	body, err := c.sendSubscribe(channel, privateSign)
+	c.Lock()
+	if !c.connected {
+		return nil, ErrClientDisconnected
+	}
 	if err != nil {
 		delete(c.subs, channel)
 		return nil, err
@@ -617,7 +626,7 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 		delete(c.subs, channel)
 		return nil, errors.New("wrong subscribe status")
 	}
-
+	c.Unlock()
 	// Subscription on channel successfull.
 	return sub, nil
 }
