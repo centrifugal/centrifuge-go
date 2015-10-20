@@ -40,9 +40,9 @@ type Config struct {
 	Timeout              time.Duration
 	PrivateChannelPrefix string
 	Debug                bool
-	Insecure             bool
 }
 
+// DefaultConfig with standard private channel prefix and 1 second timeout.
 var DefaultConfig = &Config{
 	PrivateChannelPrefix: "$",
 	Timeout:              1 * time.Second,
