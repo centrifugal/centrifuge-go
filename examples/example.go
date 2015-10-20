@@ -1,5 +1,7 @@
 package main
 
+// Connect, subscribe on channel, publish into channel, read presence and history info.
+
 import (
 	"encoding/json"
 	"fmt"

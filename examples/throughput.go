@@ -1,5 +1,6 @@
 package main
 
+// Subscribe many clients, publish into channel, wait for all messages received.
 // Supposed to run for channel which only have `publish` option enabled.
 
 import (

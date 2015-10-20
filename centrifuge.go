@@ -193,6 +193,15 @@ func NewCentrifuge(u string, creds *Credentials, events *EventHandler, config *C
 	return c
 }
 
+// SetCredentials allows to set new updated credentials when old
+// credentials expired.
+func (c *Centrifuge) SetCredentials(creds *Credentials) error {
+	c.Lock()
+	c.credentials = creds
+	c.Unlock()
+	return nil
+}
+
 // Connected returns true if client is connected at moment.
 func (c *Centrifuge) Connected() bool {
 	c.RLock()

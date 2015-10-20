@@ -1,6 +1,6 @@
 package main
 
-// Demonstrate how to resque from credentials expiration (when connection_lifetime set in Centrifugo).
+// Private subscription example.
 
 import (
 	"log"
@@ -32,19 +32,20 @@ func credentials() *centrifuge.Credentials {
 	}
 }
 
-func newConnection(done chan struct{}) *centrifuge.Centrifuge {
+func newConnection() *centrifuge.Centrifuge {
 	creds := credentials()
 	wsURL := "ws://localhost:8000/connection/websocket"
 
 	events := &centrifuge.EventHandler{
-		OnDisconnect: func(c *centrifuge.Centrifuge) error {
-			log.Println("disconnected")
-			close(done)
-			return nil
-		},
-		OnRefresh: func(c *centrifuge.Centrifuge) (*centrifuge.Credentials, error) {
-			log.Println("refresh")
-			return credentials(), nil
+		OnPrivateSub: func(c *centrifuge.Centrifuge, req *centrifuge.PrivateRequest) (*centrifuge.PrivateSign, error) {
+			// Here we allow everyone to subscribe on private channel.
+			// To reject subscription we could return any error from this func.
+			// In most real application secret key must not be kept on client side
+			// and here must be request to your backend to get channel sign.
+			info := ""
+			sign := auth.GenerateChannelSign("secret", req.ClientID, req.Channel, info)
+			privateSign := &centrifuge.PrivateSign{Sign: sign, Info: info}
+			return privateSign, nil
 		},
 	}
 
@@ -59,8 +60,13 @@ func newConnection(done chan struct{}) *centrifuge.Centrifuge {
 
 func main() {
 	log.Println("start program")
-	done := make(chan struct{})
-	c := newConnection(done)
+	c := newConnection()
 	defer c.Close()
-	<-done
+
+	// Subscribe on private channel.
+	_, err := c.Subscribe("$public:chat", nil)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	log.Println("successfully subscribed on private channel, done!")
 }
