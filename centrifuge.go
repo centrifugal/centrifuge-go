@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/centrifugal/centrifugo/libcentrifugo"
-	"github.com/gorilla/websocket"
-	"github.com/jpillora/backoff"
+	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo"
+	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/websocket"
+	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/jpillora/backoff"
 )
 
 // Timestamp is helper function to get current timestamp as string.
