@@ -29,11 +29,21 @@ type Credentials struct {
 }
 
 var (
-	ErrTimeout            = errors.New("timed out")
-	ErrWaiterClosed       = errors.New("waiter closed")
-	ErrClientDisconnected = errors.New("client disconnected")
-	ErrClientExpired      = errors.New("client expired")
-	ErrReconnectFailed    = errors.New("reconnect failed")
+	ErrTimeout              = errors.New("timed out")
+	ErrDuplicateWaiter      = errors.New("waiter with uid already exists")
+	ErrWaiterClosed         = errors.New("waiter closed")
+	ErrClientStatus         = errors.New("wrong client status to make operation")
+	ErrClientDisconnected   = errors.New("client disconnected")
+	ErrClientExpired        = errors.New("client expired")
+	ErrReconnectFailed      = errors.New("reconnect failed")
+	ErrBadSubscribeStatus   = errors.New("bad subscribe status")
+	ErrBadUnsubscribeStatus = errors.New("bad unsubscribe status")
+	ErrBadPublishStatus     = errors.New("bad publish status")
+)
+
+const (
+	DefaultPrivateChannelPrefix = "$"
+	DefaultTimeout              = 1 * time.Second
 )
 
 // Config contains various client options.
@@ -45,8 +55,8 @@ type Config struct {
 
 // DefaultConfig with standard private channel prefix and 1 second timeout.
 var DefaultConfig = &Config{
-	PrivateChannelPrefix: "$",
-	Timeout:              1 * time.Second,
+	PrivateChannelPrefix: DefaultPrivateChannelPrefix,
+	Timeout:              DefaultTimeout,
 }
 
 type clientCommand struct {
@@ -61,9 +71,6 @@ type response struct {
 	Method string          `json:"method"`
 	Body   json.RawMessage `json:"body"`
 }
-
-// DisconnectHandler is a function to handle disconnect event.
-type DisconnectHandler func(*Centrifuge) error
 
 type PrivateSign struct {
 	Sign string
@@ -88,6 +95,10 @@ type PrivateSubHandler func(*Centrifuge, *PrivateRequest) (*PrivateSign, error)
 // RefreshHandler handles refresh event when client's credentials expired and must be refreshed.
 type RefreshHandler func(*Centrifuge) (*Credentials, error)
 
+// DisconnectHandler is a function to handle disconnect event.
+type DisconnectHandler func(*Centrifuge) error
+
+// ErrorHandler is a function to handle critical protocol errors manually.
 type ErrorHandler func(*Centrifuge, error)
 
 // EventHandler contains callback functions that will be called when
@@ -110,24 +121,22 @@ const (
 
 // Centrifuge describes client connection to Centrifugo server.
 type Centrifuge struct {
-	mutex       sync.RWMutex
-	URL         string
-	config      *Config
-	credentials *Credentials
-	conn        *websocket.Conn
-	msgID       int32
-	status      Status
-	connected   bool
-	authorized  bool
-	clientID    libcentrifugo.ConnID
-	subsMutex   sync.RWMutex
-	subs        map[string]*Sub
-	waiterMutex sync.RWMutex
-	waiters     map[string]chan response
-	receive     chan []byte
-	write       chan []byte
-	closed      chan struct{}
-	events      *EventHandler
+	mutex        sync.RWMutex
+	URL          string
+	config       *Config
+	credentials  *Credentials
+	conn         *websocket.Conn
+	msgID        int32
+	status       Status
+	clientID     libcentrifugo.ConnID
+	subsMutex    sync.RWMutex
+	subs         map[string]*Sub
+	waitersMutex sync.RWMutex
+	waiters      map[string]chan response
+	receive      chan []byte
+	write        chan []byte
+	closed       chan struct{}
+	events       *EventHandler
 }
 
 // MessageHandler is a function to handle messages in channels.
@@ -198,6 +207,26 @@ func (s *Sub) handleMessage(m libcentrifugo.Message) {
 	}
 }
 
+func (s *Sub) handleJoinMessage(info libcentrifugo.ClientInfo) {
+	var onJoin JoinHandler
+	if s.events != nil && s.events.OnJoin != nil {
+		onJoin = s.events.OnJoin
+	}
+	if onJoin != nil {
+		onJoin(s, info)
+	}
+}
+
+func (s *Sub) handleLeaveMessage(info libcentrifugo.ClientInfo) {
+	var onLeave LeaveHandler
+	if s.events != nil && s.events.OnLeave != nil {
+		onLeave = s.events.OnLeave
+	}
+	if onLeave != nil {
+		onLeave(s, info)
+	}
+}
+
 func (s *Sub) resubscribe() error {
 	privateSign, err := s.centrifuge.privateSign(s.Channel)
 	if err != nil {
@@ -208,7 +237,7 @@ func (s *Sub) resubscribe() error {
 		return err
 	}
 	if !body.Status {
-		return errors.New("wrong subscribe status")
+		return ErrBadSubscribeStatus
 	}
 
 	if len(body.Messages) > 0 {
@@ -313,12 +342,12 @@ func (c *Centrifuge) Close() {
 		c.conn.Close()
 	}
 
-	c.waiterMutex.Lock()
+	c.waitersMutex.Lock()
 	for uid, ch := range c.waiters {
 		close(ch)
 		delete(c.waiters, uid)
 	}
-	c.waiterMutex.Unlock()
+	c.waitersMutex.Unlock()
 
 	select {
 	case <-c.closed:
@@ -343,12 +372,12 @@ func (c *Centrifuge) handleDisconnect(err error) {
 		}
 	}
 
-	c.waiterMutex.Lock()
+	c.waitersMutex.Lock()
 	for uid, ch := range c.waiters {
 		close(ch)
 		delete(c.waiters, uid)
 	}
-	c.waiterMutex.Unlock()
+	c.waitersMutex.Unlock()
 
 	select {
 	case <-c.closed:
@@ -408,6 +437,9 @@ func (r *PeriodicReconnect) reconnect(c *Centrifuge) error {
 }
 
 func (c *Centrifuge) doReconnect() error {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	c.closed = make(chan struct{})
 
 	err := c.connect()
@@ -427,8 +459,8 @@ func (c *Centrifuge) doReconnect() error {
 
 func (c *Centrifuge) Reconnect(strategy ReconnectStrategy) error {
 	c.mutex.Lock()
-	defer c.mutex.Unlock()
 	c.status = RECONNECTING
+	c.mutex.Unlock()
 	return strategy.reconnect(c)
 }
 
@@ -515,11 +547,11 @@ func (c *Centrifuge) handle(msg []byte) error {
 	}
 	for _, resp := range resps {
 		if resp.UID != "" {
-			c.waiterMutex.RLock()
+			c.waitersMutex.RLock()
 			if waiter, ok := c.waiters[resp.UID]; ok {
 				waiter <- resp
 			}
-			c.waiterMutex.RUnlock()
+			c.waitersMutex.RUnlock()
 		} else {
 			err := c.handleAsyncResponse(resp)
 			if err != nil {
@@ -565,20 +597,13 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 		channel := b.Channel
 		c.subsMutex.RLock()
 		sub, ok := c.subs[string(channel)]
+		c.subsMutex.RUnlock()
 		if !ok {
 			log.Println("join received but client not subscribed on channel")
 			c.mutex.RUnlock()
 			return nil
 		}
-		var onJoin JoinHandler
-		if sub.events != nil && sub.events.OnJoin != nil {
-			onJoin = sub.events.OnJoin
-		}
-		c.subsMutex.RUnlock()
-		if onJoin != nil {
-			info := b.Data
-			onJoin(sub, info)
-		}
+		sub.handleJoinMessage(b.Data)
 	case "leave":
 		var b libcentrifugo.JoinLeaveBody
 		err := json.Unmarshal(body, &b)
@@ -589,20 +614,13 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 		channel := b.Channel
 		c.subsMutex.RLock()
 		sub, ok := c.subs[string(channel)]
+		c.subsMutex.RUnlock()
 		if !ok {
 			log.Println("leave received but client not subscribed on channel")
 			c.mutex.RUnlock()
 			return nil
 		}
-		var onLeave LeaveHandler
-		if sub.events != nil && sub.events.OnLeave != nil {
-			onLeave = sub.events.OnLeave
-		}
-		c.subsMutex.RUnlock()
-		if onLeave != nil {
-			info := b.Data
-			onLeave(sub, info)
-		}
+		sub.handleLeaveMessage(b.Data)
 	default:
 		return nil
 	}
@@ -629,7 +647,6 @@ func (c *Centrifuge) connectWS() error {
 	if err != nil {
 		return err
 	}
-	c.connected = true
 	c.conn = conn
 	return nil
 }
@@ -695,7 +712,7 @@ func (c *Centrifuge) Connect() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	if c.status == CONNECTED {
-		return errors.New("client already connected")
+		return ErrClientStatus
 	}
 	return c.connect()
 }
@@ -853,7 +870,7 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 		c.subsMutex.Lock()
 		delete(c.subs, channel)
 		c.subsMutex.Unlock()
-		return nil, errors.New("wrong subscribe status")
+		return nil, ErrBadSubscribeStatus
 	}
 
 	if len(body.Messages) > 0 {
@@ -917,7 +934,7 @@ func (c *Centrifuge) publish(channel string, data []byte) error {
 		return err
 	}
 	if !body.Status {
-		return errors.New("wrong publish status")
+		return ErrBadPublishStatus
 	}
 	return nil
 }
@@ -1044,7 +1061,7 @@ func (c *Centrifuge) unsubscribe(channel string) error {
 		return err
 	}
 	if !body.Status {
-		return errors.New("wrong unsubscribe status")
+		return ErrBadUnsubscribeStatus
 	}
 	c.subsMutex.Lock()
 	delete(c.subs, channel)
@@ -1109,18 +1126,18 @@ func (c *Centrifuge) send(msg []byte) error {
 }
 
 func (c *Centrifuge) addWaiter(uid string, ch chan response) error {
-	c.waiterMutex.Lock()
-	defer c.waiterMutex.Unlock()
+	c.waitersMutex.Lock()
+	defer c.waitersMutex.Unlock()
 	if _, ok := c.waiters[uid]; ok {
-		return errors.New("Waiter with uid already exists")
+		return ErrDuplicateWaiter
 	}
 	c.waiters[uid] = ch
 	return nil
 }
 
 func (c *Centrifuge) removeWaiter(uid string) error {
-	c.waiterMutex.Lock()
-	defer c.waiterMutex.Unlock()
+	c.waitersMutex.Lock()
+	defer c.waitersMutex.Unlock()
 	delete(c.waiters, uid)
 	return nil
 }
