@@ -13,6 +13,7 @@ import (
 
 	"github.com/centrifugal/centrifugo/libcentrifugo"
 	"github.com/gorilla/websocket"
+	"github.com/jpillora/backoff"
 )
 
 // Timestamp is helper function to get current timestamp as string.
@@ -110,6 +111,7 @@ type EventHandler struct {
 	OnError      ErrorHandler
 }
 
+// Status shows actual connection status.
 type Status int
 
 const (
@@ -310,7 +312,7 @@ func (c *Centrifuge) ClientID() string {
 	return string(c.clientID)
 }
 
-func (c *Centrifuge) closeError(err error) {
+func (c *Centrifuge) handleError(err error) {
 	var onError ErrorHandler
 	if c.events != nil && c.events.OnError != nil {
 		onError = c.events.OnError
@@ -318,6 +320,7 @@ func (c *Centrifuge) closeError(err error) {
 	if onError != nil {
 		onError(c, err)
 	} else {
+		log.Println(err)
 		c.Close()
 	}
 }
@@ -360,16 +363,13 @@ func (c *Centrifuge) Close() {
 
 func (c *Centrifuge) handleDisconnect(err error) {
 	c.mutex.Lock()
-	if c.status == CLOSED {
+	if c.status == CLOSED || c.status == RECONNECTING {
 		c.mutex.Unlock()
 		return
 	}
 
 	if c.conn != nil {
-		err := c.conn.Close()
-		if err != nil {
-			log.Println(err)
-		}
+		c.conn.Close()
 	}
 
 	c.waitersMutex.Lock()
@@ -421,6 +421,53 @@ func (r *PeriodicReconnect) reconnect(c *Centrifuge) error {
 			break
 		}
 		time.Sleep(r.ReconnectInterval)
+
+		reconnects += 1
+
+		err := c.doReconnect()
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		// successfully reconnected
+		return nil
+	}
+	return ErrReconnectFailed
+}
+
+type BackoffReconnect struct {
+	// NumReconnect is maximum number of reconnect attempts, 0 means reconnect forever
+	NumReconnect int
+	//Factor is the multiplying factor for each increment step
+	Factor float64
+	//Jitter eases contention by randomizing backoff steps
+	Jitter bool
+	//Min and Max are the minimum and maximum values of the counter
+	Min, Max time.Duration
+}
+
+var DefaultBackoffReconnect = &BackoffReconnect{
+	NumReconnect: 0,
+	Min:          100 * time.Millisecond,
+	Max:          10 * time.Second,
+	Factor:       2,
+	Jitter:       true,
+}
+
+func (r *BackoffReconnect) reconnect(c *Centrifuge) error {
+	b := &backoff.Backoff{
+		Min:    r.Min,
+		Max:    r.Max,
+		Factor: r.Factor,
+		Jitter: r.Jitter,
+	}
+	reconnects := 0
+	for {
+		if r.NumReconnect > 0 && reconnects >= r.NumReconnect {
+			break
+		}
+		time.Sleep(b.Duration())
 
 		reconnects += 1
 
@@ -496,16 +543,14 @@ func (c *Centrifuge) run() {
 		case msg := <-c.receive:
 			err := c.handle(msg)
 			if err != nil {
-				c.closeError(err)
-				return
+				c.handleError(err)
 			}
 		case msg := <-c.write:
 			c.conn.SetWriteDeadline(time.Now().Add(c.config.Timeout))
 			err := c.conn.WriteMessage(websocket.TextMessage, msg)
 			c.conn.SetWriteDeadline(time.Time{})
 			if err != nil {
-				c.closeError(err)
-				return
+				c.handleError(err)
 			}
 		case <-c.closed:
 			return
@@ -541,6 +586,9 @@ func responsesFromClientMsg(msg []byte) ([]response, error) {
 }
 
 func (c *Centrifuge) handle(msg []byte) error {
+	if len(msg) == 0 {
+		return nil
+	}
 	resps, err := responsesFromClientMsg(msg)
 	if err != nil {
 		return err
@@ -555,7 +603,7 @@ func (c *Centrifuge) handle(msg []byte) error {
 		} else {
 			err := c.handleAsyncResponse(resp)
 			if err != nil {
-				c.closeError(err)
+				c.handleError(err)
 			}
 		}
 	}

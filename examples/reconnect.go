@@ -46,7 +46,7 @@ func newConnection(done chan struct{}) *centrifuge.Centrifuge {
 	events := &centrifuge.EventHandler{
 		OnDisconnect: func(c *centrifuge.Centrifuge) error {
 			log.Println("Disconnected")
-			err := c.Reconnect(centrifuge.DefaultPeriodicReconnect)
+			err := c.Reconnect(centrifuge.DefaultBackoffReconnect)
 			if err != nil {
 				log.Println(err)
 				close(done)
