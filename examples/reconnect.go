@@ -1,15 +1,20 @@
 package main
 
-// Demonstrate how to resque from credentials expiration (when connection_lifetime set in Centrifugo).
+// Demonstrate how to reconnect.
 
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/centrifugal/centrifuge-go"
 	"github.com/centrifugal/centrifugo/libcentrifugo"
 	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
 )
+
+func init() {
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+}
 
 func credentials() *centrifuge.Credentials {
 	secret := "secret"
@@ -41,12 +46,14 @@ func newConnection(done chan struct{}) *centrifuge.Centrifuge {
 	events := &centrifuge.EventHandler{
 		OnDisconnect: func(c *centrifuge.Centrifuge) error {
 			log.Println("Disconnected")
-			close(done)
+			err := c.Reconnect(centrifuge.DefaultPeriodicReconnect)
+			if err != nil {
+				log.Println(err)
+				close(done)
+			} else {
+				log.Println("Reconnected")
+			}
 			return nil
-		},
-		OnRefresh: func(c *centrifuge.Centrifuge) (*centrifuge.Credentials, error) {
-			log.Println("Refresh")
-			return credentials(), nil
 		},
 	}
 
@@ -66,10 +73,22 @@ func newConnection(done chan struct{}) *centrifuge.Centrifuge {
 		OnMessage: onMessage,
 	}
 
-	_, err = c.Subscribe("public:chat", subEvents)
+	sub, err := c.Subscribe("public:chat", subEvents)
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	go func() {
+		for {
+			msgs, err := sub.History()
+			if err != nil {
+				log.Printf("Error retreiving channel history: %s", err.Error())
+			} else {
+				log.Printf("%d messages in channel history", len(msgs))
+			}
+			time.Sleep(time.Second)
+		}
+	}()
 
 	return c
 }
