@@ -6,7 +6,7 @@ import (
 	"log"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
+	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/auth"
 )
 
 func credentials() *centrifuge.Credentials {
@@ -59,7 +59,7 @@ func newConnection() *centrifuge.Centrifuge {
 }
 
 func main() {
-	log.Println("start program")
+	log.Println("Start program")
 	c := newConnection()
 	defer c.Close()
 
@@ -68,5 +68,5 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	log.Println("successfully subscribed on private channel, done!")
+	log.Println("Successfully subscribed on private channel, done")
 }

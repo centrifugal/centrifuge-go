@@ -3,10 +3,12 @@ package main
 // Demonstrate how to resque from credentials expiration (when connection_lifetime set in Centrifugo).
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
+	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo"
+	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/auth"
 )
 
 func credentials() *centrifuge.Credentials {
@@ -38,12 +40,12 @@ func newConnection(done chan struct{}) *centrifuge.Centrifuge {
 
 	events := &centrifuge.EventHandler{
 		OnDisconnect: func(c *centrifuge.Centrifuge) error {
-			log.Println("disconnected")
+			log.Println("Disconnected")
 			close(done)
 			return nil
 		},
 		OnRefresh: func(c *centrifuge.Centrifuge) (*centrifuge.Credentials, error) {
-			log.Println("refresh")
+			log.Println("Refresh")
 			return credentials(), nil
 		},
 	}
@@ -54,11 +56,26 @@ func newConnection(done chan struct{}) *centrifuge.Centrifuge {
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	onMessage := func(sub *centrifuge.Sub, msg libcentrifugo.Message) error {
+		log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel, msg))
+		return nil
+	}
+
+	subEvents := &centrifuge.SubEventHandler{
+		OnMessage: onMessage,
+	}
+
+	_, err = c.Subscribe("public:chat", subEvents)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
 	return c
 }
 
 func main() {
-	log.Println("start program")
+	log.Println("Start program")
 	done := make(chan struct{})
 	c := newConnection(done)
 	defer c.Close()
