@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/FZambia/go-logger"
+	"github.com/FZambia/go-logger"
 	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/auth"
 	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/bytequeue"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/nu7hatch/gouuid"
+	"github.com/nu7hatch/gouuid"
 )
 
 const (

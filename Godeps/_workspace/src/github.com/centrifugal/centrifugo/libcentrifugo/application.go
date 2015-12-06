@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/FZambia/go-logger"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/securecookie"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/nu7hatch/gouuid"
+	"github.com/FZambia/go-logger"
+	"github.com/gorilla/securecookie"
+	"github.com/nu7hatch/gouuid"
 )
 
 // Application is a heart of Centrifugo – it internally manages client and admin hubs,

@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/FZambia/go-logger"
+	"github.com/FZambia/go-logger"
 	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/auth"
 	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/websocket" // MuxOptions contain various options for DefaultMux.
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/gopkg.in/igm/sockjs-go.v2/sockjs"
+	"gopkg.in/igm/sockjs-go.v2/sockjs"
 )
 
 type MuxOptions struct {

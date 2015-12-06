@@ -3,7 +3,7 @@ package libcentrifugo
 import (
 	"testing"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/securecookie"
+	"github.com/gorilla/securecookie"
 	"github.com/stretchr/testify/assert"
 )
 

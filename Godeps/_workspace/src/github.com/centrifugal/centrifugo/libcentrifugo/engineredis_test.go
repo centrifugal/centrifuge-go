@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/garyburd/redigo/redis"
+	"github.com/garyburd/redigo/redis"
 	"github.com/stretchr/testify/assert"
 )
 

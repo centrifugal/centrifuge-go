@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/rcrowley/go-metrics"
+	"github.com/rcrowley/go-metrics"
 )
 
 // Metrics contains various Centrifugo statistic and metric information aggregated
