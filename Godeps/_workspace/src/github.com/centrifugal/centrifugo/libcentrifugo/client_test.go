@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/auth"
+	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
 	"github.com/stretchr/testify/assert"
 )
 

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/auth"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/websocket"
+	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 )
 

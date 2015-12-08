@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/FZambia/go-logger"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/auth"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/websocket" // MuxOptions contain various options for DefaultMux.
+	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
+	"github.com/gorilla/websocket"
 	"gopkg.in/igm/sockjs-go.v2/sockjs"
 )
 
+// MuxOptions contain various options for DefaultMux.
 type MuxOptions struct {
 	Prefix        string
 	Web           bool
@@ -201,10 +202,11 @@ func (app *Application) RawWebsocketHandler(w http.ResponseWriter, r *http.Reque
 	defer ws.Close()
 
 	app.RLock()
-	interval := app.config.PingInterval
+	pingInterval := app.config.PingInterval
 	app.RUnlock()
+	pongWait := pingInterval * 10 / 9 // https://github.com/gorilla/websocket/blob/master/examples/chat/conn.go#L22
 
-	conn := newWSConn(ws, interval)
+	conn := newWSConn(ws, pingInterval)
 	defer close(conn.closeCh)
 
 	c, err := newClient(app, conn)
@@ -213,6 +215,9 @@ func (app *Application) RawWebsocketHandler(w http.ResponseWriter, r *http.Reque
 	}
 	logger.INFO.Printf("New raw Websocket session established with uid %s\n", c.uid())
 	defer c.clean()
+
+	ws.SetReadDeadline(time.Now().Add(pongWait))
+	ws.SetPongHandler(func(string) error { ws.SetReadDeadline(time.Now().Add(pongWait)); return nil })
 
 	for {
 		_, message, err := conn.ws.ReadMessage()

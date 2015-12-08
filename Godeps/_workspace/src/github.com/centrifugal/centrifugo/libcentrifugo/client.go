@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/FZambia/go-logger"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/auth"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/centrifugal/centrifugo/libcentrifugo/bytequeue"
+	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
+	"github.com/centrifugal/centrifugo/libcentrifugo/bytequeue"
 	"github.com/nu7hatch/gouuid"
 )
 

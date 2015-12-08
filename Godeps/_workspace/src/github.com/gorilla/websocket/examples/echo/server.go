@@ -11,7 +11,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/websocket"
+	"github.com/gorilla/websocket"
 )
 
 var addr = flag.String("addr", "localhost:8081", "http service address")

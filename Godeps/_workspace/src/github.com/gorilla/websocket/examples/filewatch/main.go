@@ -14,7 +14,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/websocket"
+	"github.com/gorilla/websocket"
 )
 
 const (

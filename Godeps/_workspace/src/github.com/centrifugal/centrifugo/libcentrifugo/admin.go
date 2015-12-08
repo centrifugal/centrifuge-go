@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/FZambia/go-logger"
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/websocket"
+	"github.com/gorilla/websocket"
 	"github.com/nu7hatch/gouuid"
 )
 

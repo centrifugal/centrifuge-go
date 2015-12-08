@@ -5,7 +5,7 @@
 package main
 
 import (
-	"github.com/centrifugal/centrifuge-go/Godeps/_workspace/src/github.com/gorilla/websocket"
+	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
 	"time"
