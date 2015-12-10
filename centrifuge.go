@@ -907,7 +907,10 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 	c.subsMutex.Unlock()
 
 	body, err := c.sendSubscribe(channel, sub.lastMessageID, privateSign)
+
 	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	if err != nil {
 		c.subsMutex.Lock()
 		delete(c.subs, channel)
@@ -929,7 +932,6 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 		sub.lastMessageID = &body.Last
 	}
 
-	c.mutex.Unlock()
 	// Subscription on channel successfull.
 	return sub, nil
 }
