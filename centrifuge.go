@@ -36,6 +36,7 @@ var (
 	ErrClientStatus         = errors.New("wrong client status to make operation")
 	ErrClientDisconnected   = errors.New("client disconnected")
 	ErrClientExpired        = errors.New("client expired")
+	ErrReconnectForbidden   = errors.New("reconnect is not allowed after disconnect message")
 	ErrReconnectFailed      = errors.New("reconnect failed")
 	ErrBadSubscribeStatus   = errors.New("bad subscribe status")
 	ErrBadUnsubscribeStatus = errors.New("bad unsubscribe status")
@@ -139,6 +140,7 @@ type Centrifuge struct {
 	write        chan []byte
 	closed       chan struct{}
 	events       *EventHandler
+	reconnect    bool
 }
 
 // MessageHandler is a function to handle messages in channels.
@@ -271,6 +273,7 @@ func NewCentrifuge(u string, creds *Credentials, events *EventHandler, config *C
 		closed:      make(chan struct{}),
 		waiters:     make(map[string]chan response),
 		events:      events,
+		reconnect:   true,
 	}
 	return c
 }
@@ -506,6 +509,12 @@ func (c *Centrifuge) doReconnect() error {
 
 func (c *Centrifuge) Reconnect(strategy ReconnectStrategy) error {
 	c.mutex.Lock()
+	reconnect := c.reconnect
+	c.mutex.Unlock()
+	if !reconnect {
+		return ErrReconnectForbidden
+	}
+	c.mutex.Lock()
 	c.status = RECONNECTING
 	c.mutex.Unlock()
 	return strategy.reconnect(c)
@@ -669,9 +678,26 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 			return nil
 		}
 		sub.handleLeaveMessage(b.Data)
+	case "disconnect":
+		var b libcentrifugo.DisconnectBody
+		err := json.Unmarshal(body, &b)
+		if err != nil {
+			log.Println("malformed disconnect message")
+			return nil
+		}
+		c.handleDisconnectMessage(b.Reason)
 	default:
 		return nil
 	}
+	return nil
+}
+
+func (c *Centrifuge) handleDisconnectMessage(reason string) error {
+	c.mutex.Lock()
+	c.reconnect = false
+	c.mutex.Unlock()
+	log.Printf("disconnected: %s\n", reason)
+	c.Close()
 	return nil
 }
 
