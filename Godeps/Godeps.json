@@ -1,0 +1,50 @@
+{
+	"ImportPath": "github.com/centrifugal/centrifuge-go",
+	"GoVersion": "go1.5.2",
+	"Packages": [
+		"./..."
+	],
+	"Deps": [
+		{
+			"ImportPath": "github.com/FZambia/go-logger",
+			"Rev": "1e47f2709a6dc3366a17490c863c0b3e5f218cda"
+		},
+		{
+			"ImportPath": "github.com/centrifugal/centrifugo/libcentrifugo",
+			"Comment": "v1.2.0-3-ge6b42ee",
+			"Rev": "e6b42ee1f6a704dce6c6a6c7edfb37d8390163b1"
+		},
+		{
+			"ImportPath": "github.com/garyburd/redigo/internal",
+			"Rev": "9d4db5d1dbeff473d50e1bb82f5405c8cca0f0ac"
+		},
+		{
+			"ImportPath": "github.com/garyburd/redigo/redis",
+			"Rev": "9d4db5d1dbeff473d50e1bb82f5405c8cca0f0ac"
+		},
+		{
+			"ImportPath": "github.com/gorilla/securecookie",
+			"Rev": "e95799a481bbcc3d01c2ad5178524cb8bec9f370"
+		},
+		{
+			"ImportPath": "github.com/gorilla/websocket",
+			"Rev": "13e4d0621caa4d77fd9aa470ef6d7ab63d1a5e41"
+		},
+		{
+			"ImportPath": "github.com/jpillora/backoff",
+			"Rev": "2ff7c4694083b5dbd71b21fd7cb7577477a74b31"
+		},
+		{
+			"ImportPath": "github.com/nu7hatch/gouuid",
+			"Rev": "179d4d0c4d8d407a32af483c2354df1d2c91e6c3"
+		},
+		{
+			"ImportPath": "github.com/rcrowley/go-metrics",
+			"Rev": "dee209f2455f101a5e4e593dea94872d2c62d85d"
+		},
+		{
+			"ImportPath": "gopkg.in/igm/sockjs-go.v2/sockjs",
+			"Rev": "26300643773d12c6889eccb3883a012af98cac1b"
+		}
+	]
+}
