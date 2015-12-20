@@ -1,0 +1,7 @@
+package: main
+import:
+- package: github.com/jpillora/backoff
+- package: github.com/gorilla/websocket
+- package: github.com/centrifugal/centrifugo
+  subpackages:
+  - /libcentrifugo
