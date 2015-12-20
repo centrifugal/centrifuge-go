@@ -1,0 +1,11 @@
+package: github.com/centrifugal/centrifuge-go
+import:
+- package: github.com/centrifugal/centrifugo
+  version: cd22c4f97584fd0ab161780aa1e7a61454c61cba
+  subpackages:
+  - libcentrifugo
+  - libcentrifugo/auth
+- package: github.com/gorilla/websocket
+  version: 13e4d0621caa4d77fd9aa470ef6d7ab63d1a5e41
+- package: github.com/jpillora/backoff
+  version: 2ff7c4694083b5dbd71b21fd7cb7577477a74b31
