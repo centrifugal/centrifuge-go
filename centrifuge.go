@@ -685,17 +685,19 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 			log.Println("malformed disconnect message")
 			return nil
 		}
-		c.handleDisconnectMessage(b.Reason)
+		c.handleDisconnectMessage(b.Reason, b.Reconnect)
 	default:
 		return nil
 	}
 	return nil
 }
 
-func (c *Centrifuge) handleDisconnectMessage(reason string) error {
-	c.mutex.Lock()
-	c.reconnect = false
-	c.mutex.Unlock()
+func (c *Centrifuge) handleDisconnectMessage(reason string, shouldReconnect bool) error {
+	if !shouldReconnect {
+		c.mutex.Lock()
+		c.reconnect = false
+		c.mutex.Unlock()
+	}
 	log.Printf("disconnected: %s\n", reason)
 	c.Close()
 	return nil
