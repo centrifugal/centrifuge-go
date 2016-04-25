@@ -8,17 +8,20 @@ import (
 	"log"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go"
-	"github.com/centrifugal/centrifugo/libcentrifugo"
-	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
+	"github.com/shilkin/centrifuge-go"
+	"github.com/shilkin/centrifugo/libcentrifugo"
+	"github.com/shilkin/centrifugo/libcentrifugo/auth"
 )
 
 func main() {
 	// Never show secret to client of your application. Keep it on your application backend only.
-	secret := "secret"
+	secret := "0"
+
+	// Project ID
+	project := "notifications"
 
 	// Application user ID.
-	user := "42"
+	user := "1"
 
 	// Current timestamp as string.
 	timestamp := centrifuge.Timestamp()
@@ -27,7 +30,7 @@ func main() {
 	info := ""
 
 	// Generate client token so Centrifugo server can trust connection parameters received from client.
-	token := auth.GenerateClientToken(secret, user, timestamp, info)
+	token := auth.GenerateClientToken(secret, project, user, timestamp, info)
 
 	creds := &centrifuge.Credentials{
 		User:      user,
@@ -38,13 +41,27 @@ func main() {
 
 	started := time.Now()
 
+	events := &centrifuge.EventHandler{
+		OnPrivateSub: func(c centrifuge.Centrifuge, req *centrifuge.PrivateRequest) (*centrifuge.PrivateSign, error) {
+			// Here we allow everyone to subscribe on private channel.
+			// To reject subscription we could return any error from this func.
+			// In most real application secret key must not be kept on client side
+			// and here must be request to your backend to get channel sign.
+			info := ""
+			sign := auth.GenerateChannelSign("0", req.ClientID, req.Channel, info)
+			privateSign := &centrifuge.PrivateSign{Sign: sign, Info: info}
+			return privateSign, nil
+		},
+		OnDisconnect: centrifuge.DefaultBackoffReconnector,
+	}
+
 	wsURL := "ws://localhost:8000/connection/websocket"
-	c := centrifuge.NewCentrifuge(wsURL, creds, nil, centrifuge.DefaultConfig)
+	c := centrifuge.NewCentrifuge(wsURL, project, creds, events, centrifuge.DefaultConfig)
 	defer c.Close()
 
 	err := c.Connect()
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln("connect: ", err)
 	}
 
 	onMessage := func(sub *centrifuge.Sub, msg libcentrifugo.Message) error {
@@ -62,15 +79,15 @@ func main() {
 		return nil
 	}
 
-	events := &centrifuge.SubEventHandler{
+	subEvents := &centrifuge.SubEventHandler{
 		OnMessage: onMessage,
 		OnJoin:    onJoin,
 		OnLeave:   onLeave,
 	}
 
-	sub, err := c.Subscribe("public:chat", events)
+	sub, err := c.Subscribe("$1_2", subEvents)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln("subscribe: ", err)
 	}
 
 	data := map[string]string{
@@ -79,18 +96,18 @@ func main() {
 	dataBytes, _ := json.Marshal(data)
 	err = sub.Publish(dataBytes)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln("publish: ", err)
 	}
 
 	history, err := sub.History()
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln("hostory: ", err)
 	}
 	log.Printf("%d messages in channel %s history", len(history), sub.Channel)
 
 	presence, err := sub.Presence()
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalln("presence: ", err)
 	}
 	log.Printf("%d clients in channel %s", len(presence), sub.Channel)
 

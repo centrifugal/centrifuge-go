@@ -4,17 +4,23 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/centrifugal/centrifugo/libcentrifugo"
-	"github.com/gorilla/websocket"
 	"github.com/jpillora/backoff"
+	"github.com/shilkin/centrifugo/libcentrifugo"
 )
+
+type Centrifuge interface {
+	Connect() error
+	Reconnect(ReconnectStrategy) error
+	Subscribe(string, *SubEventHandler) (*Sub, error)
+	ClientID() string
+	Close()
+}
 
 // Timestamp is helper function to get current timestamp as string.
 func Timestamp() string {
@@ -30,22 +36,24 @@ type Credentials struct {
 }
 
 var (
-	ErrTimeout              = errors.New("timed out")
-	ErrDuplicateWaiter      = errors.New("waiter with uid already exists")
-	ErrWaiterClosed         = errors.New("waiter closed")
-	ErrClientStatus         = errors.New("wrong client status to make operation")
-	ErrClientDisconnected   = errors.New("client disconnected")
-	ErrClientExpired        = errors.New("client expired")
-	ErrReconnectForbidden   = errors.New("reconnect is not allowed after disconnect message")
-	ErrReconnectFailed      = errors.New("reconnect failed")
-	ErrBadSubscribeStatus   = errors.New("bad subscribe status")
-	ErrBadUnsubscribeStatus = errors.New("bad unsubscribe status")
-	ErrBadPublishStatus     = errors.New("bad publish status")
+	ErrTimeout               = errors.New("timed out")
+	ErrDuplicateWaiter       = errors.New("waiter with uid already exists")
+	ErrWaiterClosed          = errors.New("waiter closed")
+	ErrClientStatus          = errors.New("wrong client status to make operation")
+	ErrClientDisconnected    = errors.New("client disconnected")
+	ErrClientExpired         = errors.New("client expired")
+	ErrReconnectForbidden    = errors.New("reconnect is not allowed after disconnect message")
+	ErrReconnectFailed       = errors.New("reconnect failed")
+	ErrBadSubscribeStatus    = errors.New("bad subscribe status")
+	ErrBadUnsubscribeStatus  = errors.New("bad unsubscribe status")
+	ErrBadPublishStatus      = errors.New("bad publish status")
+	ErrUnexpectedMessageData = errors.New("unexpected message data")
 )
 
 const (
 	DefaultPrivateChannelPrefix = "$"
 	DefaultTimeout              = 1 * time.Second
+	DefaultReconnect            = true
 )
 
 // Config contains various client options.
@@ -53,12 +61,14 @@ type Config struct {
 	Timeout              time.Duration
 	PrivateChannelPrefix string
 	Debug                bool
+	Reconnect            bool
 }
 
 // DefaultConfig with standard private channel prefix and 1 second timeout.
 var DefaultConfig = &Config{
 	PrivateChannelPrefix: DefaultPrivateChannelPrefix,
 	Timeout:              DefaultTimeout,
+	Reconnect:            DefaultReconnect,
 }
 
 type clientCommand struct {
@@ -92,16 +102,16 @@ func newPrivateRequest(client string, channel string) *PrivateRequest {
 }
 
 // PrivateSubHandler needed to handle private channel subscriptions.
-type PrivateSubHandler func(*Centrifuge, *PrivateRequest) (*PrivateSign, error)
+type PrivateSubHandler func(Centrifuge, *PrivateRequest) (*PrivateSign, error)
 
 // RefreshHandler handles refresh event when client's credentials expired and must be refreshed.
-type RefreshHandler func(*Centrifuge) (*Credentials, error)
+type RefreshHandler func(Centrifuge) (*Credentials, error)
 
 // DisconnectHandler is a function to handle disconnect event.
-type DisconnectHandler func(*Centrifuge) error
+type DisconnectHandler func(Centrifuge) error
 
 // ErrorHandler is a function to handle critical protocol errors manually.
-type ErrorHandler func(*Centrifuge, error)
+type ErrorHandler func(Centrifuge, error)
 
 // EventHandler contains callback functions that will be called when
 // corresponding event happens with connection to Centrifuge.
@@ -110,6 +120,25 @@ type EventHandler struct {
 	OnPrivateSub PrivateSubHandler
 	OnRefresh    RefreshHandler
 	OnError      ErrorHandler
+}
+
+func DefaultBackoffReconnector(c Centrifuge) error {
+	return defaultReconnector(c, DefaultBackoffReconnect)
+}
+
+func DefaultPeriodicReconnector(c Centrifuge) error {
+	return defaultReconnector(c, DefaultPeriodicReconnect)
+}
+
+func defaultReconnector(c Centrifuge, s ReconnectStrategy) error {
+	log.Print("defaultReconnector: reconnecting...")
+	err := c.Reconnect(s)
+	if err != nil {
+		log.Print("defaultReconnector: ", err)
+	} else {
+		log.Print("defaultReconnector: reconnected")
+	}
+	return nil
 }
 
 // Status shows actual connection status.
@@ -123,12 +152,12 @@ const (
 )
 
 // Centrifuge describes client connection to Centrifugo server.
-type Centrifuge struct {
+type centrifugeImpl struct {
 	mutex        sync.RWMutex
-	URL          string
+	url          string
 	config       *Config
 	credentials  *Credentials
-	conn         *websocket.Conn
+	conn         Connection
 	msgID        int32
 	status       Status
 	clientID     libcentrifugo.ConnID
@@ -141,6 +170,10 @@ type Centrifuge struct {
 	closed       chan struct{}
 	events       *EventHandler
 	reconnect    bool
+
+	project          libcentrifugo.ProjectKey
+	wgworkers        sync.WaitGroup
+	createConnection ConnectionFactory
 }
 
 // MessageHandler is a function to handle messages in channels.
@@ -166,13 +199,13 @@ type SubEventHandler struct {
 
 // Sub respresents subscription on channel.
 type Sub struct {
-	centrifuge    *Centrifuge
+	centrifuge    *centrifugeImpl
 	Channel       string
 	events        *SubEventHandler
-	lastMessageID *libcentrifugo.MessageID
+	lastMessageID *libcentrifugo.MessageID // unused in this version
 }
 
-func (c *Centrifuge) newSub(channel string, events *SubEventHandler) *Sub {
+func (c *centrifugeImpl) newSub(channel string, events *SubEventHandler) *Sub {
 	return &Sub{
 		centrifuge: c,
 		Channel:    channel,
@@ -205,7 +238,8 @@ func (s *Sub) handleMessage(m libcentrifugo.Message) {
 	if s.events != nil && s.events.OnMessage != nil {
 		onMessage = s.events.OnMessage
 	}
-	s.lastMessageID = &m.UID
+	mid := libcentrifugo.MessageID(m.UID)
+	s.lastMessageID = &mid
 	if onMessage != nil {
 		onMessage(s, m)
 	}
@@ -236,35 +270,24 @@ func (s *Sub) resubscribe() error {
 	if err != nil {
 		return err
 	}
-	body, err := s.centrifuge.sendSubscribe(s.Channel, s.lastMessageID, privateSign)
+	_, err = s.centrifuge.sendSubscribe(s.Channel, s.lastMessageID, privateSign)
 	if err != nil {
 		return err
-	}
-	if !body.Status {
-		return ErrBadSubscribeStatus
-	}
-
-	if len(body.Messages) > 0 {
-		for i := len(body.Messages) - 1; i >= 0; i-- {
-			s.handleMessage(body.Messages[i])
-		}
-	} else {
-		s.lastMessageID = &body.Last
 	}
 
 	// resubscribe successfull.
 	return nil
 }
 
-func (c *Centrifuge) nextMsgID() int32 {
+func (c *centrifugeImpl) nextMsgID() int32 {
 	return atomic.AddInt32(&c.msgID, 1)
 }
 
 // NewCenrifuge initializes Centrifuge struct. It accepts URL to Centrifugo server,
 // connection Credentials, event handler and Config.
-func NewCentrifuge(u string, creds *Credentials, events *EventHandler, config *Config) *Centrifuge {
-	c := &Centrifuge{
-		URL:         u,
+func NewCentrifuge(url, project string, creds *Credentials, events *EventHandler, config *Config) Centrifuge {
+	c := &centrifugeImpl{
+		url:         url,
 		subs:        make(map[string]*Sub),
 		config:      config,
 		credentials: creds,
@@ -274,33 +297,24 @@ func NewCentrifuge(u string, creds *Credentials, events *EventHandler, config *C
 		waiters:     make(map[string]chan response),
 		events:      events,
 		reconnect:   true,
+
+		project:          libcentrifugo.ProjectKey(project),
+		wgworkers:        sync.WaitGroup{},
+		createConnection: NewWSConnection,
 	}
+
 	return c
 }
 
-// SetCredentials allows to set new updated credentials when old
-// credentials expired.
-func (c *Centrifuge) SetCredentials(creds *Credentials) {
-	c.mutex.Lock()
-	defer c.mutex.RUnlock()
-	c.credentials = creds
-}
-
 // Connected returns true if client is connected at moment.
-func (c *Centrifuge) Connected() bool {
+func (c *centrifugeImpl) connected() bool {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	return c.status == CONNECTED
 }
 
 // Subscribed returns true if client subscribed on channel.
-func (c *Centrifuge) Subscribed(channel string) bool {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	return c.subscribed(channel)
-}
-
-func (c *Centrifuge) subscribed(channel string) bool {
+func (c *centrifugeImpl) subscribed(channel string) bool {
 	c.subsMutex.RLock()
 	_, ok := c.subs[channel]
 	c.subsMutex.RUnlock()
@@ -309,13 +323,14 @@ func (c *Centrifuge) subscribed(channel string) bool {
 
 // ClientID returns client ID of this connection. It only available after connection
 // was established and authorized.
-func (c *Centrifuge) ClientID() string {
+func (c *centrifugeImpl) ClientID() string {
+
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
 	return string(c.clientID)
 }
 
-func (c *Centrifuge) handleError(err error) {
+func (c *centrifugeImpl) handleError(err error) {
 	var onError ErrorHandler
 	if c.events != nil && c.events.OnError != nil {
 		onError = c.events.OnError
@@ -329,7 +344,7 @@ func (c *Centrifuge) handleError(err error) {
 }
 
 // Close closes Centrifuge connection and clean ups everything.
-func (c *Centrifuge) Close() {
+func (c *centrifugeImpl) Close() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -361,10 +376,12 @@ func (c *Centrifuge) Close() {
 		close(c.closed)
 	}
 
+	c.wgworkers.Wait()
+
 	c.status = CLOSED
 }
 
-func (c *Centrifuge) handleDisconnect(err error) {
+func (c *centrifugeImpl) handleDisconnect(err error) {
 	c.mutex.Lock()
 	if c.status == CLOSED || c.status == RECONNECTING {
 		c.mutex.Unlock()
@@ -388,6 +405,8 @@ func (c *Centrifuge) handleDisconnect(err error) {
 		close(c.closed)
 	}
 
+	c.wgworkers.Wait()
+
 	c.status = DISCONNECTED
 
 	var onDisconnect DisconnectHandler
@@ -404,7 +423,7 @@ func (c *Centrifuge) handleDisconnect(err error) {
 }
 
 type ReconnectStrategy interface {
-	reconnect(c *Centrifuge) error
+	reconnect(c *centrifugeImpl) error
 }
 
 type PeriodicReconnect struct {
@@ -417,7 +436,7 @@ var DefaultPeriodicReconnect = &PeriodicReconnect{
 	NumReconnect:      0,
 }
 
-func (r *PeriodicReconnect) reconnect(c *Centrifuge) error {
+func (r *PeriodicReconnect) reconnect(c *centrifugeImpl) error {
 	reconnects := 0
 	for {
 		if r.NumReconnect > 0 && reconnects >= r.NumReconnect {
@@ -458,7 +477,7 @@ var DefaultBackoffReconnect = &BackoffReconnect{
 	Jitter:       true,
 }
 
-func (r *BackoffReconnect) reconnect(c *Centrifuge) error {
+func (r *BackoffReconnect) reconnect(c *centrifugeImpl) error {
 	b := &backoff.Backoff{
 		Min:    r.Min,
 		Max:    r.Max,
@@ -486,7 +505,7 @@ func (r *BackoffReconnect) reconnect(c *Centrifuge) error {
 	return ErrReconnectFailed
 }
 
-func (c *Centrifuge) doReconnect() error {
+func (c *centrifugeImpl) doReconnect() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 
@@ -507,7 +526,7 @@ func (c *Centrifuge) doReconnect() error {
 	return nil
 }
 
-func (c *Centrifuge) Reconnect(strategy ReconnectStrategy) error {
+func (c *centrifugeImpl) Reconnect(strategy ReconnectStrategy) error {
 	c.mutex.Lock()
 	reconnect := c.reconnect
 	c.mutex.Unlock()
@@ -520,7 +539,7 @@ func (c *Centrifuge) Reconnect(strategy ReconnectStrategy) error {
 	return strategy.reconnect(c)
 }
 
-func (c *Centrifuge) resubscribe() error {
+func (c *centrifugeImpl) resubscribe() error {
 	for _, sub := range c.subs {
 		err := sub.resubscribe()
 		if err != nil {
@@ -530,9 +549,9 @@ func (c *Centrifuge) resubscribe() error {
 	return nil
 }
 
-func (c *Centrifuge) read() {
+func (c *centrifugeImpl) read() {
 	for {
-		_, message, err := c.conn.ReadMessage()
+		message, err := c.conn.ReadMessage()
 		if err != nil {
 			c.handleDisconnect(err)
 			return
@@ -546,7 +565,10 @@ func (c *Centrifuge) read() {
 	}
 }
 
-func (c *Centrifuge) run() {
+func (c *centrifugeImpl) run() {
+	c.wgworkers.Add(1)
+	defer c.wgworkers.Done()
+
 	for {
 		select {
 		case msg := <-c.receive:
@@ -555,9 +577,7 @@ func (c *Centrifuge) run() {
 				c.handleError(err)
 			}
 		case msg := <-c.write:
-			c.conn.SetWriteDeadline(time.Now().Add(c.config.Timeout))
-			err := c.conn.WriteMessage(websocket.TextMessage, msg)
-			c.conn.SetWriteDeadline(time.Time{})
+			err := c.conn.WriteMessage(msg)
 			if err != nil {
 				c.handleError(err)
 			}
@@ -590,11 +610,13 @@ func responsesFromClientMsg(msg []byte) ([]response, error) {
 		if err != nil {
 			return nil, err
 		}
+	default:
+		return nil, ErrUnexpectedMessageData
 	}
 	return resps, nil
 }
 
-func (c *Centrifuge) handle(msg []byte) error {
+func (c *centrifugeImpl) handle(msg []byte) error {
 	if len(msg) == 0 {
 		return nil
 	}
@@ -619,7 +641,7 @@ func (c *Centrifuge) handle(msg []byte) error {
 	return nil
 }
 
-func (c *Centrifuge) handleAsyncResponse(resp response) error {
+func (c *centrifugeImpl) handleAsyncResponse(resp response) error {
 	method := resp.Method
 	errorStr := resp.Error
 	body := resp.Body
@@ -679,20 +701,14 @@ func (c *Centrifuge) handleAsyncResponse(resp response) error {
 		}
 		sub.handleLeaveMessage(b.Data)
 	case "disconnect":
-		var b libcentrifugo.DisconnectBody
-		err := json.Unmarshal(body, &b)
-		if err != nil {
-			log.Println("malformed disconnect message")
-			return nil
-		}
-		c.handleDisconnectMessage(b.Reason, b.Reconnect)
+		c.handleDisconnectMessage("disconnected", c.config.Reconnect)
 	default:
 		return nil
 	}
 	return nil
 }
 
-func (c *Centrifuge) handleDisconnectMessage(reason string, shouldReconnect bool) error {
+func (c *centrifugeImpl) handleDisconnectMessage(reason string, shouldReconnect bool) error {
 	if !shouldReconnect {
 		c.mutex.Lock()
 		c.reconnect = false
@@ -704,22 +720,8 @@ func (c *Centrifuge) handleDisconnectMessage(reason string, shouldReconnect bool
 }
 
 // Lock must be held outside
-func (c *Centrifuge) createWSConn() (*websocket.Conn, error) {
-	wsHeaders := http.Header{}
-	dialer := websocket.DefaultDialer
-	conn, resp, err := dialer.Dial(c.URL, wsHeaders)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusSwitchingProtocols {
-		return nil, errors.New("Wrong status code while connecting to server")
-	}
-	return conn, nil
-}
-
-// Lock must be held outside
-func (c *Centrifuge) connectWS() error {
-	conn, err := c.createWSConn()
+func (c *centrifugeImpl) connectWS() error {
+	conn, err := c.createConnection(c.url, c.config.Timeout)
 	if err != nil {
 		return err
 	}
@@ -728,7 +730,7 @@ func (c *Centrifuge) connectWS() error {
 }
 
 // Lock must be held outside
-func (c *Centrifuge) connect() error {
+func (c *centrifugeImpl) connect() error {
 
 	err := c.connectWS()
 	if err != nil {
@@ -746,7 +748,7 @@ func (c *Centrifuge) connect() error {
 		return err
 	}
 
-	if body.Expires && body.Expired {
+	if body.Expired {
 		// Try to refresh credentials and repeat connection attempt.
 		err = c.refreshCredentials()
 		if err != nil {
@@ -756,15 +758,17 @@ func (c *Centrifuge) connect() error {
 		if err != nil {
 			return err
 		}
-		if body.Expires && body.Expired {
+		if body.Expired {
 			return ErrClientExpired
 		}
 	}
 
-	c.clientID = body.Client
+	c.clientID = *body.Client
 
-	if body.Expires {
+	if body.TTL != nil && *body.TTL > 0 {
 		go func(interval int64) {
+			c.wgworkers.Add(1)
+
 			tick := time.After(time.Duration(interval) * time.Second)
 			select {
 			case <-c.closed:
@@ -775,7 +779,7 @@ func (c *Centrifuge) connect() error {
 					log.Println(err)
 				}
 			}
-		}(body.TTL)
+		}(*body.TTL)
 	}
 
 	c.status = CONNECTED
@@ -784,7 +788,7 @@ func (c *Centrifuge) connect() error {
 }
 
 // Connect connects to Centrifugo and sends connect message to authorize.
-func (c *Centrifuge) Connect() error {
+func (c *centrifugeImpl) Connect() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	if c.status == CONNECTED {
@@ -793,7 +797,7 @@ func (c *Centrifuge) Connect() error {
 	return c.connect()
 }
 
-func (c *Centrifuge) refreshCredentials() error {
+func (c *centrifugeImpl) refreshCredentials() error {
 	var onRefresh RefreshHandler
 	if c.events != nil && c.events.OnRefresh != nil {
 		onRefresh = c.events.OnRefresh
@@ -810,7 +814,7 @@ func (c *Centrifuge) refreshCredentials() error {
 	return nil
 }
 
-func (c *Centrifuge) sendRefresh() error {
+func (c *centrifugeImpl) sendRefresh() error {
 
 	err := c.refreshCredentials()
 	if err != nil {
@@ -839,27 +843,27 @@ func (c *Centrifuge) sendRefresh() error {
 	if err != nil {
 		return err
 	}
-	if body.Expires {
-		if body.Expired {
-			return ErrClientExpired
-		}
-		go func(interval int64) {
-			tick := time.After(time.Duration(interval) * time.Second)
-			select {
-			case <-c.closed:
-				return
-			case <-tick:
-				err := c.sendRefresh()
-				if err != nil {
-					log.Println(err)
-				}
-			}
-		}(body.TTL)
-	}
+	//	if body.Expires {
+	//		if body.Expired {
+	//			return ErrClientExpired
+	//		}
+	//		go func(interval int64) {
+	//			tick := time.After(time.Duration(interval) * time.Second)
+	//			select {
+	//			case <-c.closed:
+	//				return
+	//			case <-tick:
+	//				err := c.sendRefresh()
+	//				if err != nil {
+	//					log.Println(err)
+	//				}
+	//			}
+	//		}(body.TTL)
+	//	}
 	return nil
 }
 
-func (c *Centrifuge) refreshParams(creds *Credentials) *libcentrifugo.RefreshClientCommand {
+func (c *centrifugeImpl) refreshParams(creds *Credentials) *libcentrifugo.RefreshClientCommand {
 	return &libcentrifugo.RefreshClientCommand{
 		User:      libcentrifugo.UserID(creds.User),
 		Timestamp: creds.Timestamp,
@@ -868,7 +872,7 @@ func (c *Centrifuge) refreshParams(creds *Credentials) *libcentrifugo.RefreshCli
 	}
 }
 
-func (c *Centrifuge) sendConnect() (libcentrifugo.ConnectBody, error) {
+func (c *centrifugeImpl) sendConnect() (libcentrifugo.ConnectBody, error) {
 	params := c.connectParams()
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -894,21 +898,22 @@ func (c *Centrifuge) sendConnect() (libcentrifugo.ConnectBody, error) {
 	return body, nil
 }
 
-func (c *Centrifuge) connectParams() *libcentrifugo.ConnectClientCommand {
+func (c *centrifugeImpl) connectParams() *libcentrifugo.ConnectClientCommand {
 	return &libcentrifugo.ConnectClientCommand{
 		User:      libcentrifugo.UserID(c.credentials.User),
 		Timestamp: c.credentials.Timestamp,
 		Info:      c.credentials.Info,
 		Token:     c.credentials.Token,
+		Project:   c.project,
 	}
 }
 
-func (c *Centrifuge) privateSign(channel string) (*PrivateSign, error) {
+func (c *centrifugeImpl) privateSign(channel string) (*PrivateSign, error) {
 	var ps *PrivateSign
 	var err error
 	if strings.HasPrefix(channel, c.config.PrivateChannelPrefix) {
 		if c.events != nil && c.events.OnPrivateSub != nil {
-			privateReq := newPrivateRequest(c.ClientID(), channel)
+			privateReq := newPrivateRequest(string(c.clientID), channel)
 			ps, err = c.events.OnPrivateSub(c, privateReq)
 			if err != nil {
 				return nil, err
@@ -921,8 +926,8 @@ func (c *Centrifuge) privateSign(channel string) (*PrivateSign, error) {
 }
 
 // Subscribe allows to subscribe on channel.
-func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, error) {
-	if !c.Connected() {
+func (c *centrifugeImpl) Subscribe(channel string, events *SubEventHandler) (*Sub, error) {
+	if !c.connected() {
 		return nil, ErrClientDisconnected
 	}
 	privateSign, err := c.privateSign(channel)
@@ -934,7 +939,7 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 	c.subs[channel] = sub
 	c.subsMutex.Unlock()
 
-	body, err := c.sendSubscribe(channel, sub.lastMessageID, privateSign)
+	_, err = c.sendSubscribe(channel, sub.lastMessageID, privateSign)
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -945,42 +950,25 @@ func (c *Centrifuge) Subscribe(channel string, events *SubEventHandler) (*Sub, e
 		c.subsMutex.Unlock()
 		return nil, err
 	}
-	if !body.Status {
-		c.subsMutex.Lock()
-		delete(c.subs, channel)
-		c.subsMutex.Unlock()
-		return nil, ErrBadSubscribeStatus
-	}
-
-	if len(body.Messages) > 0 {
-		for i := len(body.Messages) - 1; i >= 0; i-- {
-			sub.handleMessage(body.Messages[i])
-		}
-	} else {
-		sub.lastMessageID = &body.Last
-	}
 
 	// Subscription on channel successfull.
 	return sub, nil
 }
 
-func (c *Centrifuge) subscribeParams(channel string, lastMessageID *libcentrifugo.MessageID, privateSign *PrivateSign) *libcentrifugo.SubscribeClientCommand {
+func (c *centrifugeImpl) subscribeParams(channel string, lastMessageID *libcentrifugo.MessageID, privateSign *PrivateSign) *libcentrifugo.SubscribeClientCommand {
 	cmd := &libcentrifugo.SubscribeClientCommand{
 		Channel: libcentrifugo.Channel(channel),
 	}
-	if lastMessageID != nil {
-		cmd.Recover = true
-		cmd.Last = *lastMessageID
-	}
+
 	if privateSign != nil {
-		cmd.Client = libcentrifugo.ConnID(c.ClientID())
+		cmd.Client = libcentrifugo.ConnID(string(c.clientID))
 		cmd.Info = privateSign.Info
 		cmd.Sign = privateSign.Sign
 	}
 	return cmd
 }
 
-func (c *Centrifuge) sendSubscribe(channel string, lastMessageID *libcentrifugo.MessageID, privateSign *PrivateSign) (libcentrifugo.SubscribeBody, error) {
+func (c *centrifugeImpl) sendSubscribe(channel string, lastMessageID *libcentrifugo.MessageID, privateSign *PrivateSign) (libcentrifugo.SubscribeBody, error) {
 	params := c.subscribeParams(channel, lastMessageID, privateSign)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1006,7 +994,7 @@ func (c *Centrifuge) sendSubscribe(channel string, lastMessageID *libcentrifugo.
 	return body, nil
 }
 
-func (c *Centrifuge) publish(channel string, data []byte) error {
+func (c *centrifugeImpl) publish(channel string, data []byte) error {
 	body, err := c.sendPublish(channel, data)
 	if err != nil {
 		return err
@@ -1017,14 +1005,14 @@ func (c *Centrifuge) publish(channel string, data []byte) error {
 	return nil
 }
 
-func (c *Centrifuge) publishParams(channel string, data []byte) *libcentrifugo.PublishClientCommand {
+func (c *centrifugeImpl) publishParams(channel string, data []byte) *libcentrifugo.PublishClientCommand {
 	return &libcentrifugo.PublishClientCommand{
 		Channel: libcentrifugo.Channel(channel),
 		Data:    json.RawMessage(data),
 	}
 }
 
-func (c *Centrifuge) sendPublish(channel string, data []byte) (libcentrifugo.PublishBody, error) {
+func (c *centrifugeImpl) sendPublish(channel string, data []byte) (libcentrifugo.PublishBody, error) {
 	params := c.publishParams(channel, data)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1050,7 +1038,7 @@ func (c *Centrifuge) sendPublish(channel string, data []byte) (libcentrifugo.Pub
 	return body, nil
 }
 
-func (c *Centrifuge) history(channel string) ([]libcentrifugo.Message, error) {
+func (c *centrifugeImpl) history(channel string) ([]libcentrifugo.Message, error) {
 	body, err := c.sendHistory(channel)
 	if err != nil {
 		return []libcentrifugo.Message{}, err
@@ -1058,13 +1046,13 @@ func (c *Centrifuge) history(channel string) ([]libcentrifugo.Message, error) {
 	return body.Data, nil
 }
 
-func (c *Centrifuge) historyParams(channel string) *libcentrifugo.HistoryClientCommand {
+func (c *centrifugeImpl) historyParams(channel string) *libcentrifugo.HistoryClientCommand {
 	return &libcentrifugo.HistoryClientCommand{
 		Channel: libcentrifugo.Channel(channel),
 	}
 }
 
-func (c *Centrifuge) sendHistory(channel string) (libcentrifugo.HistoryBody, error) {
+func (c *centrifugeImpl) sendHistory(channel string) (libcentrifugo.HistoryBody, error) {
 	params := c.historyParams(channel)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1090,7 +1078,7 @@ func (c *Centrifuge) sendHistory(channel string) (libcentrifugo.HistoryBody, err
 	return body, nil
 }
 
-func (c *Centrifuge) presence(channel string) (map[libcentrifugo.ConnID]libcentrifugo.ClientInfo, error) {
+func (c *centrifugeImpl) presence(channel string) (map[libcentrifugo.ConnID]libcentrifugo.ClientInfo, error) {
 	body, err := c.sendPresence(channel)
 	if err != nil {
 		return map[libcentrifugo.ConnID]libcentrifugo.ClientInfo{}, err
@@ -1098,13 +1086,13 @@ func (c *Centrifuge) presence(channel string) (map[libcentrifugo.ConnID]libcentr
 	return body.Data, nil
 }
 
-func (c *Centrifuge) presenceParams(channel string) *libcentrifugo.PresenceClientCommand {
+func (c *centrifugeImpl) presenceParams(channel string) *libcentrifugo.PresenceClientCommand {
 	return &libcentrifugo.PresenceClientCommand{
 		Channel: libcentrifugo.Channel(channel),
 	}
 }
 
-func (c *Centrifuge) sendPresence(channel string) (libcentrifugo.PresenceBody, error) {
+func (c *centrifugeImpl) sendPresence(channel string) (libcentrifugo.PresenceBody, error) {
 	params := c.presenceParams(channel)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1130,30 +1118,30 @@ func (c *Centrifuge) sendPresence(channel string) (libcentrifugo.PresenceBody, e
 	return body, nil
 }
 
-func (c *Centrifuge) unsubscribe(channel string) error {
+func (c *centrifugeImpl) unsubscribe(channel string) error {
 	if !c.subscribed(channel) {
 		return nil
 	}
-	body, err := c.sendUnsubscribe(channel)
+	_, err := c.sendUnsubscribe(channel)
 	if err != nil {
 		return err
 	}
-	if !body.Status {
-		return ErrBadUnsubscribeStatus
-	}
+	//	if !body.Status {
+	//		return ErrBadUnsubscribeStatus
+	//	}
 	c.subsMutex.Lock()
 	delete(c.subs, channel)
 	c.subsMutex.Unlock()
 	return nil
 }
 
-func (c *Centrifuge) unsubscribeParams(channel string) *libcentrifugo.UnsubscribeClientCommand {
+func (c *centrifugeImpl) unsubscribeParams(channel string) *libcentrifugo.UnsubscribeClientCommand {
 	return &libcentrifugo.UnsubscribeClientCommand{
 		Channel: libcentrifugo.Channel(channel),
 	}
 }
 
-func (c *Centrifuge) sendUnsubscribe(channel string) (libcentrifugo.UnsubscribeBody, error) {
+func (c *centrifugeImpl) sendUnsubscribe(channel string) (libcentrifugo.UnsubscribeBody, error) {
 	params := c.unsubscribeParams(channel)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1179,7 +1167,7 @@ func (c *Centrifuge) sendUnsubscribe(channel string) (libcentrifugo.UnsubscribeB
 	return body, nil
 }
 
-func (c *Centrifuge) sendSync(uid string, msg []byte) (response, error) {
+func (c *centrifugeImpl) sendSync(uid string, msg []byte) (response, error) {
 	wait := make(chan response)
 	err := c.addWaiter(uid, wait)
 	defer c.removeWaiter(uid)
@@ -1193,7 +1181,7 @@ func (c *Centrifuge) sendSync(uid string, msg []byte) (response, error) {
 	return c.wait(wait)
 }
 
-func (c *Centrifuge) send(msg []byte) error {
+func (c *centrifugeImpl) send(msg []byte) error {
 	select {
 	case <-c.closed:
 		return ErrClientDisconnected
@@ -1203,7 +1191,7 @@ func (c *Centrifuge) send(msg []byte) error {
 	return nil
 }
 
-func (c *Centrifuge) addWaiter(uid string, ch chan response) error {
+func (c *centrifugeImpl) addWaiter(uid string, ch chan response) error {
 	c.waitersMutex.Lock()
 	defer c.waitersMutex.Unlock()
 	if _, ok := c.waiters[uid]; ok {
@@ -1213,14 +1201,14 @@ func (c *Centrifuge) addWaiter(uid string, ch chan response) error {
 	return nil
 }
 
-func (c *Centrifuge) removeWaiter(uid string) error {
+func (c *centrifugeImpl) removeWaiter(uid string) error {
 	c.waitersMutex.Lock()
 	defer c.waitersMutex.Unlock()
 	delete(c.waiters, uid)
 	return nil
 }
 
-func (c *Centrifuge) wait(ch chan response) (response, error) {
+func (c *centrifugeImpl) wait(ch chan response) (response, error) {
 	select {
 	case data, ok := <-ch:
 		if !ok {
