@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/centrifugal/centrifugo/libcentrifugo"
 	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
 )
 
@@ -39,12 +38,12 @@ func credentials() *centrifuge.Credentials {
 	}
 }
 
-func newConnection(done chan struct{}) *centrifuge.Centrifuge {
+func newConnection(done chan struct{}) centrifuge.Centrifuge {
 	creds := credentials()
 	wsURL := "ws://localhost:8000/connection/websocket"
 
 	events := &centrifuge.EventHandler{
-		OnDisconnect: func(c *centrifuge.Centrifuge) error {
+		OnDisconnect: func(c centrifuge.Centrifuge) error {
 			log.Println("Disconnected")
 			err := c.Reconnect(centrifuge.DefaultBackoffReconnect)
 			if err != nil {
@@ -64,8 +63,8 @@ func newConnection(done chan struct{}) *centrifuge.Centrifuge {
 		log.Fatalln(err)
 	}
 
-	onMessage := func(sub *centrifuge.Sub, msg libcentrifugo.Message) error {
-		log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel, msg))
+	onMessage := func(sub centrifuge.Sub, msg centrifuge.Message) error {
+		log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel(), msg))
 		return nil
 	}
 

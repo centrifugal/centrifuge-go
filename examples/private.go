@@ -32,12 +32,12 @@ func credentials() *centrifuge.Credentials {
 	}
 }
 
-func newConnection() *centrifuge.Centrifuge {
+func newConnection() centrifuge.Centrifuge {
 	creds := credentials()
 	wsURL := "ws://localhost:8000/connection/websocket"
 
 	events := &centrifuge.EventHandler{
-		OnPrivateSub: func(c *centrifuge.Centrifuge, req *centrifuge.PrivateRequest) (*centrifuge.PrivateSign, error) {
+		OnPrivateSub: func(c centrifuge.Centrifuge, req *centrifuge.PrivateRequest) (*centrifuge.PrivateSign, error) {
 			// Here we allow everyone to subscribe on private channel.
 			// To reject subscription we could return any error from this func.
 			// In most real application secret key must not be kept on client side
