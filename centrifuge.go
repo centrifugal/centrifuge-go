@@ -13,14 +13,23 @@ import (
 	"github.com/jpillora/backoff"
 )
 
+// Centrifuge represents connection to Centrifugo server.
 type Centrifuge interface {
+	// Connect allows to make connection to Centrifugo server.
 	Connect() error
+	// Reconnect allows to start reconnecting to Centrifugo.
 	Reconnect(ReconnectStrategy) error
+	// Subscribe allows to subscribe on channel and react on various subscription events.
 	Subscribe(string, *SubEventHandler) (Sub, error)
+	// ClientID returns client ID that Centrifugo gave to connection. Or empty string if no client ID issued yet.
 	ClientID() string
+	// Connected allows to check that client connected to Centrifugo at moment.
 	Connected() bool
+	// Subscribed allows to check that client subscribed on channel at moment.
 	Subscribed(channel string) bool
+	// SetCredentials allows to set updated credentials to client, useful when connection check mechanism available.
 	SetCredentials(creds *Credentials)
+	// Close closes connection to Centrifugo and clears all subscriptions.
 	Close()
 }
 
@@ -198,10 +207,15 @@ type SubEventHandler struct {
 
 // Sub respresents subscription on channel.
 type Sub interface {
+	// Channel allows to get channel this subscription belongs to.
 	Channel() string
+	// Publish allows to publish JSON data to channel.
 	Publish(data []byte) error
+	// History allows to get history messages for channel.
 	History() ([]Message, error)
+	// Presence allows to get presence info for channel.
 	Presence() (map[string]ClientInfo, error)
+	// Unsubscribe allows to unsubscribe from channel.
 	Unsubscribe() error
 }
 
