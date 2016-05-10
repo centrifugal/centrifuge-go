@@ -768,6 +768,7 @@ func (c *centrifugeImpl) connect() error {
 	if body.TTL != nil && *body.TTL > 0 {
 		go func(interval int64) {
 			c.wgworkers.Add(1)
+			defer c.wgworkers.Done()
 
 			tick := time.After(time.Duration(interval) * time.Second)
 			select {
