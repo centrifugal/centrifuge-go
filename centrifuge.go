@@ -27,8 +27,6 @@ type Centrifuge interface {
 	Connected() bool
 	// Subscribed allows to check that client subscribed on channel at moment.
 	Subscribed(channel string) bool
-	// SetCredentials allows to set updated credentials to client, useful when connection check mechanism available.
-	SetCredentials(creds *Credentials)
 	// Close closes connection to Centrifugo and clears all subscriptions.
 	Close()
 }
@@ -80,19 +78,6 @@ var DefaultConfig = &Config{
 	PrivateChannelPrefix: DefaultPrivateChannelPrefix,
 	Timeout:              DefaultTimeout,
 	Reconnect:            DefaultReconnect,
-}
-
-type clientCommand struct {
-	UID    string      `json:"uid"`
-	Method string      `json:"method"`
-	Params interface{} `json:"params"`
-}
-
-type response struct {
-	UID    string          `json:"uid,omitempty"`
-	Error  string          `json:"error"`
-	Method string          `json:"method"`
-	Body   json.RawMessage `json:"body"`
 }
 
 type PrivateSign struct {
@@ -337,14 +322,6 @@ func NewCentrifuge(u string, creds *Credentials, events *EventHandler, config *C
 		createConn:  NewWSConnection,
 	}
 	return c
-}
-
-// SetCredentials allows to set new updated credentials when old
-// credentials expired.
-func (c *centrifuge) SetCredentials(creds *Credentials) {
-	c.mutex.Lock()
-	defer c.mutex.RUnlock()
-	c.credentials = creds
 }
 
 // Connected returns true if client is connected at moment.
@@ -706,7 +683,7 @@ func (c *centrifuge) handleAsyncResponse(resp response) error {
 		}
 		sub.handleMessage(m)
 	case "join":
-		var b JoinLeaveMessage
+		var b joinLeaveMessage
 		err := json.Unmarshal(body, &b)
 		if err != nil {
 			log.Println("malformed join message")
@@ -723,7 +700,7 @@ func (c *centrifuge) handleAsyncResponse(resp response) error {
 		}
 		sub.handleJoinMessage(b.Data)
 	case "leave":
-		var b JoinLeaveMessage
+		var b joinLeaveMessage
 		err := json.Unmarshal(body, &b)
 		if err != nil {
 			log.Println("malformed leave message")
@@ -740,7 +717,7 @@ func (c *centrifuge) handleAsyncResponse(resp response) error {
 		}
 		sub.handleLeaveMessage(b.Data)
 	case "disconnect":
-		var b DisconnectResponseBody
+		var b disconnectResponseBody
 		err := json.Unmarshal(body, &b)
 		if err != nil {
 			log.Println("malformed disconnect message")
@@ -785,7 +762,7 @@ func (c *centrifuge) connect() error {
 
 	go c.read()
 
-	var body ConnectResponseBody
+	var body connectResponseBody
 
 	body, err = c.sendConnect()
 	if err != nil {
@@ -880,7 +857,7 @@ func (c *centrifuge) sendRefresh() error {
 	if r.Error != "" {
 		return errors.New(r.Error)
 	}
-	var body ConnectResponseBody
+	var body connectResponseBody
 	err = json.Unmarshal(r.Body, &body)
 	if err != nil {
 		return err
@@ -905,8 +882,8 @@ func (c *centrifuge) sendRefresh() error {
 	return nil
 }
 
-func (c *centrifuge) refreshParams(creds *Credentials) *RefreshClientCommand {
-	return &RefreshClientCommand{
+func (c *centrifuge) refreshParams(creds *Credentials) *refreshClientCommand {
+	return &refreshClientCommand{
 		User:      creds.User,
 		Timestamp: creds.Timestamp,
 		Info:      creds.Info,
@@ -914,7 +891,7 @@ func (c *centrifuge) refreshParams(creds *Credentials) *RefreshClientCommand {
 	}
 }
 
-func (c *centrifuge) sendConnect() (ConnectResponseBody, error) {
+func (c *centrifuge) sendConnect() (connectResponseBody, error) {
 	params := c.connectParams()
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -923,25 +900,25 @@ func (c *centrifuge) sendConnect() (ConnectResponseBody, error) {
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
-		return ConnectResponseBody{}, err
+		return connectResponseBody{}, err
 	}
 	r, err := c.sendSync(cmd.UID, cmdBytes)
 	if err != nil {
-		return ConnectResponseBody{}, err
+		return connectResponseBody{}, err
 	}
 	if r.Error != "" {
-		return ConnectResponseBody{}, errors.New(r.Error)
+		return connectResponseBody{}, errors.New(r.Error)
 	}
-	var body ConnectResponseBody
+	var body connectResponseBody
 	err = json.Unmarshal(r.Body, &body)
 	if err != nil {
-		return ConnectResponseBody{}, err
+		return connectResponseBody{}, err
 	}
 	return body, nil
 }
 
-func (c *centrifuge) connectParams() *ConnectClientCommand {
-	return &ConnectClientCommand{
+func (c *centrifuge) connectParams() *connectClientCommand {
+	return &connectClientCommand{
 		User:      c.credentials.User,
 		Timestamp: c.credentials.Timestamp,
 		Info:      c.credentials.Info,
@@ -1011,8 +988,8 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 	return sub, nil
 }
 
-func (c *centrifuge) subscribeParams(channel string, lastMessageID *string, privateSign *PrivateSign) *SubscribeClientCommand {
-	cmd := &SubscribeClientCommand{
+func (c *centrifuge) subscribeParams(channel string, lastMessageID *string, privateSign *PrivateSign) *subscribeClientCommand {
+	cmd := &subscribeClientCommand{
 		Channel: channel,
 	}
 	if lastMessageID != nil {
@@ -1027,7 +1004,7 @@ func (c *centrifuge) subscribeParams(channel string, lastMessageID *string, priv
 	return cmd
 }
 
-func (c *centrifuge) sendSubscribe(channel string, lastMessageID *string, privateSign *PrivateSign) (SubscribeResponseBody, error) {
+func (c *centrifuge) sendSubscribe(channel string, lastMessageID *string, privateSign *PrivateSign) (subscribeResponseBody, error) {
 	params := c.subscribeParams(channel, lastMessageID, privateSign)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1036,19 +1013,19 @@ func (c *centrifuge) sendSubscribe(channel string, lastMessageID *string, privat
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
-		return SubscribeResponseBody{}, err
+		return subscribeResponseBody{}, err
 	}
 	r, err := c.sendSync(cmd.UID, cmdBytes)
 	if err != nil {
-		return SubscribeResponseBody{}, err
+		return subscribeResponseBody{}, err
 	}
 	if r.Error != "" {
-		return SubscribeResponseBody{}, errors.New(r.Error)
+		return subscribeResponseBody{}, errors.New(r.Error)
 	}
-	var body SubscribeResponseBody
+	var body subscribeResponseBody
 	err = json.Unmarshal(r.Body, &body)
 	if err != nil {
-		return SubscribeResponseBody{}, err
+		return subscribeResponseBody{}, err
 	}
 	return body, nil
 }
@@ -1064,14 +1041,14 @@ func (c *centrifuge) publish(channel string, data []byte) error {
 	return nil
 }
 
-func (c *centrifuge) publishParams(channel string, data []byte) *PublishClientCommand {
-	return &PublishClientCommand{
+func (c *centrifuge) publishParams(channel string, data []byte) *publishClientCommand {
+	return &publishClientCommand{
 		Channel: channel,
 		Data:    json.RawMessage(data),
 	}
 }
 
-func (c *centrifuge) sendPublish(channel string, data []byte) (PublishResponseBody, error) {
+func (c *centrifuge) sendPublish(channel string, data []byte) (publishResponseBody, error) {
 	params := c.publishParams(channel, data)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1080,19 +1057,19 @@ func (c *centrifuge) sendPublish(channel string, data []byte) (PublishResponseBo
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
-		return PublishResponseBody{}, err
+		return publishResponseBody{}, err
 	}
 	r, err := c.sendSync(cmd.UID, cmdBytes)
 	if err != nil {
-		return PublishResponseBody{}, err
+		return publishResponseBody{}, err
 	}
 	if r.Error != "" {
-		return PublishResponseBody{}, errors.New(r.Error)
+		return publishResponseBody{}, errors.New(r.Error)
 	}
-	var body PublishResponseBody
+	var body publishResponseBody
 	err = json.Unmarshal(r.Body, &body)
 	if err != nil {
-		return PublishResponseBody{}, err
+		return publishResponseBody{}, err
 	}
 	return body, nil
 }
@@ -1105,13 +1082,13 @@ func (c *centrifuge) history(channel string) ([]Message, error) {
 	return body.Data, nil
 }
 
-func (c *centrifuge) historyParams(channel string) *HistoryClientCommand {
-	return &HistoryClientCommand{
+func (c *centrifuge) historyParams(channel string) *historyClientCommand {
+	return &historyClientCommand{
 		Channel: channel,
 	}
 }
 
-func (c *centrifuge) sendHistory(channel string) (HistoryResponseBody, error) {
+func (c *centrifuge) sendHistory(channel string) (historyResponseBody, error) {
 	params := c.historyParams(channel)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1120,19 +1097,19 @@ func (c *centrifuge) sendHistory(channel string) (HistoryResponseBody, error) {
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
-		return HistoryResponseBody{}, err
+		return historyResponseBody{}, err
 	}
 	r, err := c.sendSync(cmd.UID, cmdBytes)
 	if err != nil {
-		return HistoryResponseBody{}, err
+		return historyResponseBody{}, err
 	}
 	if r.Error != "" {
-		return HistoryResponseBody{}, errors.New(r.Error)
+		return historyResponseBody{}, errors.New(r.Error)
 	}
-	var body HistoryResponseBody
+	var body historyResponseBody
 	err = json.Unmarshal(r.Body, &body)
 	if err != nil {
-		return HistoryResponseBody{}, err
+		return historyResponseBody{}, err
 	}
 	return body, nil
 }
@@ -1145,13 +1122,13 @@ func (c *centrifuge) presence(channel string) (map[string]ClientInfo, error) {
 	return body.Data, nil
 }
 
-func (c *centrifuge) presenceParams(channel string) *PresenceClientCommand {
-	return &PresenceClientCommand{
+func (c *centrifuge) presenceParams(channel string) *presenceClientCommand {
+	return &presenceClientCommand{
 		Channel: channel,
 	}
 }
 
-func (c *centrifuge) sendPresence(channel string) (PresenceResponseBody, error) {
+func (c *centrifuge) sendPresence(channel string) (presenceResponseBody, error) {
 	params := c.presenceParams(channel)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1160,19 +1137,19 @@ func (c *centrifuge) sendPresence(channel string) (PresenceResponseBody, error) 
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
-		return PresenceResponseBody{}, err
+		return presenceResponseBody{}, err
 	}
 	r, err := c.sendSync(cmd.UID, cmdBytes)
 	if err != nil {
-		return PresenceResponseBody{}, err
+		return presenceResponseBody{}, err
 	}
 	if r.Error != "" {
-		return PresenceResponseBody{}, errors.New(r.Error)
+		return presenceResponseBody{}, errors.New(r.Error)
 	}
-	var body PresenceResponseBody
+	var body presenceResponseBody
 	err = json.Unmarshal(r.Body, &body)
 	if err != nil {
-		return PresenceResponseBody{}, err
+		return presenceResponseBody{}, err
 	}
 	return body, nil
 }
@@ -1194,13 +1171,13 @@ func (c *centrifuge) unsubscribe(channel string) error {
 	return nil
 }
 
-func (c *centrifuge) unsubscribeParams(channel string) *UnsubscribeClientCommand {
-	return &UnsubscribeClientCommand{
+func (c *centrifuge) unsubscribeParams(channel string) *unsubscribeClientCommand {
+	return &unsubscribeClientCommand{
 		Channel: channel,
 	}
 }
 
-func (c *centrifuge) sendUnsubscribe(channel string) (UnsubscribeResponseBody, error) {
+func (c *centrifuge) sendUnsubscribe(channel string) (unsubscribeResponseBody, error) {
 	params := c.unsubscribeParams(channel)
 	cmd := clientCommand{
 		UID:    strconv.Itoa(int(c.nextMsgID())),
@@ -1209,19 +1186,19 @@ func (c *centrifuge) sendUnsubscribe(channel string) (UnsubscribeResponseBody, e
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
-		return UnsubscribeResponseBody{}, err
+		return unsubscribeResponseBody{}, err
 	}
 	r, err := c.sendSync(cmd.UID, cmdBytes)
 	if err != nil {
-		return UnsubscribeResponseBody{}, err
+		return unsubscribeResponseBody{}, err
 	}
 	if r.Error != "" {
-		return UnsubscribeResponseBody{}, errors.New(r.Error)
+		return unsubscribeResponseBody{}, errors.New(r.Error)
 	}
-	var body UnsubscribeResponseBody
+	var body unsubscribeResponseBody
 	err = json.Unmarshal(r.Body, &body)
 	if err != nil {
-		return UnsubscribeResponseBody{}, err
+		return unsubscribeResponseBody{}, err
 	}
 	return body, nil
 }

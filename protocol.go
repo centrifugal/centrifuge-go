@@ -4,6 +4,19 @@ import (
 	"encoding/json"
 )
 
+type clientCommand struct {
+	UID    string      `json:"uid"`
+	Method string      `json:"method"`
+	Params interface{} `json:"params"`
+}
+
+type response struct {
+	UID    string          `json:"uid,omitempty"`
+	Error  string          `json:"error"`
+	Method string          `json:"method"`
+	Body   json.RawMessage `json:"body"`
+}
+
 type ClientInfo struct {
 	User        string           `json:"user"`
 	Client      string           `json:"client"`
@@ -20,26 +33,26 @@ type Message struct {
 	Client    string           `json:"client,omitempty"`
 }
 
-type JoinLeaveMessage struct {
+type joinLeaveMessage struct {
 	Channel string     `json:"channel"`
 	Data    ClientInfo `json:"data"`
 }
 
-type ConnectClientCommand struct {
+type connectClientCommand struct {
 	User      string `json:"user"`
 	Timestamp string `json:"timestamp"`
 	Info      string `json:"info"`
 	Token     string `json:"token"`
 }
 
-type RefreshClientCommand struct {
+type refreshClientCommand struct {
 	User      string `json:"user"`
 	Timestamp string `json:"timestamp"`
 	Info      string `json:"info"`
 	Token     string `json:"token"`
 }
 
-type SubscribeClientCommand struct {
+type subscribeClientCommand struct {
 	Channel string `json:"channel"`
 	Client  string `json:"client"`
 	Last    string `json:"last"`
@@ -48,24 +61,24 @@ type SubscribeClientCommand struct {
 	Sign    string `json:"sign"`
 }
 
-type UnsubscribeClientCommand struct {
+type unsubscribeClientCommand struct {
 	Channel string `json:"channel"`
 }
 
-type PublishClientCommand struct {
+type publishClientCommand struct {
 	Channel string          `json:"channel"`
 	Data    json.RawMessage `json:"data"`
 }
 
-type PresenceClientCommand struct {
+type presenceClientCommand struct {
 	Channel string `json:"channel"`
 }
 
-type HistoryClientCommand struct {
+type historyClientCommand struct {
 	Channel string `json:"channel"`
 }
 
-type ConnectResponseBody struct {
+type connectResponseBody struct {
 	Version string `json:"version"`
 	Client  string `json:"client"`
 	Expires bool   `json:"expires"`
@@ -73,7 +86,7 @@ type ConnectResponseBody struct {
 	TTL     int64  `json:"ttl"`
 }
 
-type SubscribeResponseBody struct {
+type subscribeResponseBody struct {
 	Channel   string    `json:"channel"`
 	Status    bool      `json:"status"`
 	Last      string    `json:"last"`
@@ -81,27 +94,27 @@ type SubscribeResponseBody struct {
 	Recovered bool      `json:"recovered"`
 }
 
-type UnsubscribeResponseBody struct {
+type unsubscribeResponseBody struct {
 	Channel string `json:"channel"`
 	Status  bool   `json:"status"`
 }
 
-type PublishResponseBody struct {
+type publishResponseBody struct {
 	Channel string `json:"channel"`
 	Status  bool   `json:"status"`
 }
 
-type PresenceResponseBody struct {
+type presenceResponseBody struct {
 	Channel string                `json:"channel"`
 	Data    map[string]ClientInfo `json:"data"`
 }
 
-type HistoryResponseBody struct {
+type historyResponseBody struct {
 	Channel string    `json:"channel"`
 	Data    []Message `json:"data"`
 }
 
-type DisconnectResponseBody struct {
+type disconnectResponseBody struct {
 	Reason    string `json:"reason"`
 	Reconnect bool   `json:"reconnect"`
 }
