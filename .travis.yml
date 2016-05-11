@@ -1,6 +1,5 @@
 language: go
 install:
-- go get -t ./...
 - go get github.com/centrifugal/centrifugo/libcentrifugo/auth
 - go get github.com/gorilla/websocket
 - go get github.com/jpillora/backoff
