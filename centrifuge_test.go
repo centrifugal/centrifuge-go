@@ -73,7 +73,7 @@ func (c *connectionMock) ReadMessage() (msg []byte, err error) {
 		if c.errSub {
 			errorString = TestSubscriptionErrorMsg
 		}
-		body := SubscribeResponseBody{
+		body := subscribeResponseBody{
 			Status: true,
 		}
 		msg = c.getAck(body, errorString)
@@ -82,7 +82,7 @@ func (c *connectionMock) ReadMessage() (msg []byte, err error) {
 	case STATE_SUBSCRIBED:
 		msg = c.getMessage()
 	case STATE_UNSUBSCRIBE:
-		body := UnsubscribeResponseBody{
+		body := unsubscribeResponseBody{
 			Status: true,
 		}
 		msg = c.getAck(body, "")
@@ -139,7 +139,7 @@ func (c *connectionMock) getMessage() (msg []byte) {
 
 func (c *connectionMock) getConnectAck() (ack []byte) {
 	clientID := "cda49f81-44fb-4857-4ec8-ccae2670589a"
-	body := &ConnectResponseBody{
+	body := &connectResponseBody{
 		Client: clientID,
 	}
 
