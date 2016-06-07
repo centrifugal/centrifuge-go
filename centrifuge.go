@@ -80,11 +80,14 @@ var DefaultConfig = &Config{
 	Reconnect:            DefaultReconnect,
 }
 
+// Private sign confirmes that client can subscribe on private channel.
 type PrivateSign struct {
 	Sign string
 	Info string
 }
 
+// PrivateRequest contains info required to create PrivateSign when client
+// wants to subscribe on private channel.
 type PrivateRequest struct {
 	ClientID string
 	Channel  string
@@ -127,25 +130,6 @@ const (
 	CLOSED
 	RECONNECTING
 )
-
-func DefaultBackoffReconnector(c Centrifuge) error {
-	return defaultReconnector(c, DefaultBackoffReconnect)
-}
-
-func DefaultPeriodicReconnector(c Centrifuge) error {
-	return defaultReconnector(c, DefaultPeriodicReconnect)
-}
-
-func defaultReconnector(c Centrifuge, s ReconnectStrategy) error {
-	log.Println("defaultReconnector: reconnecting...")
-	err := c.Reconnect(s)
-	if err != nil {
-		log.Println("defaultReconnector: ", err)
-	} else {
-		log.Println("defaultReconnector: reconnected")
-	}
-	return nil
-}
 
 // centrifuge describes client connection to Centrifugo server.
 type centrifuge struct {
