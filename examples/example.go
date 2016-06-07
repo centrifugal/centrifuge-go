@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/centrifugal/centrifugo/libcentrifugo"
 	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
 )
 
@@ -47,18 +46,18 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	onMessage := func(sub *centrifuge.Sub, msg libcentrifugo.Message) error {
-		log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel, msg))
+	onMessage := func(sub centrifuge.Sub, msg centrifuge.Message) error {
+		log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel(), msg))
 		return nil
 	}
 
-	onJoin := func(sub *centrifuge.Sub, msg libcentrifugo.ClientInfo) error {
-		log.Println(fmt.Sprintf("User %s joined channel %s with client ID %s", msg.User, sub.Channel, msg.Client))
+	onJoin := func(sub centrifuge.Sub, msg centrifuge.ClientInfo) error {
+		log.Println(fmt.Sprintf("User %s joined channel %s with client ID %s", msg.User, sub.Channel(), msg.Client))
 		return nil
 	}
 
-	onLeave := func(sub *centrifuge.Sub, msg libcentrifugo.ClientInfo) error {
-		log.Println(fmt.Sprintf("User %s with clientID left channel %s with client ID %s", msg.User, msg.Client, sub.Channel))
+	onLeave := func(sub centrifuge.Sub, msg centrifuge.ClientInfo) error {
+		log.Println(fmt.Sprintf("User %s with clientID left channel %s with client ID %s", msg.User, msg.Client, sub.Channel()))
 		return nil
 	}
 
@@ -86,13 +85,13 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	log.Printf("%d messages in channel %s history", len(history), sub.Channel)
+	log.Printf("%d messages in channel %s history", len(history), sub.Channel())
 
 	presence, err := sub.Presence()
 	if err != nil {
 		log.Fatalln(err)
 	}
-	log.Printf("%d clients in channel %s", len(presence), sub.Channel)
+	log.Printf("%d clients in channel %s", len(presence), sub.Channel())
 
 	err = sub.Unsubscribe()
 	if err != nil {

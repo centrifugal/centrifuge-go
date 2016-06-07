@@ -12,11 +12,10 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/centrifugal/centrifugo/libcentrifugo"
 	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
 )
 
-func newConnection(n int) *centrifuge.Centrifuge {
+func newConnection(n int) centrifuge.Centrifuge {
 	secret := "secret"
 
 	// Application user ID.
@@ -63,7 +62,7 @@ func main() {
 			c := newConnection(n)
 
 			events := &centrifuge.SubEventHandler{
-				OnMessage: func(sub *centrifuge.Sub, msg libcentrifugo.Message) error {
+				OnMessage: func(sub centrifuge.Sub, msg centrifuge.Message) error {
 					val := atomic.AddInt32(&msgReceived, 1)
 					go func(currentVal int32) {
 						if currentVal == int32(totalMsg) {
