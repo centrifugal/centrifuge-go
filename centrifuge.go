@@ -137,7 +137,7 @@ type centrifuge struct {
 	URL          string
 	config       *Config
 	credentials  *Credentials
-	conn         Conn
+	conn         connection
 	msgID        int32
 	status       Status
 	clientID     string
@@ -150,7 +150,7 @@ type centrifuge struct {
 	closed       chan struct{}
 	events       *EventHandler
 	reconnect    bool
-	createConn   ConnFactory
+	createConn   connFactory
 }
 
 // MessageHandler is a function to handle messages in channels.
@@ -303,7 +303,7 @@ func NewCentrifuge(u string, creds *Credentials, events *EventHandler, config *C
 		waiters:     make(map[string]chan response),
 		events:      events,
 		reconnect:   true,
-		createConn:  NewWSConnection,
+		createConn:  newWSConnection,
 	}
 	return c
 }

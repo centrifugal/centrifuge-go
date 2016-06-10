@@ -45,7 +45,7 @@ type connectionMock struct {
 	errTimeout bool
 }
 
-func (c *connectionMock) initConnectionMock(url string, timeout time.Duration) (Conn, error) {
+func (c *connectionMock) initConnectionMock(url string, timeout time.Duration) (connection, error) {
 	c.closed = make(chan struct{})
 	c.reply = make(chan struct{}, 64)
 	return c, nil

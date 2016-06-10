@@ -8,7 +8,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Conn interface {
+type connection interface {
 	Close()
 	WriteMessage([]byte) error
 	ReadMessage() ([]byte, error)
@@ -19,9 +19,9 @@ type wsConn struct {
 	writeTimeout time.Duration
 }
 
-type ConnFactory func(string, time.Duration) (Conn, error)
+type connFactory func(string, time.Duration) (connection, error)
 
-func NewWSConnection(url string, writeTimeout time.Duration) (Conn, error) {
+func newWSConnection(url string, writeTimeout time.Duration) (connection, error) {
 	wsHeaders := http.Header{}
 	dialer := websocket.DefaultDialer
 	conn, resp, err := dialer.Dial(url, wsHeaders)
