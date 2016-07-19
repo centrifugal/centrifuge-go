@@ -44,7 +44,7 @@ func credentials() *centrifuge.Credentials {
 
 func newConnection(done chan struct{}) centrifuge.Centrifuge {
 	creds := credentials()
-	wsURL := "ws://localhost:8000/connection/websocket"
+	wsURL := "ws://mailtest-7.dev.search.km:8001/connection/websocket"
 	project := "notifications"
 
 	events := &centrifuge.EventHandler{
@@ -56,7 +56,7 @@ func newConnection(done chan struct{}) centrifuge.Centrifuge {
 			info := ""
 			sign := auth.GenerateChannelSign("0", req.ClientID, req.Channel, info)
 			privateSign := &centrifuge.PrivateSign{Sign: sign, Info: info}
-			return privateSign, nil
+			return privateSign, fmt.Errorf("error stub")
 		},
 		OnDisconnect: func(c centrifuge.Centrifuge) error {
 			log.Println("Disconnected")
@@ -87,7 +87,7 @@ func newConnection(done chan struct{}) centrifuge.Centrifuge {
 		OnMessage: onMessage,
 	}
 
-	sub, err := c.Subscribe("$1_2", subEvents)
+	sub, err := c.Subscribe("$1_1", subEvents)
 	if err != nil {
 		log.Fatalln(err)
 	}

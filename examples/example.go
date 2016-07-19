@@ -41,6 +41,7 @@ func main() {
 
 	started := time.Now()
 
+	isError := false
 	events := &centrifuge.EventHandler{
 		OnPrivateSub: func(c centrifuge.Centrifuge, req *centrifuge.PrivateRequest) (*centrifuge.PrivateSign, error) {
 			// Here we allow everyone to subscribe on private channel.
@@ -50,11 +51,18 @@ func main() {
 			info := ""
 			sign := auth.GenerateChannelSign("0", req.ClientID, req.Channel, info)
 			privateSign := &centrifuge.PrivateSign{Sign: sign, Info: info}
+			if isError {
+				// comment this scope if you don't need to test subscription fail
+				log.Printf("OnPrivateSub: subscriptoin failed with error stub")
+				return privateSign, fmt.Errorf("error stub")
+			}
+			isError = true
 			return privateSign, nil
 		},
 		OnDisconnect: centrifuge.DefaultBackoffReconnector,
 	}
 
+	// wsURL := "ws://mailtest-7.dev.search.km:8001/connection/websocket"
 	wsURL := "ws://localhost:8000/connection/websocket"
 	c := centrifuge.NewCentrifuge(wsURL, project, creds, events, centrifuge.DefaultConfig)
 	defer c.Close()
@@ -65,7 +73,7 @@ func main() {
 	}
 
 	onMessage := func(sub *centrifuge.Sub, msg libcentrifugo.Message) error {
-		log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel, msg))
+		log.Println(fmt.Sprintf("New message received in channel %s: %#v, %v", sub.Channel, msg, string(*msg.Data)))
 		return nil
 	}
 
@@ -85,10 +93,12 @@ func main() {
 		OnLeave:   onLeave,
 	}
 
-	sub, err := c.Subscribe("$1_2", subEvents)
+	sub, err := c.Subscribe("$1_0", subEvents)
 	if err != nil {
 		log.Fatalln("subscribe: ", err)
 	}
+
+	time.Sleep(120 * time.Second)
 
 	data := map[string]string{
 		"input": "test",

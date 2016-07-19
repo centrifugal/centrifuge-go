@@ -138,7 +138,7 @@ func defaultReconnector(c Centrifuge, s ReconnectStrategy) error {
 	} else {
 		log.Print("defaultReconnector: reconnected")
 	}
-	return nil
+	return err
 }
 
 // Status shows actual connection status.
@@ -347,19 +347,13 @@ func (c *centrifugeImpl) handleError(err error) {
 func (c *centrifugeImpl) Close() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	c.unsubscribeAll()
+	c.close()
+}
 
+// close closes Centrifuge connection only
+func (c *centrifugeImpl) close() {
 	if c.conn != nil {
-
-		if c.status == CONNECTED {
-			for ch, sub := range c.subs {
-				err := c.unsubscribe(sub.Channel)
-				if err != nil {
-					log.Println(err)
-				}
-				delete(c.subs, ch)
-			}
-		}
-
 		c.conn.Close()
 	}
 
@@ -379,6 +373,19 @@ func (c *centrifugeImpl) Close() {
 	c.wgworkers.Wait()
 
 	c.status = CLOSED
+}
+
+// unsubscribeAll destroy all subscriptions
+func (c *centrifugeImpl) unsubscribeAll() {
+	if c.conn != nil && c.status == CONNECTED {
+		for ch, sub := range c.subs {
+			err := c.unsubscribe(sub.Channel)
+			if err != nil {
+				log.Println(err)
+			}
+			delete(c.subs, ch)
+		}
+	}
 }
 
 func (c *centrifugeImpl) handleDisconnect(err error) {
@@ -519,7 +526,8 @@ func (c *centrifugeImpl) doReconnect() error {
 
 	err = c.resubscribe()
 	if err != nil {
-		close(c.closed)
+		// we need just close the connection and preserve all subscriptions
+		c.close()
 		return err
 	}
 
