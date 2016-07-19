@@ -354,19 +354,29 @@ func (c *centrifuge) handleError(err error) {
 func (c *centrifuge) Close() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	c.unsubscribeAll()
+	c.close()
+	c.status = CLOSED
+}
 
-	if c.conn != nil {
-
-		if c.status == CONNECTED {
-			for ch, sub := range c.subs {
-				err := c.unsubscribe(sub.Channel())
-				if err != nil {
-					log.Println(err)
-				}
-				delete(c.subs, ch)
+// unsubscribeAll destroys all subscriptions.
+// Instance Lock must be held outside.
+func (c *centrifuge) unsubscribeAll() {
+	if c.conn != nil && c.status == CONNECTED {
+		for ch, sub := range c.subs {
+			err := c.unsubscribe(sub.Channel())
+			if err != nil {
+				log.Println(err)
 			}
+			delete(c.subs, ch)
 		}
+	}
+}
 
+// close clean ups ws connection and all outgoing requests.
+// Instance Lock must be held outside.
+func (c *centrifuge) close() {
+	if c.conn != nil {
 		c.conn.Close()
 	}
 
@@ -382,8 +392,6 @@ func (c *centrifuge) Close() {
 	default:
 		close(c.closed)
 	}
-
-	c.status = CLOSED
 }
 
 func (c *centrifuge) handleDisconnect(err error) {
@@ -522,7 +530,9 @@ func (c *centrifuge) doReconnect() error {
 
 	err = c.resubscribe()
 	if err != nil {
-		close(c.closed)
+		// we need just to close the connection and outgoing requests here
+		// but preserve all subscriptions.
+		c.close()
 		return err
 	}
 
