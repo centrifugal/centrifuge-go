@@ -93,7 +93,7 @@ func (c *connectionMock) ReadMessage() (msg []byte, err error) {
 
 func (c *connectionMock) WriteMessage(msg []byte) (err error) {
 	if c.errTimeout {
-		time.Sleep(DefaultTimeout + 1)
+		time.Sleep(DefaultTimeout + time.Second)
 	}
 
 	var cmd clientCommand

@@ -193,6 +193,7 @@ type sub struct {
 	centrifuge    *centrifuge
 	events        *SubEventHandler
 	lastMessageID *string
+	lastMessageMu sync.RWMutex
 }
 
 func (c *centrifuge) newSub(channel string, events *SubEventHandler) *sub {
@@ -233,7 +234,9 @@ func (s *sub) handleMessage(m Message) {
 		onMessage = s.events.OnMessage
 	}
 	mid := m.UID
+	s.lastMessageMu.Lock()
 	s.lastMessageID = &mid
+	s.lastMessageMu.Unlock()
 	if onMessage != nil {
 		onMessage(s, m)
 	}
@@ -264,7 +267,10 @@ func (s *sub) resubscribe() error {
 	if err != nil {
 		return err
 	}
-	body, err := s.centrifuge.sendSubscribe(s.channel, s.lastMessageID, privateSign)
+	s.lastMessageMu.Lock()
+	msgID := *s.lastMessageID
+	s.lastMessageMu.Unlock()
+	body, err := s.centrifuge.sendSubscribe(s.channel, &msgID, privateSign)
 	if err != nil {
 		return err
 	}
@@ -278,7 +284,9 @@ func (s *sub) resubscribe() error {
 		}
 	} else {
 		lastID := string(body.Last)
+		s.lastMessageMu.Lock()
 		s.lastMessageID = &lastID
+		s.lastMessageMu.Unlock()
 	}
 
 	// resubscribe successfull.
@@ -354,19 +362,29 @@ func (c *centrifuge) handleError(err error) {
 func (c *centrifuge) Close() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	c.unsubscribeAll()
+	c.close()
+	c.status = CLOSED
+}
 
-	if c.conn != nil {
-
-		if c.status == CONNECTED {
-			for ch, sub := range c.subs {
-				err := c.unsubscribe(sub.Channel())
-				if err != nil {
-					log.Println(err)
-				}
-				delete(c.subs, ch)
+// unsubscribeAll destroys all subscriptions.
+// Instance Lock must be held outside.
+func (c *centrifuge) unsubscribeAll() {
+	if c.conn != nil && c.status == CONNECTED {
+		for ch, sub := range c.subs {
+			err := c.unsubscribe(sub.Channel())
+			if err != nil {
+				log.Println(err)
 			}
+			delete(c.subs, ch)
 		}
+	}
+}
 
+// close clean ups ws connection and all outgoing requests.
+// Instance Lock must be held outside.
+func (c *centrifuge) close() {
+	if c.conn != nil {
 		c.conn.Close()
 	}
 
@@ -382,8 +400,6 @@ func (c *centrifuge) Close() {
 	default:
 		close(c.closed)
 	}
-
-	c.status = CLOSED
 }
 
 func (c *centrifuge) handleDisconnect(err error) {
@@ -522,7 +538,9 @@ func (c *centrifuge) doReconnect() error {
 
 	err = c.resubscribe()
 	if err != nil {
-		close(c.closed)
+		// we need just to close the connection and outgoing requests here
+		// but preserve all subscriptions.
+		c.close()
 		return err
 	}
 
@@ -941,7 +959,9 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 	c.subs[channel] = sub
 	c.subsMutex.Unlock()
 
+	sub.lastMessageMu.Lock()
 	body, err := c.sendSubscribe(channel, sub.lastMessageID, privateSign)
+	sub.lastMessageMu.Unlock()
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -965,7 +985,9 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 		}
 	} else {
 		lastID := string(body.Last)
+		sub.lastMessageMu.Lock()
 		sub.lastMessageID = &lastID
+		sub.lastMessageMu.Unlock()
 	}
 
 	// Subscription on channel successfull.
