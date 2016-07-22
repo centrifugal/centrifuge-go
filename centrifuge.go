@@ -193,6 +193,7 @@ type sub struct {
 	centrifuge    *centrifuge
 	events        *SubEventHandler
 	lastMessageID *string
+	lastMessageMu sync.RWMutex
 }
 
 func (c *centrifuge) newSub(channel string, events *SubEventHandler) *sub {
@@ -233,7 +234,9 @@ func (s *sub) handleMessage(m Message) {
 		onMessage = s.events.OnMessage
 	}
 	mid := m.UID
+	s.lastMessageMu.Lock()
 	s.lastMessageID = &mid
+	s.lastMessageMu.Unlock()
 	if onMessage != nil {
 		onMessage(s, m)
 	}
@@ -264,7 +267,10 @@ func (s *sub) resubscribe() error {
 	if err != nil {
 		return err
 	}
-	body, err := s.centrifuge.sendSubscribe(s.channel, s.lastMessageID, privateSign)
+	s.lastMessageMu.RLock()
+	msgID := *s.lastMessageID
+	s.lastMessageMu.Unlock()
+	body, err := s.centrifuge.sendSubscribe(s.channel, &msgID, privateSign)
 	if err != nil {
 		return err
 	}
@@ -278,7 +284,9 @@ func (s *sub) resubscribe() error {
 		}
 	} else {
 		lastID := string(body.Last)
+		s.lastMessageMu.Lock()
 		s.lastMessageID = &lastID
+		s.lastMessageMu.Unlock()
 	}
 
 	// resubscribe successfull.
@@ -951,7 +959,9 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 	c.subs[channel] = sub
 	c.subsMutex.Unlock()
 
+	sub.lastMessageMu.Lock()
 	body, err := c.sendSubscribe(channel, sub.lastMessageID, privateSign)
+	sub.lastMessageMu.Unlock()
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -975,7 +985,9 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 		}
 	} else {
 		lastID := string(body.Last)
+		sub.lastMessageMu.Lock()
 		sub.lastMessageID = &lastID
+		sub.lastMessageMu.Unlock()
 	}
 
 	// Subscription on channel successfull.
