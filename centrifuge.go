@@ -267,7 +267,7 @@ func (s *sub) resubscribe() error {
 	if err != nil {
 		return err
 	}
-	s.lastMessageMu.RLock()
+	s.lastMessageMu.Lock()
 	msgID := *s.lastMessageID
 	s.lastMessageMu.Unlock()
 	body, err := s.centrifuge.sendSubscribe(s.channel, &msgID, privateSign)
