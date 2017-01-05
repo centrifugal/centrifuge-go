@@ -696,8 +696,7 @@ func (c *centrifuge) handleAsyncResponse(resp response) error {
 		sub, ok := c.subs[string(channel)]
 		c.subsMutex.RUnlock()
 		if !ok {
-			log.Println("join received but client not subscribed on channel")
-			c.mutex.RUnlock()
+			log.Printf("join received but client not subscribed on channel: %s", string(channel))
 			return nil
 		}
 		sub.handleJoinMessage(b.Data)
@@ -713,8 +712,7 @@ func (c *centrifuge) handleAsyncResponse(resp response) error {
 		sub, ok := c.subs[string(channel)]
 		c.subsMutex.RUnlock()
 		if !ok {
-			log.Println("leave received but client not subscribed on channel")
-			c.mutex.RUnlock()
+			log.Printf("leave received but client not subscribed on channel: %s", string(channel))
 			return nil
 		}
 		sub.handleLeaveMessage(b.Data)
