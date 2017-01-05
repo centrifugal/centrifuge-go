@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/centrifugal/centrifuge-go.svg?branch=master)](https://travis-ci.org/centrifugal/centrifuge-go)
+
 This library allows to communicate with Centrifugo client API from Go code.
 
 See [examples](https://github.com/centrifugal/centrifuge-go/tree/master/examples) to dive into.
