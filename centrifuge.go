@@ -404,6 +404,18 @@ func (c *centrifuge) close() {
 
 func (c *centrifuge) handleDisconnect(err error) {
 	c.mutex.Lock()
+
+	ok, _, reason := closeErr(err)
+	if ok {
+		var adv disconnectAdvice
+		err := json.Unmarshal([]byte(reason), &adv)
+		if err == nil {
+			if !adv.Reconnect {
+				c.reconnect = false
+			}
+		}
+	}
+
 	if c.status == CLOSED || c.status == RECONNECTING {
 		c.mutex.Unlock()
 		return
@@ -716,28 +728,9 @@ func (c *centrifuge) handleAsyncResponse(resp response) error {
 			return nil
 		}
 		sub.handleLeaveMessage(b.Data)
-	case "disconnect":
-		var b disconnectResponseBody
-		err := json.Unmarshal(body, &b)
-		if err != nil {
-			log.Println("malformed disconnect message")
-			return nil
-		}
-		c.handleDisconnectMessage(b.Reason, b.Reconnect)
 	default:
 		return nil
 	}
-	return nil
-}
-
-func (c *centrifuge) handleDisconnectMessage(reason string, shouldReconnect bool) error {
-	if !shouldReconnect {
-		c.mutex.Lock()
-		c.reconnect = false
-		c.mutex.Unlock()
-	}
-	log.Printf("disconnected: %s\n", reason)
-	c.Close()
 	return nil
 }
 

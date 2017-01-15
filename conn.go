@@ -8,6 +8,15 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// closeErr tries to extract connection close code and reason from error.
+// It returns true as first return value in case of successful extraction.
+func closeErr(err error) (bool, int, string) {
+	if closeErr, ok := err.(*websocket.CloseError); ok {
+		return true, closeErr.Code, closeErr.Text
+	}
+	return false, 0, ""
+}
+
 type connection interface {
 	Close()
 	WriteMessage([]byte) error

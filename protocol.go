@@ -114,7 +114,7 @@ type historyResponseBody struct {
 	Data    []Message `json:"data"`
 }
 
-type disconnectResponseBody struct {
+type disconnectAdvice struct {
 	Reason    string `json:"reason"`
 	Reconnect bool   `json:"reconnect"`
 }
