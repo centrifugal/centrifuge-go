@@ -5,9 +5,83 @@ import (
 )
 
 type clientCommand struct {
-	UID    string      `json:"uid"`
-	Method string      `json:"method"`
-	Params interface{} `json:"params"`
+	UID    string `json:"uid"`
+	Method string `json:"method"`
+}
+
+type connectClientCommand struct {
+	clientCommand
+	Params connectParams `json:"params"`
+}
+
+type refreshClientCommand struct {
+	clientCommand
+	Params refreshParams `json:"params"`
+}
+
+type subscribeClientCommand struct {
+	clientCommand
+	Params subscribeParams `json:"params"`
+}
+
+type unsubscribeClientCommand struct {
+	clientCommand
+	Params unsubscribeParams `json:"params"`
+}
+
+type publishClientCommand struct {
+	clientCommand
+	Params publishParams `json:"params"`
+}
+
+type presenceClientCommand struct {
+	clientCommand
+	Params presenceParams `json:"params"`
+}
+
+type historyClientCommand struct {
+	clientCommand
+	Params historyParams `json:"params"`
+}
+
+type connectParams struct {
+	User      string `json:"user"`
+	Timestamp string `json:"timestamp"`
+	Info      string `json:"info"`
+	Token     string `json:"token"`
+}
+
+type refreshParams struct {
+	User      string `json:"user"`
+	Timestamp string `json:"timestamp"`
+	Info      string `json:"info"`
+	Token     string `json:"token"`
+}
+
+type subscribeParams struct {
+	Channel string `json:"channel"`
+	Client  string `json:"client"`
+	Last    string `json:"last"`
+	Recover bool   `json:"recover"`
+	Info    string `json:"info"`
+	Sign    string `json:"sign"`
+}
+
+type unsubscribeParams struct {
+	Channel string `json:"channel"`
+}
+
+type publishParams struct {
+	Channel string          `json:"channel"`
+	Data    json.RawMessage `json:"data"`
+}
+
+type presenceParams struct {
+	Channel string `json:"channel"`
+}
+
+type historyParams struct {
+	Channel string `json:"channel"`
 }
 
 type response struct {
@@ -36,46 +110,6 @@ type Message struct {
 type joinLeaveMessage struct {
 	Channel string     `json:"channel"`
 	Data    ClientInfo `json:"data"`
-}
-
-type connectClientCommand struct {
-	User      string `json:"user"`
-	Timestamp string `json:"timestamp"`
-	Info      string `json:"info"`
-	Token     string `json:"token"`
-}
-
-type refreshClientCommand struct {
-	User      string `json:"user"`
-	Timestamp string `json:"timestamp"`
-	Info      string `json:"info"`
-	Token     string `json:"token"`
-}
-
-type subscribeClientCommand struct {
-	Channel string `json:"channel"`
-	Client  string `json:"client"`
-	Last    string `json:"last"`
-	Recover bool   `json:"recover"`
-	Info    string `json:"info"`
-	Sign    string `json:"sign"`
-}
-
-type unsubscribeClientCommand struct {
-	Channel string `json:"channel"`
-}
-
-type publishClientCommand struct {
-	Channel string          `json:"channel"`
-	Data    json.RawMessage `json:"data"`
-}
-
-type presenceClientCommand struct {
-	Channel string `json:"channel"`
-}
-
-type historyClientCommand struct {
-	Channel string `json:"channel"`
 }
 
 type connectResponseBody struct {

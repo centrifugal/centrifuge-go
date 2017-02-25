@@ -833,11 +833,17 @@ func (c *centrifuge) sendRefresh() error {
 		return err
 	}
 
-	params := c.refreshParams(c.credentials)
-	cmd := clientCommand{
-		UID:    strconv.Itoa(int(c.nextMsgID())),
-		Method: "refresh",
-		Params: params,
+	cmd := refreshClientCommand{
+		clientCommand: clientCommand{
+			UID:    strconv.Itoa(int(c.nextMsgID())),
+			Method: "refresh",
+		},
+		Params: refreshParams{
+			User:      c.credentials.User,
+			Timestamp: c.credentials.Timestamp,
+			Info:      c.credentials.Info,
+			Token:     c.credentials.Token,
+		},
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
@@ -875,21 +881,18 @@ func (c *centrifuge) sendRefresh() error {
 	return nil
 }
 
-func (c *centrifuge) refreshParams(creds *Credentials) *refreshClientCommand {
-	return &refreshClientCommand{
-		User:      creds.User,
-		Timestamp: creds.Timestamp,
-		Info:      creds.Info,
-		Token:     creds.Token,
-	}
-}
-
 func (c *centrifuge) sendConnect() (connectResponseBody, error) {
-	params := c.connectParams()
-	cmd := clientCommand{
-		UID:    strconv.Itoa(int(c.nextMsgID())),
-		Method: "connect",
-		Params: params,
+	cmd := connectClientCommand{
+		clientCommand: clientCommand{
+			UID:    strconv.Itoa(int(c.nextMsgID())),
+			Method: "connect",
+		},
+		Params: connectParams{
+			User:      c.credentials.User,
+			Timestamp: c.credentials.Timestamp,
+			Info:      c.credentials.Info,
+			Token:     c.credentials.Token,
+		},
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
@@ -908,15 +911,6 @@ func (c *centrifuge) sendConnect() (connectResponseBody, error) {
 		return connectResponseBody{}, err
 	}
 	return body, nil
-}
-
-func (c *centrifuge) connectParams() *connectClientCommand {
-	return &connectClientCommand{
-		User:      c.credentials.User,
-		Timestamp: c.credentials.Timestamp,
-		Info:      c.credentials.Info,
-		Token:     c.credentials.Token,
-	}
 }
 
 func (c *centrifuge) privateSign(channel string) (*PrivateSign, error) {
@@ -985,27 +979,26 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 	return sub, nil
 }
 
-func (c *centrifuge) subscribeParams(channel string, lastMessageID *string, privateSign *PrivateSign) *subscribeClientCommand {
-	cmd := &subscribeClientCommand{
+func (c *centrifuge) sendSubscribe(channel string, lastMessageID *string, privateSign *PrivateSign) (subscribeResponseBody, error) {
+
+	params := subscribeParams{
 		Channel: channel,
 	}
 	if lastMessageID != nil {
-		cmd.Recover = true
-		cmd.Last = *lastMessageID
+		params.Recover = true
+		params.Last = *lastMessageID
 	}
 	if privateSign != nil {
-		cmd.Client = c.ClientID()
-		cmd.Info = privateSign.Info
-		cmd.Sign = privateSign.Sign
+		params.Client = c.ClientID()
+		params.Info = privateSign.Info
+		params.Sign = privateSign.Sign
 	}
-	return cmd
-}
 
-func (c *centrifuge) sendSubscribe(channel string, lastMessageID *string, privateSign *PrivateSign) (subscribeResponseBody, error) {
-	params := c.subscribeParams(channel, lastMessageID, privateSign)
-	cmd := clientCommand{
-		UID:    strconv.Itoa(int(c.nextMsgID())),
-		Method: "subscribe",
+	cmd := subscribeClientCommand{
+		clientCommand: clientCommand{
+			UID:    strconv.Itoa(int(c.nextMsgID())),
+			Method: "subscribe",
+		},
 		Params: params,
 	}
 	cmdBytes, err := json.Marshal(cmd)
@@ -1038,18 +1031,16 @@ func (c *centrifuge) publish(channel string, data []byte) error {
 	return nil
 }
 
-func (c *centrifuge) publishParams(channel string, data []byte) *publishClientCommand {
-	return &publishClientCommand{
+func (c *centrifuge) sendPublish(channel string, data []byte) (publishResponseBody, error) {
+	params := publishParams{
 		Channel: channel,
 		Data:    json.RawMessage(data),
 	}
-}
-
-func (c *centrifuge) sendPublish(channel string, data []byte) (publishResponseBody, error) {
-	params := c.publishParams(channel, data)
-	cmd := clientCommand{
-		UID:    strconv.Itoa(int(c.nextMsgID())),
-		Method: "publish",
+	cmd := publishClientCommand{
+		clientCommand: clientCommand{
+			UID:    strconv.Itoa(int(c.nextMsgID())),
+			Method: "publish",
+		},
 		Params: params,
 	}
 	cmdBytes, err := json.Marshal(cmd)
@@ -1079,18 +1070,15 @@ func (c *centrifuge) history(channel string) ([]Message, error) {
 	return body.Data, nil
 }
 
-func (c *centrifuge) historyParams(channel string) *historyClientCommand {
-	return &historyClientCommand{
-		Channel: channel,
-	}
-}
-
 func (c *centrifuge) sendHistory(channel string) (historyResponseBody, error) {
-	params := c.historyParams(channel)
-	cmd := clientCommand{
-		UID:    strconv.Itoa(int(c.nextMsgID())),
-		Method: "history",
-		Params: params,
+	cmd := historyClientCommand{
+		clientCommand: clientCommand{
+			UID:    strconv.Itoa(int(c.nextMsgID())),
+			Method: "history",
+		},
+		Params: historyParams{
+			Channel: channel,
+		},
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
@@ -1119,18 +1107,15 @@ func (c *centrifuge) presence(channel string) (map[string]ClientInfo, error) {
 	return body.Data, nil
 }
 
-func (c *centrifuge) presenceParams(channel string) *presenceClientCommand {
-	return &presenceClientCommand{
-		Channel: channel,
-	}
-}
-
 func (c *centrifuge) sendPresence(channel string) (presenceResponseBody, error) {
-	params := c.presenceParams(channel)
-	cmd := clientCommand{
-		UID:    strconv.Itoa(int(c.nextMsgID())),
-		Method: "presence",
-		Params: params,
+	cmd := presenceClientCommand{
+		clientCommand: clientCommand{
+			UID:    strconv.Itoa(int(c.nextMsgID())),
+			Method: "presence",
+		},
+		Params: presenceParams{
+			Channel: channel,
+		},
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
@@ -1168,18 +1153,15 @@ func (c *centrifuge) unsubscribe(channel string) error {
 	return nil
 }
 
-func (c *centrifuge) unsubscribeParams(channel string) *unsubscribeClientCommand {
-	return &unsubscribeClientCommand{
-		Channel: channel,
-	}
-}
-
 func (c *centrifuge) sendUnsubscribe(channel string) (unsubscribeResponseBody, error) {
-	params := c.unsubscribeParams(channel)
-	cmd := clientCommand{
-		UID:    strconv.Itoa(int(c.nextMsgID())),
-		Method: "unsubscribe",
-		Params: params,
+	cmd := unsubscribeClientCommand{
+		clientCommand: clientCommand{
+			UID:    strconv.Itoa(int(c.nextMsgID())),
+			Method: "unsubscribe",
+		},
+		Params: unsubscribeParams{
+			Channel: channel,
+		},
 	}
 	cmdBytes, err := json.Marshal(cmd)
 	if err != nil {
