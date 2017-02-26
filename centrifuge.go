@@ -1032,9 +1032,10 @@ func (c *centrifuge) publish(channel string, data []byte) error {
 }
 
 func (c *centrifuge) sendPublish(channel string, data []byte) (publishResponseBody, error) {
+	raw := json.RawMessage(data)
 	params := publishParams{
 		Channel: channel,
-		Data:    json.RawMessage(data),
+		Data:    &raw,
 	}
 	cmd := publishClientCommand{
 		clientCommand: clientCommand{

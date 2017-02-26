@@ -72,8 +72,8 @@ type unsubscribeParams struct {
 }
 
 type publishParams struct {
-	Channel string          `json:"channel"`
-	Data    json.RawMessage `json:"data"`
+	Channel string           `json:"channel"`
+	Data    *json.RawMessage `json:"data"`
 }
 
 type presenceParams struct {
