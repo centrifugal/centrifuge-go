@@ -1,6 +1,7 @@
 package centrifuge
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"time"
@@ -28,11 +29,16 @@ type wsConn struct {
 	writeTimeout time.Duration
 }
 
-type connFactory func(string, time.Duration) (connection, error)
+type connFactory func(string, time.Duration, bool) (connection, error)
 
-func newWSConnection(url string, writeTimeout time.Duration) (connection, error) {
+func newWSConnection(url string, writeTimeout time.Duration, skipVerify bool) (connection, error) {
 	wsHeaders := http.Header{}
 	dialer := websocket.DefaultDialer
+	if skipVerify {
+		dialer.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+	}
 	conn, resp, err := dialer.Dial(url, wsHeaders)
 	if err != nil {
 		return nil, err

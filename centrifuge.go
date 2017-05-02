@@ -71,6 +71,7 @@ type Config struct {
 	PrivateChannelPrefix string
 	Debug                bool
 	Reconnect            bool
+	SkipVerify           bool
 }
 
 // DefaultConfig with standard private channel prefix and 1 second timeout.
@@ -736,7 +737,7 @@ func (c *centrifuge) handleAsyncResponse(resp response) error {
 
 // Lock must be held outside
 func (c *centrifuge) connectWS() error {
-	conn, err := c.createConn(c.URL, c.config.Timeout)
+	conn, err := c.createConn(c.URL, c.config.Timeout, c.config.SkipVerify)
 	if err != nil {
 		return err
 	}
