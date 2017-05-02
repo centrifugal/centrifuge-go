@@ -33,9 +33,7 @@ type connFactory func(string, time.Duration, bool) (connection, error)
 
 func newWSConnection(url string, writeTimeout time.Duration, skipVerify bool) (connection, error) {
 	wsHeaders := http.Header{}
-	dialer := &websocket.Dialer{
-		Proxy: http.ProxyFromEnvironment,
-	}
+	dialer := websocket.DefaultDialer
 	if skipVerify {
 		dialer.TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true,
