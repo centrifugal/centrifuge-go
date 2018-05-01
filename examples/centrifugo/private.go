@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/centrifugal/centrifuge-mobile"
+	"github.com/centrifugal/centrifuge-go"
 )
 
 // In production you need to receive credentials from application backend.

@@ -15,7 +15,7 @@ import (
 
 	_ "net/http/pprof"
 
-	"github.com/centrifugal/centrifuge-mobile"
+	"github.com/centrifugal/centrifuge-go"
 )
 
 var protobuf = flag.Bool("protobuf", false, "Use Websocket with Protobuf")

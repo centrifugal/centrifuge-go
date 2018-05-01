@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/centrifugal/centrifuge-mobile/internal/proto"
+	"github.com/centrifugal/centrifuge-go/internal/proto"
 	"github.com/jpillora/backoff"
 )
 
@@ -73,9 +73,9 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		PingIntervalMilliseconds: DefaultPingIntervalMilliseconds,
-		PrivateChannelPrefix:     DefaultPrivateChannelPrefix,
 		ReadTimeoutMilliseconds:  DefaultReadTimeoutMilliseconds,
 		WriteTimeoutMilliseconds: DefaultWriteTimeoutMilliseconds,
+		PrivateChannelPrefix:     DefaultPrivateChannelPrefix,
 		Websocket:                WebsocketConfig{},
 		GRPC:                     GRPCConfig{},
 	}
@@ -87,15 +87,15 @@ type PrivateSign struct {
 	Info string
 }
 
-// PrivateRequest contains info required to create PrivateSign when client
+// PrivateSubEvent contains info required to create PrivateSign when client
 // wants to subscribe on private channel.
-type PrivateRequest struct {
+type PrivateSubEvent struct {
 	ClientID string
 	Channel  string
 }
 
-func newPrivateRequest(client string, channel string) *PrivateRequest {
-	return &PrivateRequest{
+func newPrivateSubEvent(client string, channel string) *PrivateSubEvent {
+	return &PrivateSubEvent{
 		ClientID: client,
 		Channel:  channel,
 	}
@@ -139,7 +139,7 @@ type MessageHandler interface {
 
 // PrivateSubHandler is an interface describing how to handle private subscription request.
 type PrivateSubHandler interface {
-	OnPrivateSub(*Client, *PrivateRequest) (*PrivateSign, error)
+	OnPrivateSub(*Client, *PrivateSubEvent) (*PrivateSign, error)
 }
 
 // RefreshHandler is an interface describing how to handle credentials refresh event.
@@ -238,8 +238,7 @@ func (c *Client) nextMsgID() int32 {
 	return atomic.AddInt32(&c.msgID, 1)
 }
 
-// New initializes Client struct. It accepts URL to Centrifuge server,
-// EventHandler and Config.
+// New initializes Client.
 func New(u string, events *EventHandler, config *Config) *Client {
 	var encoding proto.Encoding
 
@@ -675,7 +674,7 @@ func (c *Client) handlePush(msg proto.Push) error {
 	return nil
 }
 
-// Connect connects to Centrifugo and sends connect message to authenticate.
+// Connect dials to server and sends connect message.
 func (c *Client) Connect() error {
 	c.mutex.Lock()
 	if c.status == CONNECTED || c.status == CONNECTING {
@@ -692,6 +691,7 @@ func (c *Client) Connect() error {
 
 	err := c.connect()
 	if err != nil {
+		panic(1)
 		if c.transport == nil {
 			c.handleError(err)
 			c.handleDisconnect(nil)
@@ -864,10 +864,12 @@ func (c *Client) sendRefresh() error {
 		Method: proto.MethodTypeRefresh,
 	}
 	params := &proto.RefreshRequest{
-		User: c.credentials.User,
-		Exp:  c.credentials.Exp,
-		Info: c.credentials.Info,
-		Sign: c.credentials.Sign,
+		Credentials: &proto.SignedCredentials{
+			User: c.credentials.User,
+			Exp:  c.credentials.Exp,
+			Info: c.credentials.Info,
+			Sign: c.credentials.Sign,
+		},
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
@@ -915,13 +917,16 @@ func (c *Client) sendConnect() (proto.ConnectResult, error) {
 	c.mutex.RLock()
 	if c.credentials != nil {
 		params := &proto.ConnectRequest{
-			User: c.credentials.User,
-			Exp:  c.credentials.Exp,
-			Info: c.credentials.Info,
-			Sign: c.credentials.Sign,
+			Credentials: &proto.SignedCredentials{
+				User: c.credentials.User,
+				Exp:  c.credentials.Exp,
+				Info: c.credentials.Info,
+				Sign: c.credentials.Sign,
+			},
 		}
 		paramsData, err := c.paramsEncoder.Encode(params)
 		if err != nil {
+			c.mutex.RUnlock()
 			return proto.ConnectResult{}, err
 		}
 		cmd.Params = paramsData
@@ -950,8 +955,8 @@ func (c *Client) privateSign(channel string) (*PrivateSign, error) {
 	if strings.HasPrefix(channel, c.config.PrivateChannelPrefix) && c.events != nil {
 		handler := c.events.onPrivateSub
 		if handler != nil {
-			privateReq := newPrivateRequest(c.clientID(), channel)
-			ps, err = handler.OnPrivateSub(c, privateReq)
+			ev := newPrivateSubEvent(c.clientID(), channel)
+			ps, err = handler.OnPrivateSub(c, ev)
 			if err != nil {
 				return nil, err
 			}

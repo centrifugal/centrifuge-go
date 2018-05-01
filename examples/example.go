@@ -8,7 +8,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/centrifugal/centrifuge-mobile"
+	"github.com/centrifugal/centrifuge-go"
 )
 
 type testMessage struct {

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/centrifugal/centrifuge-mobile/internal/proto"
+	"github.com/centrifugal/centrifuge-go/internal/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"

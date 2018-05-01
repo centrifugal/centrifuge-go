@@ -1,6 +1,6 @@
 package centrifuge
 
-import "github.com/centrifugal/centrifuge-mobile/internal/proto"
+import "github.com/centrifugal/centrifuge-go/internal/proto"
 
 // Error represents client reply error.
 type Error = proto.Error

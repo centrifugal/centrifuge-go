@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/centrifugal/centrifuge-mobile"
+	"github.com/centrifugal/centrifuge-go"
 )
 
 // ChatMessage is chat app specific message struct.

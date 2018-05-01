@@ -3,7 +3,7 @@ package centrifuge
 import (
 	"time"
 
-	"github.com/centrifugal/centrifuge-mobile/internal/proto"
+	"github.com/centrifugal/centrifuge-go/internal/proto"
 )
 
 type transport interface {

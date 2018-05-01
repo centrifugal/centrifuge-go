@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/centrifugal/centrifuge-mobile/internal/proto"
+	"github.com/centrifugal/centrifuge-go/internal/proto"
 	"github.com/gorilla/websocket"
 )
 
@@ -83,6 +83,7 @@ func newWebsocketTransport(url string, encoding proto.Encoding, config Websocket
 		config:         config,
 		closeCh:        make(chan struct{}),
 		commandEncoder: proto.NewCommandEncoder(encoding),
+		encoding:       encoding,
 	}
 	go t.reader()
 	return t, nil
