@@ -104,6 +104,8 @@ func newPrivateSubEvent(client string, channel string) *PrivateSubEvent {
 // ConnectEvent is a connect event context passed to OnConnect callback.
 type ConnectEvent struct {
 	ClientID string
+	Version  string
+	Data     []byte
 }
 
 // DisconnectEvent is a disconnect event context passed to OnDisconnect callback.
@@ -212,14 +214,15 @@ type Client struct {
 	encoding          proto.Encoding
 	config            *Config
 	credentials       *Credentials
+	connectData       proto.Raw
 	transport         transport
 	msgID             int32
 	status            int
 	id                string
 	subsMutex         sync.RWMutex
 	subs              map[string]*Sub
-	waitersMutex      sync.RWMutex
-	waiters           map[uint32]chan proto.Reply
+	requestsMutex     sync.RWMutex
+	requests          map[uint32]chan proto.Reply
 	receive           chan []byte
 	write             chan *proto.Command
 	closeCh           chan struct{}
@@ -259,7 +262,7 @@ func New(u string, events *EventHandler, config *Config) *Client {
 		encoding:          encoding,
 		subs:              make(map[string]*Sub),
 		config:            config,
-		waiters:           make(map[uint32]chan proto.Reply),
+		requests:          make(map[uint32]chan proto.Reply),
 		reconnect:         true,
 		reconnectStrategy: defaultBackoffReconnect,
 		events:            events,
@@ -279,6 +282,13 @@ func (c *Client) SetCredentials(creds *Credentials) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.credentials = creds
+}
+
+// SetConnectData allows to set data to send in connect message.
+func (c *Client) SetConnectData(data proto.Raw) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	c.connectData = data
 }
 
 func (c *Client) subscribed(channel string) bool {
@@ -365,12 +375,12 @@ func (c *Client) Close() error {
 // close clean ups ws connection and all outgoing requests.
 // Instance Lock must be held outside.
 func (c *Client) close() {
-	c.waitersMutex.Lock()
-	for uid, ch := range c.waiters {
+	c.requestsMutex.Lock()
+	for uid, ch := range c.requests {
 		close(ch)
-		delete(c.waiters, uid)
+		delete(c.requests, uid)
 	}
-	c.waitersMutex.Unlock()
+	c.requestsMutex.Unlock()
 
 	if c.transport != nil {
 		c.transport.Close()
@@ -399,12 +409,12 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		c.transport = nil
 	}
 
-	c.waitersMutex.Lock()
-	for uid, ch := range c.waiters {
+	c.requestsMutex.Lock()
+	for uid, ch := range c.requests {
 		close(ch)
-		delete(c.waiters, uid)
+		delete(c.requests, uid)
 	}
-	c.waitersMutex.Unlock()
+	c.requestsMutex.Unlock()
 
 	select {
 	case <-c.closeCh:
@@ -573,11 +583,11 @@ func (c *Client) writer(t transport, closeCh chan struct{}) {
 
 func (c *Client) handle(reply *proto.Reply) error {
 	if reply.ID > 0 {
-		c.waitersMutex.RLock()
-		if waiter, ok := c.waiters[reply.ID]; ok {
+		c.requestsMutex.RLock()
+		if waiter, ok := c.requests[reply.ID]; ok {
 			waiter <- *reply
 		}
-		c.waitersMutex.RUnlock()
+		c.requestsMutex.RUnlock()
 	} else {
 		push, err := c.pushDecoder.Decode(reply.Result)
 		if err != nil {
@@ -797,7 +807,12 @@ func (c *Client) connect() error {
 
 	if c.events != nil && c.events.onConnect != nil && prevStatus != CONNECTED {
 		handler := c.events.onConnect
-		handler.OnConnect(c, ConnectEvent{ClientID: c.clientID()})
+		ev := ConnectEvent{
+			ClientID: c.clientID(),
+			Version:  res.Version,
+			Data:     res.Data,
+		}
+		handler.OnConnect(c, ev)
 	}
 
 	return nil
@@ -915,14 +930,18 @@ func (c *Client) sendConnect() (proto.ConnectResult, error) {
 	}
 
 	c.mutex.RLock()
-	if c.credentials != nil {
-		params := &proto.ConnectRequest{
-			Credentials: &proto.SignedCredentials{
+	if c.credentials != nil || c.connectData != nil {
+		params := &proto.ConnectRequest{}
+		if c.credentials != nil {
+			params.Credentials = &proto.SignedCredentials{
 				User: c.credentials.User,
 				Exp:  c.credentials.Exp,
 				Info: c.credentials.Info,
 				Sign: c.credentials.Sign,
-			},
+			}
+		}
+		if c.connectData != nil {
+			params.Data = c.connectData
 		}
 		paramsData, err := c.paramsEncoder.Encode(params)
 		if err != nil {
@@ -1252,8 +1271,8 @@ func (c *Client) sendPing() error {
 func (c *Client) sendSync(cmd *proto.Command) (proto.Reply, error) {
 	waitCh := make(chan proto.Reply, 1)
 
-	c.addWaiter(cmd.ID, waitCh)
-	defer c.removeWaiter(cmd.ID)
+	c.addRequest(cmd.ID, waitCh)
+	defer c.removeRequest(cmd.ID)
 
 	err := c.send(cmd)
 	if err != nil {
@@ -1273,16 +1292,16 @@ func (c *Client) send(cmd *proto.Command) error {
 	return nil
 }
 
-func (c *Client) addWaiter(id uint32, ch chan proto.Reply) {
-	c.waitersMutex.Lock()
-	defer c.waitersMutex.Unlock()
-	c.waiters[id] = ch
+func (c *Client) addRequest(id uint32, ch chan proto.Reply) {
+	c.requestsMutex.Lock()
+	defer c.requestsMutex.Unlock()
+	c.requests[id] = ch
 }
 
-func (c *Client) removeWaiter(id uint32) {
-	c.waitersMutex.Lock()
-	defer c.waitersMutex.Unlock()
-	delete(c.waiters, id)
+func (c *Client) removeRequest(id uint32) {
+	c.requestsMutex.Lock()
+	defer c.requestsMutex.Unlock()
+	delete(c.requests, id)
 }
 
 func (c *Client) wait(ch chan proto.Reply, timeout time.Duration) (proto.Reply, error) {

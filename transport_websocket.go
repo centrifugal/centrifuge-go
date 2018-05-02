@@ -120,6 +120,7 @@ func (t *websocketTransport) reader() {
 					if err == io.EOF {
 						break loop
 					}
+					t.disconnect = &disconnect{Reason: "decode error", Reconnect: false}
 					return
 				}
 				select {

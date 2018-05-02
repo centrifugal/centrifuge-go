@@ -7,36 +7,39 @@ import (
 	"github.com/centrifugal/centrifuge-go/internal/proto"
 )
 
-// SubscribeSuccessEvent is a subscribe success event context passed to event callback.
+// SubscribeSuccessEvent is a subscribe success event context passed
+// to event callback.
 type SubscribeSuccessEvent struct {
 	Resubscribed bool
 	Recovered    bool
 }
 
-// SubscribeErrorEvent is a subscribe error event context passed to event callback.
+// SubscribeErrorEvent is a subscribe error event context passed to
+// event callback.
 type SubscribeErrorEvent struct {
 	Error string
 }
 
-// UnsubscribeEvent is a context passed to unsubscribe event callback.
+// UnsubscribeEvent is an event passed to unsubscribe event handler.
 type UnsubscribeEvent struct{}
 
-// LeaveEvent ...
+// LeaveEvent has info about user who left channel.
 type LeaveEvent struct {
 	ClientInfo
 }
 
-// JoinEvent ...
+// JoinEvent has info about user who joined channel.
 type JoinEvent struct {
 	ClientInfo
 }
 
-// PublicationEvent ...
+// PublicationEvent has info about received channel Publication.
 type PublicationEvent struct {
 	Publication
 }
 
-// PublicationHandler is a function to handle messages published in channels.
+// PublicationHandler is a function to handle messages published in
+// channels.
 type PublicationHandler interface {
 	OnPublication(*Sub, PublicationEvent)
 }
@@ -56,7 +59,8 @@ type UnsubscribeHandler interface {
 	OnUnsubscribe(*Sub, UnsubscribeEvent)
 }
 
-// SubscribeSuccessHandler is a function to handle subscribe success event.
+// SubscribeSuccessHandler is a function to handle subscribe success
+// event.
 type SubscribeSuccessHandler interface {
 	OnSubscribeSuccess(*Sub, SubscribeSuccessEvent)
 }
@@ -192,13 +196,14 @@ func (s *Sub) removeSubFuture(subFuture chan error) {
 // Publish allows to publish data to channel.
 func (s *Sub) Publish(data []byte) error {
 	subFuture := s.newSubFuture()
+	readTimeout := time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond
 	select {
 	case err := <-subFuture:
 		if err != nil {
 			return err
 		}
 		return s.centrifuge.publish(s.channel, data)
-	case <-time.After(time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond):
+	case <-time.After(readTimeout):
 		s.removeSubFuture(subFuture)
 		return ErrTimeout
 	}
@@ -216,13 +221,14 @@ func (s *Sub) Presence() (map[string]ClientInfo, error) {
 
 func (s *Sub) history() ([]Publication, error) {
 	subFuture := s.newSubFuture()
+	readTimeout := time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond
 	select {
 	case err := <-subFuture:
 		if err != nil {
 			return nil, err
 		}
 		return s.centrifuge.history(s.channel)
-	case <-time.After(time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond):
+	case <-time.After(readTimeout):
 		s.removeSubFuture(subFuture)
 		return nil, ErrTimeout
 	}
@@ -230,13 +236,14 @@ func (s *Sub) history() ([]Publication, error) {
 
 func (s *Sub) presence() (map[string]proto.ClientInfo, error) {
 	subFuture := s.newSubFuture()
+	readTimeout := time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond
 	select {
 	case err := <-subFuture:
 		if err != nil {
 			return nil, err
 		}
 		return s.centrifuge.presence(s.channel)
-	case <-time.After(time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond):
+	case <-time.After(readTimeout):
 		s.removeSubFuture(subFuture)
 		return nil, ErrTimeout
 	}
@@ -284,7 +291,8 @@ func (s *Sub) subscribeSuccess(recovered bool) {
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeSuccess != nil {
 		handler := s.events.onSubscribeSuccess
-		handler.OnSubscribeSuccess(s, SubscribeSuccessEvent{Resubscribed: resubscribed, Recovered: recovered})
+		ev := SubscribeSuccessEvent{Resubscribed: resubscribed, Recovered: recovered}
+		handler.OnSubscribeSuccess(s, ev)
 	}
 	s.mu.Lock()
 	s.resubscribed = true
