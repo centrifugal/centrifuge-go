@@ -36,7 +36,7 @@ func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.Disconnec
 	return
 }
 
-func (h *eventHandler) OnPublication(sub *centrifuge.Sub, e centrifuge.PublicationEvent) {
+func (h *eventHandler) OnPublish(sub *centrifuge.Sub, e centrifuge.PublishEvent) {
 	var chatMessage *ChatMessage
 	err := json.Unmarshal(e.Data, &chatMessage)
 	if err != nil {
@@ -83,7 +83,7 @@ func main() {
 	c := centrifuge.New(url, events, centrifuge.DefaultConfig())
 
 	subEvents := centrifuge.NewSubEventHandler()
-	subEvents.OnPublication(handler)
+	subEvents.OnPublish(handler)
 	subEvents.OnJoin(handler)
 	subEvents.OnLeave(handler)
 	subEvents.OnSubscribeSuccess(handler)

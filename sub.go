@@ -33,15 +33,15 @@ type JoinEvent struct {
 	ClientInfo
 }
 
-// PublicationEvent has info about received channel Publication.
-type PublicationEvent struct {
+// PublishEvent has info about received channel Publication.
+type PublishEvent struct {
 	Publication
 }
 
-// PublicationHandler is a function to handle messages published in
+// PublishHandler is a function to handle messages published in
 // channels.
-type PublicationHandler interface {
-	OnPublication(*Sub, PublicationEvent)
+type PublishHandler interface {
+	OnPublish(*Sub, PublishEvent)
 }
 
 // JoinHandler is a function to handle join messages.
@@ -73,7 +73,7 @@ type SubscribeErrorHandler interface {
 // SubEventHandler contains callback functions that will be called when
 // corresponding event happens with subscription to channel.
 type SubEventHandler struct {
-	onPublication      PublicationHandler
+	onPublish          PublishHandler
 	onJoin             JoinHandler
 	onLeave            LeaveHandler
 	onUnsubscribe      UnsubscribeHandler
@@ -86,9 +86,9 @@ func NewSubEventHandler() *SubEventHandler {
 	return &SubEventHandler{}
 }
 
-// OnPublication allows to set PublicationHandler to SubEventHandler.
-func (h *SubEventHandler) OnPublication(handler PublicationHandler) {
-	h.onPublication = handler
+// OnPublish allows to set PublishHandler to SubEventHandler.
+func (h *SubEventHandler) OnPublish(handler PublishHandler) {
+	h.onPublish = handler
 }
 
 // OnJoin allows to set JoinHandler to SubEventHandler.
@@ -196,14 +196,13 @@ func (s *Sub) removeSubFuture(subFuture chan error) {
 // Publish allows to publish data to channel.
 func (s *Sub) Publish(data []byte) error {
 	subFuture := s.newSubFuture()
-	readTimeout := time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond
 	select {
 	case err := <-subFuture:
 		if err != nil {
 			return err
 		}
 		return s.centrifuge.publish(s.channel, data)
-	case <-time.After(readTimeout):
+	case <-time.After(s.centrifuge.config.ReadTimeout):
 		s.removeSubFuture(subFuture)
 		return ErrTimeout
 	}
@@ -221,14 +220,13 @@ func (s *Sub) Presence() (map[string]ClientInfo, error) {
 
 func (s *Sub) history() ([]Publication, error) {
 	subFuture := s.newSubFuture()
-	readTimeout := time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond
 	select {
 	case err := <-subFuture:
 		if err != nil {
 			return nil, err
 		}
 		return s.centrifuge.history(s.channel)
-	case <-time.After(readTimeout):
+	case <-time.After(s.centrifuge.config.ReadTimeout):
 		s.removeSubFuture(subFuture)
 		return nil, ErrTimeout
 	}
@@ -236,14 +234,13 @@ func (s *Sub) history() ([]Publication, error) {
 
 func (s *Sub) presence() (map[string]proto.ClientInfo, error) {
 	subFuture := s.newSubFuture()
-	readTimeout := time.Duration(s.centrifuge.config.ReadTimeoutMilliseconds) * time.Millisecond
 	select {
 	case err := <-subFuture:
 		if err != nil {
 			return nil, err
 		}
 		return s.centrifuge.presence(s.channel)
-	case <-time.After(readTimeout):
+	case <-time.After(s.centrifuge.config.ReadTimeout):
 		s.removeSubFuture(subFuture)
 		return nil, ErrTimeout
 	}
@@ -316,16 +313,16 @@ func (s *Sub) subscribeError(err error) {
 }
 
 func (s *Sub) handlePublication(pub Publication) {
-	var handler PublicationHandler
-	if s.events != nil && s.events.onPublication != nil {
-		handler = s.events.onPublication
+	var handler PublishHandler
+	if s.events != nil && s.events.onPublish != nil {
+		handler = s.events.onPublish
 	}
 	mid := pub.UID
 	s.lastMessageMu.Lock()
 	s.lastMessageID = &mid
 	s.lastMessageMu.Unlock()
 	if handler != nil {
-		handler.OnPublication(s, PublicationEvent{Publication: pub})
+		handler.OnPublish(s, PublishEvent{Publication: pub})
 	}
 }
 

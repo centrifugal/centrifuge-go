@@ -12,11 +12,19 @@ import (
 	"github.com/jpillora/backoff"
 )
 
-// Credentials describe client connection parameters.
+// Credentials describe client connection parameters used for authentication.
 type Credentials struct {
+	// User is current user ID.
 	User string
-	Exp  string
+	// Exp is timestamp seconds connection must be kept open. Connection can
+	// be refreshed and prolonged using Refresh mechanism.
+	Exp string
+	// Optional base64 encoded connection information. It must be valid JSON
+	// encoded into UTF-8 and then transformed to base64 in case of JSON protocol
+	// and any bytes transformed to base64 in case of Protobuf protocol.
 	Info string
+	// Sign is HMAC SHA-256 sign based on credentials above and shared (between
+	// Centrifuge server and application backend) secret key.
 	Sign string
 }
 
@@ -49,35 +57,35 @@ var (
 )
 
 const (
-	// DefaultReadTimeoutMilliseconds ...
-	DefaultReadTimeoutMilliseconds = 5000
-	// DefaultWriteTimeoutMilliseconds ...
-	DefaultWriteTimeoutMilliseconds = 5000
-	// DefaultPingIntervalMilliseconds ...
-	DefaultPingIntervalMilliseconds = 25000
+	// DefaultReadTimeout ...
+	DefaultReadTimeout = 5 * time.Second
+	// DefaultWriteTimeout ...
+	DefaultWriteTimeout = 5 * time.Second
+	// DefaultPingInterval ...
+	DefaultPingInterval = 25 * time.Second
 	// DefaultPrivateChannelPrefix ...
 	DefaultPrivateChannelPrefix = "$"
 )
 
 // Config contains various client options.
 type Config struct {
-	ReadTimeoutMilliseconds  int
-	WriteTimeoutMilliseconds int
-	PingIntervalMilliseconds int
-	PrivateChannelPrefix     string
-	Websocket                WebsocketConfig
-	GRPC                     GRPCConfig
+	ReadTimeout          time.Duration
+	WriteTimeout         time.Duration
+	PingInterval         time.Duration
+	PrivateChannelPrefix string
+	Websocket            WebsocketConfig
+	GRPC                 GRPCConfig
 }
 
 // DefaultConfig returns Config with default options.
 func DefaultConfig() *Config {
 	return &Config{
-		PingIntervalMilliseconds: DefaultPingIntervalMilliseconds,
-		ReadTimeoutMilliseconds:  DefaultReadTimeoutMilliseconds,
-		WriteTimeoutMilliseconds: DefaultWriteTimeoutMilliseconds,
-		PrivateChannelPrefix:     DefaultPrivateChannelPrefix,
-		Websocket:                WebsocketConfig{},
-		GRPC:                     GRPCConfig{},
+		PingInterval:         DefaultPingInterval,
+		ReadTimeout:          DefaultReadTimeout,
+		WriteTimeout:         DefaultWriteTimeout,
+		PrivateChannelPrefix: DefaultPrivateChannelPrefix,
+		Websocket:            WebsocketConfig{},
+		GRPC:                 GRPCConfig{},
 	}
 }
 
@@ -527,7 +535,7 @@ func (c *Client) doReconnect() error {
 }
 
 func (c *Client) pinger(closeCh chan struct{}) {
-	timeout := time.Duration(c.config.PingIntervalMilliseconds) * time.Millisecond
+	timeout := time.Duration(c.config.PingInterval)
 	for {
 		select {
 		case <-c.delayPing:
@@ -570,7 +578,7 @@ func (c *Client) writer(t transport, closeCh chan struct{}) {
 	for {
 		select {
 		case cmd := <-c.write:
-			err := t.Write(cmd, time.Duration(c.config.WriteTimeoutMilliseconds)*time.Millisecond)
+			err := t.Write(cmd, c.config.WriteTimeout)
 			if err != nil {
 				c.handleDisconnect(&disconnect{Reason: "write error", Reconnect: true})
 				return
@@ -1278,8 +1286,7 @@ func (c *Client) sendSync(cmd *proto.Command) (proto.Reply, error) {
 	if err != nil {
 		return proto.Reply{}, err
 	}
-	timeout := time.Duration(c.config.ReadTimeoutMilliseconds) * time.Millisecond
-	return c.wait(waitCh, timeout)
+	return c.wait(waitCh, c.config.ReadTimeout)
 }
 
 func (c *Client) send(cmd *proto.Command) error {

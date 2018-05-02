@@ -29,7 +29,7 @@ func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.Disconnec
 
 type subEventHandler struct{}
 
-func (h *subEventHandler) OnPublication(sub *centrifuge.Sub, e centrifuge.PublicationEvent) {
+func (h *subEventHandler) OnPublish(sub *centrifuge.Sub, e centrifuge.PublishEvent) {
 	log.Println(fmt.Sprintf("New message received in channel %s: %s", sub.Channel(), string(e.Data)))
 }
 
@@ -63,7 +63,7 @@ func newConnection() *centrifuge.Client {
 
 	subEvents := centrifuge.NewSubEventHandler()
 	subHandler := &subEventHandler{}
-	subEvents.OnPublication(subHandler)
+	subEvents.OnPublish(subHandler)
 	subEvents.OnSubscribeSuccess(subHandler)
 	subEvents.OnSubscribeError(subHandler)
 	subEvents.OnUnsubscribe(subHandler)

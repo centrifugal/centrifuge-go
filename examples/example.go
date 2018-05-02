@@ -17,7 +17,7 @@ type testMessage struct {
 
 type subEventHandler struct{}
 
-func (h *subEventHandler) OnPublication(sub *centrifuge.Sub, e centrifuge.PublicationEvent) {
+func (h *subEventHandler) OnPublish(sub *centrifuge.Sub, e centrifuge.PublishEvent) {
 	log.Println(fmt.Sprintf("New publication received from channel %s: %s", sub.Channel(), string(e.Data)))
 }
 
@@ -43,7 +43,7 @@ func main() {
 
 	events := centrifuge.NewSubEventHandler()
 	subEventHandler := &subEventHandler{}
-	events.OnPublication(subEventHandler)
+	events.OnPublish(subEventHandler)
 	events.OnJoin(subEventHandler)
 	events.OnLeave(subEventHandler)
 
