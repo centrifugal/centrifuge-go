@@ -78,8 +78,8 @@ type Config struct {
 }
 
 // DefaultConfig returns Config with default options.
-func DefaultConfig() *Config {
-	return &Config{
+func DefaultConfig() Config {
+	return Config{
 		PingInterval:         DefaultPingInterval,
 		ReadTimeout:          DefaultReadTimeout,
 		WriteTimeout:         DefaultWriteTimeout,
@@ -100,13 +100,6 @@ type PrivateSign struct {
 type PrivateSubEvent struct {
 	ClientID string
 	Channel  string
-}
-
-func newPrivateSubEvent(client string, channel string) *PrivateSubEvent {
-	return &PrivateSubEvent{
-		ClientID: client,
-		Channel:  channel,
-	}
 }
 
 // ConnectEvent is a connect event context passed to OnConnect callback.
@@ -144,17 +137,17 @@ type DisconnectHandler interface {
 
 // MessageHandler is an interface describing how to async message from server.
 type MessageHandler interface {
-	OnMessage(*Client, *MessageEvent)
+	OnMessage(*Client, MessageEvent)
 }
 
 // PrivateSubHandler is an interface describing how to handle private subscription request.
 type PrivateSubHandler interface {
-	OnPrivateSub(*Client, *PrivateSubEvent) (*PrivateSign, error)
+	OnPrivateSub(*Client, PrivateSubEvent) (PrivateSign, error)
 }
 
 // RefreshHandler is an interface describing how to handle credentials refresh event.
 type RefreshHandler interface {
-	OnRefresh(*Client) (*Credentials, error)
+	OnRefresh(*Client) (Credentials, error)
 }
 
 // ErrorHandler is an interface describing how to handle error event.
@@ -162,8 +155,8 @@ type ErrorHandler interface {
 	OnError(*Client, ErrorEvent)
 }
 
-// EventHandler has all event handlers for client.
-type EventHandler struct {
+// EventHub has all event handlers for client.
+type EventHub struct {
 	onConnect    ConnectHandler
 	onDisconnect DisconnectHandler
 	onPrivateSub PrivateSubHandler
@@ -172,38 +165,38 @@ type EventHandler struct {
 	onMessage    MessageHandler
 }
 
-// NewEventHandler initializes new EventHandler.
-func NewEventHandler() *EventHandler {
-	return &EventHandler{}
+// NewEventHub initializes new EventHub.
+func NewEventHub() *EventHub {
+	return &EventHub{}
 }
 
 // OnConnect is a function to handle connect event.
-func (h *EventHandler) OnConnect(handler ConnectHandler) {
+func (h *EventHub) OnConnect(handler ConnectHandler) {
 	h.onConnect = handler
 }
 
 // OnDisconnect is a function to handle disconnect event.
-func (h *EventHandler) OnDisconnect(handler DisconnectHandler) {
+func (h *EventHub) OnDisconnect(handler DisconnectHandler) {
 	h.onDisconnect = handler
 }
 
 // OnPrivateSub needed to handle private channel subscriptions.
-func (h *EventHandler) OnPrivateSub(handler PrivateSubHandler) {
+func (h *EventHub) OnPrivateSub(handler PrivateSubHandler) {
 	h.onPrivateSub = handler
 }
 
 // OnRefresh handles refresh event when client's credentials expired and must be refreshed.
-func (h *EventHandler) OnRefresh(handler RefreshHandler) {
+func (h *EventHub) OnRefresh(handler RefreshHandler) {
 	h.onRefresh = handler
 }
 
 // OnError is a function that will receive unhandled errors for logging.
-func (h *EventHandler) OnError(handler ErrorHandler) {
+func (h *EventHub) OnError(handler ErrorHandler) {
 	h.onError = handler
 }
 
 // OnMessage allows to process async message from server to client.
-func (h *EventHandler) OnMessage(handler MessageHandler) {
+func (h *EventHub) OnMessage(handler MessageHandler) {
 	h.onMessage = handler
 }
 
@@ -220,7 +213,7 @@ type Client struct {
 	mutex             sync.RWMutex
 	url               string
 	encoding          proto.Encoding
-	config            *Config
+	config            Config
 	credentials       *Credentials
 	connectData       proto.Raw
 	transport         transport
@@ -228,7 +221,7 @@ type Client struct {
 	status            int
 	id                string
 	subsMutex         sync.RWMutex
-	subs              map[string]*Sub
+	subs              map[string]*Subscription
 	requestsMutex     sync.RWMutex
 	requests          map[uint32]chan proto.Reply
 	receive           chan []byte
@@ -236,7 +229,7 @@ type Client struct {
 	closeCh           chan struct{}
 	reconnect         bool
 	reconnectStrategy reconnectStrategy
-	events            *EventHandler
+	events            *EventHub
 	delayPing         chan struct{}
 	paramsEncoder     proto.ParamsEncoder
 	resultDecoder     proto.ResultDecoder
@@ -250,7 +243,7 @@ func (c *Client) nextMsgID() int32 {
 }
 
 // New initializes Client.
-func New(u string, events *EventHandler, config *Config) *Client {
+func New(u string, events *EventHub, config Config) *Client {
 	var encoding proto.Encoding
 
 	if strings.HasPrefix(u, "ws") {
@@ -268,7 +261,7 @@ func New(u string, events *EventHandler, config *Config) *Client {
 	c := &Client{
 		url:               u,
 		encoding:          encoding,
-		subs:              make(map[string]*Sub),
+		subs:              make(map[string]*Subscription),
 		config:            config,
 		requests:          make(map[uint32]chan proto.Reply),
 		reconnect:         true,
@@ -432,7 +425,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	c.status = DISCONNECTED
 
 	c.subsMutex.RLock()
-	unsubs := make([]*Sub, 0, len(c.subs))
+	unsubs := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
 		unsubs = append(unsubs, s)
 	}
@@ -619,7 +612,7 @@ func (c *Client) handleMessage(msg proto.Message) error {
 	}
 
 	if handler != nil {
-		ctx := &MessageEvent{Data: msg.Data}
+		ctx := MessageEvent{Data: msg.Data}
 		handler.OnMessage(c, ctx)
 	}
 
@@ -709,7 +702,6 @@ func (c *Client) Connect() error {
 
 	err := c.connect()
 	if err != nil {
-		panic(1)
 		if c.transport == nil {
 			c.handleError(err)
 			c.handleDisconnect(nil)
@@ -849,7 +841,7 @@ func (c *Client) disconnect(reconnect bool) error {
 	return nil
 }
 
-// Disconnect client from Centrifugo.
+// Disconnect client from server.
 func (c *Client) Disconnect() error {
 	c.disconnect(false)
 	return nil
@@ -869,7 +861,7 @@ func (c *Client) refreshCredentials() error {
 		return err
 	}
 	c.mutex.Lock()
-	c.credentials = creds
+	c.credentials = &creds
 	c.mutex.Unlock()
 	return nil
 }
@@ -978,15 +970,18 @@ func (c *Client) sendConnect() (proto.ConnectResult, error) {
 
 func (c *Client) privateSign(channel string) (*PrivateSign, error) {
 	var ps *PrivateSign
-	var err error
 	if strings.HasPrefix(channel, c.config.PrivateChannelPrefix) && c.events != nil {
 		handler := c.events.onPrivateSub
 		if handler != nil {
-			ev := newPrivateSubEvent(c.clientID(), channel)
-			ps, err = handler.OnPrivateSub(c, ev)
+			ev := PrivateSubEvent{
+				ClientID: c.clientID(),
+				Channel:  channel,
+			}
+			privateSign, err := handler.OnPrivateSub(c, ev)
 			if err != nil {
 				return nil, err
 			}
+			ps = &privateSign
 		} else {
 			return nil, errors.New("PrivateSubHandler must be set to handle private channel subscriptions")
 		}
@@ -995,14 +990,14 @@ func (c *Client) privateSign(channel string) (*PrivateSign, error) {
 }
 
 // Subscribe allows to subscribe on channel.
-func (c *Client) Subscribe(channel string, events *SubEventHandler) *Sub {
+func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) *Subscription {
 	c.subsMutex.Lock()
-	var sub *Sub
+	var sub *Subscription
 	if _, ok := c.subs[channel]; ok {
 		sub = c.subs[channel]
 		sub.events = events
 	} else {
-		sub = c.newSub(channel, events)
+		sub = c.newSubscription(channel, events)
 	}
 	c.subs[channel] = sub
 	c.subsMutex.Unlock()
@@ -1017,14 +1012,14 @@ func (c *Client) Subscribe(channel string, events *SubEventHandler) *Sub {
 }
 
 // SubscribeSync allows to subscribe on channel and wait until subscribe success or error.
-func (c *Client) SubscribeSync(channel string, events *SubEventHandler) (*Sub, error) {
+func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*Subscription, error) {
 	c.subsMutex.Lock()
-	var sub *Sub
+	var sub *Subscription
 	if _, ok := c.subs[channel]; ok {
 		sub = c.subs[channel]
 		sub.events = events
 	} else {
-		sub = c.newSub(channel, events)
+		sub = c.newSubscription(channel, events)
 	}
 	c.subs[channel] = sub
 	c.subsMutex.Unlock()
@@ -1033,7 +1028,7 @@ func (c *Client) SubscribeSync(channel string, events *SubEventHandler) (*Sub, e
 	return sub, err
 }
 
-func (c *Client) subscribe(sub *Sub) error {
+func (c *Client) subscribe(sub *Subscription) error {
 
 	channel := sub.Channel()
 

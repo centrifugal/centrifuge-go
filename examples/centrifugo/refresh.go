@@ -10,37 +10,37 @@ import (
 )
 
 // In production you need to receive credentials from application backend.
-func credentials() *centrifuge.Credentials {
+func credentials() centrifuge.Credentials {
 	// Never show secret to client of your application. Keep it on your application backend only.
 	secret := "secret"
 	// Application user ID.
 	user := "42"
-	// Current timestamp as string.
-	timestamp := centrifuge.Exp(60)
+	// Exp as string.
+	exp := centrifuge.Exp(60)
 	// Empty info.
 	info := ""
-	// Generate client token so Centrifugo server can trust connection parameters received from client.
-	token := centrifuge.GenerateClientSign(secret, user, exp, info)
+	// Generate sign so Centrifugo server can trust connection parameters received from client.
+	sign := centrifuge.GenerateClientSign(secret, user, exp, info)
 
-	return &centrifuge.Credentials{
-		User:  user,
-		Exp:   exp,
-		Info:  info,
-		Token: token,
+	return centrifuge.Credentials{
+		User: user,
+		Exp:  exp,
+		Info: info,
+		Sign: sign,
 	}
 }
 
 type eventHandler struct{}
 
-func (h *eventHandler) OnConnect(c *centrifuge.Client, ctx centrifuge.ConnectContext) {
+func (h *eventHandler) OnConnect(c *centrifuge.Client, e centrifuge.ConnectEvent) {
 	log.Println("Connected")
 }
 
-func (h *eventHandler) OnDisconnect(c *centrifuge.Client, ctx centrifuge.DisconnectContext) {
+func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
 	log.Println("Disconnected")
 }
 
-func (h *eventHandler) OnRefresh(c *centrifuge.Client) (*centrifuge.Credentials, error) {
+func (h *eventHandler) OnRefresh(c *centrifuge.Client) (centrifuge.Credentials, error) {
 	log.Println("Refresh")
 	return credentials(), nil
 }
@@ -62,7 +62,8 @@ func newConnection() *centrifuge.Client {
 	events.OnRefresh(handler)
 	events.OnConnect(handler)
 
-	c := centrifuge.New(wsURL, creds, events, centrifuge.DefaultConfig())
+	c := centrifuge.New(wsURL, events, centrifuge.DefaultConfig())
+	c.SetCredentials(creds)
 
 	err := c.Connect()
 	if err != nil {

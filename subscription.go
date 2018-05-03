@@ -41,38 +41,38 @@ type PublishEvent struct {
 // PublishHandler is a function to handle messages published in
 // channels.
 type PublishHandler interface {
-	OnPublish(*Sub, PublishEvent)
+	OnPublish(*Subscription, PublishEvent)
 }
 
 // JoinHandler is a function to handle join messages.
 type JoinHandler interface {
-	OnJoin(*Sub, JoinEvent)
+	OnJoin(*Subscription, JoinEvent)
 }
 
 // LeaveHandler is a function to handle leave messages.
 type LeaveHandler interface {
-	OnLeave(*Sub, LeaveEvent)
+	OnLeave(*Subscription, LeaveEvent)
 }
 
 // UnsubscribeHandler is a function to handle unsubscribe event.
 type UnsubscribeHandler interface {
-	OnUnsubscribe(*Sub, UnsubscribeEvent)
+	OnUnsubscribe(*Subscription, UnsubscribeEvent)
 }
 
 // SubscribeSuccessHandler is a function to handle subscribe success
 // event.
 type SubscribeSuccessHandler interface {
-	OnSubscribeSuccess(*Sub, SubscribeSuccessEvent)
+	OnSubscribeSuccess(*Subscription, SubscribeSuccessEvent)
 }
 
 // SubscribeErrorHandler is a function to handle subscribe error event.
 type SubscribeErrorHandler interface {
-	OnSubscribeError(*Sub, SubscribeErrorEvent)
+	OnSubscribeError(*Subscription, SubscribeErrorEvent)
 }
 
-// SubEventHandler contains callback functions that will be called when
+// SubscriptionEventHub contains callback functions that will be called when
 // corresponding event happens with subscription to channel.
-type SubEventHandler struct {
+type SubscriptionEventHub struct {
 	onPublish          PublishHandler
 	onJoin             JoinHandler
 	onLeave            LeaveHandler
@@ -81,38 +81,38 @@ type SubEventHandler struct {
 	onSubscribeError   SubscribeErrorHandler
 }
 
-// NewSubEventHandler initializes new SubEventHandler.
-func NewSubEventHandler() *SubEventHandler {
-	return &SubEventHandler{}
+// NewSubscriptionEventHub initializes new SubscriptionEventHub.
+func NewSubscriptionEventHub() *SubscriptionEventHub {
+	return &SubscriptionEventHub{}
 }
 
 // OnPublish allows to set PublishHandler to SubEventHandler.
-func (h *SubEventHandler) OnPublish(handler PublishHandler) {
+func (h *SubscriptionEventHub) OnPublish(handler PublishHandler) {
 	h.onPublish = handler
 }
 
 // OnJoin allows to set JoinHandler to SubEventHandler.
-func (h *SubEventHandler) OnJoin(handler JoinHandler) {
+func (h *SubscriptionEventHub) OnJoin(handler JoinHandler) {
 	h.onJoin = handler
 }
 
 // OnLeave allows to set LeaveHandler to SubEventHandler.
-func (h *SubEventHandler) OnLeave(handler LeaveHandler) {
+func (h *SubscriptionEventHub) OnLeave(handler LeaveHandler) {
 	h.onLeave = handler
 }
 
 // OnUnsubscribe allows to set UnsubscribeHandler to SubEventHandler.
-func (h *SubEventHandler) OnUnsubscribe(handler UnsubscribeHandler) {
+func (h *SubscriptionEventHub) OnUnsubscribe(handler UnsubscribeHandler) {
 	h.onUnsubscribe = handler
 }
 
 // OnSubscribeSuccess allows to set SubscribeSuccessHandler to SubEventHandler.
-func (h *SubEventHandler) OnSubscribeSuccess(handler SubscribeSuccessHandler) {
+func (h *SubscriptionEventHub) OnSubscribeSuccess(handler SubscribeSuccessHandler) {
 	h.onSubscribeSuccess = handler
 }
 
 // OnSubscribeError allows to set SubscribeErrorHandler to SubEventHandler.
-func (h *SubEventHandler) OnSubscribeError(handler SubscribeErrorHandler) {
+func (h *SubscriptionEventHub) OnSubscribeError(handler SubscribeErrorHandler) {
 	h.onSubscribeError = handler
 }
 
@@ -125,13 +125,13 @@ const (
 	UNSUBSCRIBED
 )
 
-// Sub describes client subscription to channel.
-type Sub struct {
+// Subscription represents client subscription to channel.
+type Subscription struct {
 	mu              sync.Mutex
 	channel         string
 	centrifuge      *Client
 	status          int
-	events          *SubEventHandler
+	events          *SubscriptionEventHub
 	lastMessageID   *string
 	lastMessageMu   sync.RWMutex
 	resubscribed    bool
@@ -141,8 +141,8 @@ type Sub struct {
 	subFutures      []chan error
 }
 
-func (c *Client) newSub(channel string, events *SubEventHandler) *Sub {
-	s := &Sub{
+func (c *Client) newSubscription(channel string, events *SubscriptionEventHub) *Subscription {
+	s := &Subscription{
 		centrifuge:      c,
 		channel:         channel,
 		events:          events,
@@ -153,11 +153,11 @@ func (c *Client) newSub(channel string, events *SubEventHandler) *Sub {
 }
 
 // Channel returns subscription channel.
-func (s *Sub) Channel() string {
+func (s *Subscription) Channel() string {
 	return s.channel
 }
 
-func (s *Sub) newSubFuture() chan error {
+func (s *Subscription) newSubFuture() chan error {
 	fut := make(chan error, 1)
 	s.mu.Lock()
 	if s.status == SUBSCRIBED {
@@ -172,7 +172,7 @@ func (s *Sub) newSubFuture() chan error {
 }
 
 // Sub.mu lock must be held outside.
-func (s *Sub) resolveSubFutures(err error) {
+func (s *Subscription) resolveSubFutures(err error) {
 	for _, ch := range s.subFutures {
 		select {
 		case ch <- err:
@@ -182,7 +182,7 @@ func (s *Sub) resolveSubFutures(err error) {
 	s.subFutures = nil
 }
 
-func (s *Sub) removeSubFuture(subFuture chan error) {
+func (s *Subscription) removeSubFuture(subFuture chan error) {
 	s.mu.Lock()
 	for i, v := range s.subFutures {
 		if v == subFuture {
@@ -194,7 +194,7 @@ func (s *Sub) removeSubFuture(subFuture chan error) {
 }
 
 // Publish allows to publish data to channel.
-func (s *Sub) Publish(data []byte) error {
+func (s *Subscription) Publish(data []byte) error {
 	subFuture := s.newSubFuture()
 	select {
 	case err := <-subFuture:
@@ -209,16 +209,16 @@ func (s *Sub) Publish(data []byte) error {
 }
 
 // History allows to extract channel history.
-func (s *Sub) History() ([]Publication, error) {
+func (s *Subscription) History() ([]Publication, error) {
 	return s.history()
 }
 
 // Presence allows to extract channel history.
-func (s *Sub) Presence() (map[string]ClientInfo, error) {
+func (s *Subscription) Presence() (map[string]ClientInfo, error) {
 	return s.presence()
 }
 
-func (s *Sub) history() ([]Publication, error) {
+func (s *Subscription) history() ([]Publication, error) {
 	subFuture := s.newSubFuture()
 	select {
 	case err := <-subFuture:
@@ -232,7 +232,7 @@ func (s *Sub) history() ([]Publication, error) {
 	}
 }
 
-func (s *Sub) presence() (map[string]proto.ClientInfo, error) {
+func (s *Subscription) presence() (map[string]proto.ClientInfo, error) {
 	subFuture := s.newSubFuture()
 	select {
 	case err := <-subFuture:
@@ -247,21 +247,21 @@ func (s *Sub) presence() (map[string]proto.ClientInfo, error) {
 }
 
 // Unsubscribe allows to unsubscribe from channel.
-func (s *Sub) Unsubscribe() error {
+func (s *Subscription) Unsubscribe() error {
 	s.centrifuge.unsubscribe(s.channel)
 	s.triggerOnUnsubscribe(false)
 	return nil
 }
 
 // Subscribe allows to subscribe again after unsubscribing.
-func (s *Sub) Subscribe() error {
+func (s *Subscription) Subscribe() error {
 	s.mu.Lock()
 	s.needResubscribe = true
 	s.mu.Unlock()
 	return s.resubscribe()
 }
 
-func (s *Sub) triggerOnUnsubscribe(needResubscribe bool) {
+func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool) {
 	s.mu.Lock()
 	if s.status != SUBSCRIBED {
 		s.mu.Unlock()
@@ -276,7 +276,7 @@ func (s *Sub) triggerOnUnsubscribe(needResubscribe bool) {
 	}
 }
 
-func (s *Sub) subscribeSuccess(recovered bool) {
+func (s *Subscription) subscribeSuccess(recovered bool) {
 	s.mu.Lock()
 	if s.status == SUBSCRIBED {
 		s.mu.Unlock()
@@ -296,7 +296,7 @@ func (s *Sub) subscribeSuccess(recovered bool) {
 	s.mu.Unlock()
 }
 
-func (s *Sub) subscribeError(err error) {
+func (s *Subscription) subscribeError(err error) {
 	s.mu.Lock()
 	if s.status == SUBERROR {
 		s.mu.Unlock()
@@ -312,7 +312,7 @@ func (s *Sub) subscribeError(err error) {
 	}
 }
 
-func (s *Sub) handlePublication(pub Publication) {
+func (s *Subscription) handlePublication(pub Publication) {
 	var handler PublishHandler
 	if s.events != nil && s.events.onPublish != nil {
 		handler = s.events.onPublish
@@ -326,7 +326,7 @@ func (s *Sub) handlePublication(pub Publication) {
 	}
 }
 
-func (s *Sub) handleJoin(info proto.ClientInfo) {
+func (s *Subscription) handleJoin(info proto.ClientInfo) {
 	var handler JoinHandler
 	if s.events != nil && s.events.onJoin != nil {
 		handler = s.events.onJoin
@@ -336,7 +336,7 @@ func (s *Sub) handleJoin(info proto.ClientInfo) {
 	}
 }
 
-func (s *Sub) handleLeave(info proto.ClientInfo) {
+func (s *Subscription) handleLeave(info proto.ClientInfo) {
 	var handler LeaveHandler
 	if s.events != nil && s.events.onLeave != nil {
 		handler = s.events.onLeave
@@ -346,11 +346,11 @@ func (s *Sub) handleLeave(info proto.ClientInfo) {
 	}
 }
 
-func (s *Sub) handleUnsub(m proto.Unsub) {
+func (s *Subscription) handleUnsub(m proto.Unsub) {
 	s.Unsubscribe()
 }
 
-func (s *Sub) resubscribe() error {
+func (s *Subscription) resubscribe() error {
 	s.mu.Lock()
 	if s.status == SUBSCRIBED || s.status == SUBSCRIBING {
 		s.mu.Unlock()
@@ -404,7 +404,7 @@ func (s *Sub) resubscribe() error {
 	return nil
 }
 
-func (s *Sub) recover(res proto.SubscribeResult) {
+func (s *Subscription) recover(res proto.SubscribeResult) {
 	if len(res.Publications) > 0 {
 		for i := len(res.Publications) - 1; i >= 0; i-- {
 			s.handlePublication(*res.Publications[i])

@@ -29,19 +29,19 @@ func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.Disconnec
 
 type subEventHandler struct{}
 
-func (h *subEventHandler) OnPublish(sub *centrifuge.Sub, e centrifuge.PublishEvent) {
+func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
 	log.Println(fmt.Sprintf("New message received in channel %s: %s", sub.Channel(), string(e.Data)))
 }
 
-func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Sub, e centrifuge.SubscribeSuccessEvent) {
+func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
 	log.Println(fmt.Sprintf("Subscribed on %s: recovered %s, resubscribed %s", sub.Channel(), e.Recovered, e.Resubscribed))
 }
 
-func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Sub, e centrifuge.SubscribeErrorEvent) {
+func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
 	log.Println(fmt.Sprintf("Error subscribing on %s: %s", sub.Channel(), e.Error))
 }
 
-func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Sub, e centrifuge.UnsubscribeEvent) {
+func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifuge.UnsubscribeEvent) {
 	log.Println(fmt.Sprintf("Unsubscribed from %s", sub.Channel()))
 }
 
@@ -50,7 +50,7 @@ func newConnection() *centrifuge.Client {
 
 	handler := &eventHandler{}
 
-	events := centrifuge.NewEventHandler()
+	events := centrifuge.NewEventHub()
 	events.OnConnect(handler)
 	events.OnDisconnect(handler)
 
@@ -61,7 +61,7 @@ func newConnection() *centrifuge.Client {
 		log.Fatalln(err)
 	}
 
-	subEvents := centrifuge.NewSubEventHandler()
+	subEvents := centrifuge.NewSubscriptionEventHub()
 	subHandler := &subEventHandler{}
 	subEvents.OnPublish(subHandler)
 	subEvents.OnSubscribeSuccess(subHandler)

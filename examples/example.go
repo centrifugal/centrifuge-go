@@ -17,15 +17,15 @@ type testMessage struct {
 
 type subEventHandler struct{}
 
-func (h *subEventHandler) OnPublish(sub *centrifuge.Sub, e centrifuge.PublishEvent) {
+func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
 	log.Println(fmt.Sprintf("New publication received from channel %s: %s", sub.Channel(), string(e.Data)))
 }
 
-func (h *subEventHandler) OnJoin(sub *centrifuge.Sub, e centrifuge.JoinEvent) {
+func (h *subEventHandler) OnJoin(sub *centrifuge.Subscription, e centrifuge.JoinEvent) {
 	log.Println(fmt.Sprintf("User %s (client ID %s) joined channel %s", e.User, e.Client, sub.Channel()))
 }
 
-func (h *subEventHandler) OnLeave(sub *centrifuge.Sub, e centrifuge.LeaveEvent) {
+func (h *subEventHandler) OnLeave(sub *centrifuge.Subscription, e centrifuge.LeaveEvent) {
 	log.Println(fmt.Sprintf("User %s (client ID %s) left channel %s", e.User, e.Client, sub.Channel()))
 }
 
@@ -41,7 +41,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	events := centrifuge.NewSubEventHandler()
+	events := centrifuge.NewSubscriptionEventHub()
 	subEventHandler := &subEventHandler{}
 	events.OnPublish(subEventHandler)
 	events.OnJoin(subEventHandler)

@@ -50,7 +50,7 @@ type subEventHandler struct {
 	throughput *throughput
 }
 
-func (h *subEventHandler) OnPublish(sub *centrifuge.Sub, e centrifuge.PublishEvent) {
+func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
 	val := atomic.AddInt32(&h.throughput.msgReceived, 1)
 	if val == int32(h.throughput.totalMsg) {
 		close(h.throughput.done)
@@ -82,7 +82,7 @@ func main() {
 		time.Sleep(time.Millisecond)
 		go func(n int) {
 			c := newConnection(n)
-			events := centrifuge.NewSubEventHandler()
+			events := centrifuge.NewSubscriptionEventHub()
 			events.OnPublish(&subEventHandler{t})
 			c.SubscribeSync(channel, events)
 			wg.Done()

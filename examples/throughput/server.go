@@ -26,7 +26,7 @@ func authMiddleware(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Our middleware logic goes here...
 		ctx := r.Context()
-		ctx = context.WithValue(ctx, centrifuge.CredentialsContextKey, &centrifuge.Credentials{
+		ctx = centrifuge.SetCredentials(ctx, &centrifuge.Credentials{
 			UserID: "42",
 			Exp:    time.Now().Unix() + 10,
 			Info:   []byte(`{"name": "Alexander"}`),
@@ -89,7 +89,7 @@ func main() {
 	// Also handle GRPC client connections on :8002.
 	authInterceptor := func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		ctx := ss.Context()
-		newCtx := context.WithValue(ctx, centrifuge.CredentialsContextKey, &centrifuge.Credentials{
+		newCtx := centrifuge.SetCredentials(ctx, &centrifuge.Credentials{
 			UserID: "42",
 			Exp:    time.Now().Unix() + 10,
 			Info:   []byte(`{"name": "Alexander"}`),

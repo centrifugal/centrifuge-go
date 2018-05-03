@@ -32,25 +32,25 @@ func credentials() *centrifuge.Credentials {
 
 type eventHandler struct{}
 
-func (h *eventHandler) OnPrivateSub(c *centrifuge.Client, req *centrifuge.PrivateRequest) (*centrifuge.PrivateSign, error) {
+func (h *eventHandler) OnPrivateSub(c *centrifuge.Client, e centrifuge.PrivateSubEvent) (centrifuge.PrivateSign, error) {
 	// Here we allow everyone to subscribe on private channel.
 	// To reject subscription we could return any error from this func.
 	// In most real application secret key must not be kept on client side
 	// and here must be request to your backend to get channel sign.
 	info := ""
-	sign := centrifuge.GenerateChannelSign("secret", req.ClientID, req.Channel, info)
-	privateSign := &centrifuge.PrivateSign{Sign: sign, Info: info}
+	sign := centrifuge.GenerateChannelSign("secret", e.ClientID, e.Channel, info)
+	privateSign := centrifuge.PrivateSign{Sign: sign, Info: info}
 	return privateSign, nil
 }
 
 type subEventHandler struct{}
 
-func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Sub, e *centrifuge.SubscribeSuccessEvent) {
+func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
 	log.Println(fmt.Sprintf("Successfully subscribed on private channel %s", sub.Channel()))
 	os.Exit(0)
 }
 
-func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Sub, e *centrifuge.SubscribeErrorEvent) {
+func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
 	log.Println(fmt.Sprintf("Error subscribing to private channel %s: %v", sub.Channel(), e.Error))
 	os.Exit(1)
 }
@@ -63,7 +63,8 @@ func newConnection() *centrifuge.Client {
 	events := centrifuge.NewEventHandler()
 	events.OnPrivateSub(handler)
 
-	c := centrifuge.New(wsURL, creds, events, centrifuge.DefaultConfig())
+	c := centrifuge.New(wsURL, events, centrifuge.DefaultConfig())
+	c.SetCredentials(creds)
 
 	err := c.Connect()
 	if err != nil {
@@ -77,7 +78,7 @@ func main() {
 	c := newConnection()
 	defer c.Close()
 
-	events := centrifuge.NewSubEventHandler()
+	events := centrifuge.NewSubscriptionEventHandler()
 	subEventHandler := &subEventHandler{}
 	events.OnSubscribeSuccess(subEventHandler)
 	events.OnSubscribeError(subEventHandler)
