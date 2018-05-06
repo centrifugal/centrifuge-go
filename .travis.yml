@@ -1,7 +1,8 @@
 language: go
 install:
-- go get github.com/gorilla/websocket
-- go get github.com/jpillora/backoff
+- go get -u github.com/golang/dep/cmd/dep
+- dep ensure
 go:
-  - "1.10.1" 
+  - "1.10.2" 
+  - "tip"
 script: go test -v

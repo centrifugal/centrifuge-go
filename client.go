@@ -1005,6 +1005,7 @@ func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) *Subscr
 	go func() {
 		err := sub.resubscribe()
 		if err != nil {
+			c.handleError(err)
 			c.disconnect(true)
 		}
 	}()

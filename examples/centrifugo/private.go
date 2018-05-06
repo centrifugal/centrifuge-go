@@ -60,7 +60,7 @@ func newConnection() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
 
 	handler := &eventHandler{}
-	events := centrifuge.NewEventHandler()
+	events := centrifuge.NewEventHub()
 	events.OnPrivateSub(handler)
 
 	c := centrifuge.New(wsURL, events, centrifuge.DefaultConfig())
@@ -78,7 +78,7 @@ func main() {
 	c := newConnection()
 	defer c.Close()
 
-	events := centrifuge.NewSubscriptionEventHandler()
+	events := centrifuge.NewSubscriptionEventHub()
 	subEventHandler := &subEventHandler{}
 	events.OnSubscribeSuccess(subEventHandler)
 	events.OnSubscribeError(subEventHandler)
