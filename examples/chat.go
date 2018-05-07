@@ -90,9 +90,12 @@ func main() {
 	subEvents.OnSubscribeError(handler)
 	subEvents.OnUnsubscribe(handler)
 
-	sub := c.Subscribe("chat:index", subEvents)
+	sub, err := c.Subscribe("chat:index", subEvents)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
-	err := c.Connect()
+	err = c.Connect()
 	if err != nil {
 		log.Fatalln(err)
 	}

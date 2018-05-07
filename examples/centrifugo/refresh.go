@@ -10,7 +10,7 @@ import (
 )
 
 // In production you need to receive credentials from application backend.
-func credentials() centrifuge.Credentials {
+func credentials() *centrifuge.Credentials {
 	// Never show secret to client of your application. Keep it on your application backend only.
 	secret := "secret"
 	// Application user ID.
@@ -22,7 +22,7 @@ func credentials() centrifuge.Credentials {
 	// Generate sign so Centrifugo server can trust connection parameters received from client.
 	sign := centrifuge.GenerateClientSign(secret, user, exp, info)
 
-	return centrifuge.Credentials{
+	return &centrifuge.Credentials{
 		User: user,
 		Exp:  exp,
 		Info: info,
@@ -57,7 +57,7 @@ func newConnection() *centrifuge.Client {
 
 	handler := &eventHandler{}
 
-	events := centrifuge.NewEventHandler()
+	events := centrifuge.NewEventHub()
 	events.OnDisconnect(handler)
 	events.OnRefresh(handler)
 	events.OnConnect(handler)
@@ -70,7 +70,7 @@ func newConnection() *centrifuge.Client {
 		log.Fatalln(err)
 	}
 
-	subEvents := centrifuge.NewSubEventHandler()
+	subEvents := centrifuge.NewSubscriptionEventHub()
 	subEvents.OnPublish(&subEventHandler{})
 
 	_, err = c.Subscribe("public:chat", subEvents)

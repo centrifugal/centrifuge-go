@@ -54,6 +54,8 @@ var (
 	ErrClientExpired = errors.New("client connection expired")
 	// ErrReconnectFailed ...
 	ErrReconnectFailed = errors.New("reconnect failed")
+	// ErrDuplicateSubscription ...
+	ErrDuplicateSubscription = errors.New("duplicate subscription")
 )
 
 const (
@@ -990,15 +992,14 @@ func (c *Client) privateSign(channel string) (*PrivateSign, error) {
 }
 
 // Subscribe allows to subscribe on channel.
-func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) *Subscription {
+func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) (*Subscription, error) {
 	c.subsMutex.Lock()
 	var sub *Subscription
 	if _, ok := c.subs[channel]; ok {
-		sub = c.subs[channel]
-		sub.events = events
-	} else {
-		sub = c.newSubscription(channel, events)
+		c.subsMutex.Unlock()
+		return nil, ErrDuplicateSubscription
 	}
+	sub = c.newSubscription(channel, events)
 	c.subs[channel] = sub
 	c.subsMutex.Unlock()
 
@@ -1009,7 +1010,7 @@ func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) *Subscr
 			c.disconnect(true)
 		}
 	}()
-	return sub
+	return sub, nil
 }
 
 // SubscribeSync allows to subscribe on channel and wait until subscribe success or error.

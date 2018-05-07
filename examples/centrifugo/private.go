@@ -16,7 +16,7 @@ func credentials() *centrifuge.Credentials {
 	// Application user ID.
 	user := "42"
 	// Exp as string.
-	exp := centrifuge.Exp(60)
+	exp := centrifuge.Exp(1000000000)
 	// Empty info.
 	info := ""
 	// Generate sign so Centrifugo server can trust connection parameters received from client.
@@ -78,13 +78,13 @@ func main() {
 	c := newConnection()
 	defer c.Close()
 
-	events := centrifuge.NewSubscriptionEventHub()
+	subEvents := centrifuge.NewSubscriptionEventHub()
 	subEventHandler := &subEventHandler{}
-	events.OnSubscribeSuccess(subEventHandler)
-	events.OnSubscribeError(subEventHandler)
+	subEvents.OnSubscribeSuccess(subEventHandler)
+	subEvents.OnSubscribeError(subEventHandler)
 
 	// Subscribe on private channel.
-	c.Subscribe("$public:chat", events)
+	c.Subscribe("$public:chat", subEvents)
 
 	select {}
 }

@@ -68,7 +68,10 @@ func newConnection() *centrifuge.Client {
 	subEvents.OnSubscribeError(subHandler)
 	subEvents.OnUnsubscribe(subHandler)
 
-	sub := c.Subscribe("public:chat", subEvents)
+	sub, err := c.Subscribe("public:chat", subEvents)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	go func() {
 		for {
