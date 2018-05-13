@@ -45,6 +45,7 @@ type grpcTransport struct {
 type GRPCConfig struct {
 	TLS      bool
 	CertFile string
+	Metadata metadata.MD
 }
 
 func newGRPCTransport(u string, config GRPCConfig) (transport, error) {
@@ -75,7 +76,13 @@ func newGRPCTransport(u string, config GRPCConfig) (transport, error) {
 
 	client := proto.NewCentrifugeClient(conn)
 
-	stream, err := client.Communicate(context.Background())
+	ctx := context.Background()
+
+	if config.Metadata != nil {
+		ctx = metadata.NewOutgoingContext(ctx, config.Metadata)
+	}
+
+	stream, err := client.Communicate(ctx)
 	if err != nil {
 		conn.Close()
 		return nil, err
