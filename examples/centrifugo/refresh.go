@@ -10,7 +10,7 @@ import (
 )
 
 // In production you need to receive credentials from application backend.
-func credentials() *centrifuge.Credentials {
+func credentials() centrifuge.Credentials {
 	// Never show secret to client of your application. Keep it on your application backend only.
 	secret := "secret"
 	// Application user ID.
@@ -22,7 +22,7 @@ func credentials() *centrifuge.Credentials {
 	// Generate sign so Centrifugo server can trust connection parameters received from client.
 	sign := centrifuge.GenerateClientSign(secret, user, exp, info)
 
-	return &centrifuge.Credentials{
+	return centrifuge.Credentials{
 		User: user,
 		Exp:  exp,
 		Info: info,
@@ -47,7 +47,7 @@ func (h *eventHandler) OnRefresh(c *centrifuge.Client) (centrifuge.Credentials, 
 
 type subEventHandler struct{}
 
-func (h *subEventHandler) OnPublish(sub *centrifuge.Sub, e centrifuge.PublishEvent) {
+func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
 	log.Println(fmt.Sprintf("New message received in channel %s: %s", sub.Channel(), string(e.Data)))
 }
 
@@ -63,7 +63,7 @@ func newConnection() *centrifuge.Client {
 	events.OnConnect(handler)
 
 	c := centrifuge.New(wsURL, events, centrifuge.DefaultConfig())
-	c.SetCredentials(creds)
+	c.SetCredentials(&creds)
 
 	err := c.Connect()
 	if err != nil {
