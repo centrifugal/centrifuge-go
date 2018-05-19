@@ -1106,6 +1106,11 @@ func (c *Client) publish(channel string, data []byte) error {
 	return nil
 }
 
+// Publish data into channel.
+func (c *Client) Publish(channel string, data []byte) error {
+	return c.publish(channel, data)
+}
+
 func (c *Client) sendPublish(channel string, data []byte) (proto.PublishResult, error) {
 	params := &proto.PublishRequest{
 		Channel: channel,
