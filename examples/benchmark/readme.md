@@ -64,33 +64,6 @@ Centrifuge Pub/Sub stats: 468,781 msgs/sec ~ 57.22 MB/sec
   min 4,642 | avg 4,761 | max 4,786 | stddev 45 msgs
 ```
 
-  2018/05/20 19:34:54 user 42 connected via grpc with encoding: protobuf
-panic: send on closed channel
-
-goroutine 4931 [running]:
-github.com/centrifugal/centrifuge.(*grpcTransport).Send(0xc422020400, 0xc4228fc8c0, 0x8, 0x7f0f0bacb670)
-	/root/go/src/github.com/centrifugal/centrifuge/grpc_client.go:142 +0x102
-github.com/centrifugal/centrifuge.(*Hub).broadcastPublication(0xc42022f1d0, 0xc422670488, 0x7, 0xc4202c8ed0, 0x0, 0x0)
-	/root/go/src/github.com/centrifugal/centrifuge/hub.go:260 +0x5b0
-github.com/centrifugal/centrifuge.(*Node).handlePublication(0xc420199520, 0xc422670488, 0x7, 0xc4202c8ed0, 0x9cb900, 0xc4207ce900)
-	/root/go/src/github.com/centrifugal/centrifuge/node.go:289 +0xdf
-github.com/centrifugal/centrifuge.(*engineEventHandler).HandlePublication(0xc42000e638, 0xc422670488, 0x7, 0xc4202c8ed0, 0x16, 0x16)
-	/root/go/src/github.com/centrifugal/centrifuge/node.go:760 +0x4c
-github.com/centrifugal/centrifuge.(*MemoryEngine).publish(0xc42022f260, 0xc422670488, 0x7, 0xc4202c8ed0, 0xc4207d7d40, 0xc4207e06c0)
-	/root/go/src/github.com/centrifugal/centrifuge/engine_memory.go:57 +0xfc
-github.com/centrifugal/centrifuge.(*Node).publish(0xc420199520, 0xc422670488, 0x7, 0xc4202c8ed0, 0xc4207d7d40, 0x0)
-	/root/go/src/github.com/centrifugal/centrifuge/node.go:341 +0xfd
-github.com/centrifugal/centrifuge.(*Client).publishCmd(0xc42079cb40, 0xc4202c8de0, 0x30e, 0x30e)
-	/root/go/src/github.com/centrifugal/centrifuge/client.go:1336 +0x606
-github.com/centrifugal/centrifuge.(*Client).handlePublish(0xc42079cb40, 0xc422cf1500, 0x30e, 0x30e, 0xa39100, 0xc4228c6580, 0x0, 0x0, 0xa39100)
-	/root/go/src/github.com/centrifugal/centrifuge/client.go:607 +0x28a
-github.com/centrifugal/centrifuge.(*Client).handle(0xc42079cb40, 0xc4228c6580, 0x0, 0x0)
-	/root/go/src/github.com/centrifugal/centrifuge/client.go:414 +0x575
-github.com/centrifugal/centrifuge.(*grpcClientService).Communicate.func2(0xb04aa0, 0xc420b56780, 0xc42079cb40, 0xc42000e688, 0xc421868f00)
-	/root/go/src/github.com/centrifugal/centrifuge/grpc_client.go:78 +0xb7
-created by github.com/centrifugal/centrifuge.(*grpcClientService).Communicate
-	/root/go/src/github.com/centrifugal/centrifuge/grpc_client.go:67 +0x576
-
 A bit more subscribers for GRPC (1000)
 
 ```
