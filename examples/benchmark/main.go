@@ -13,6 +13,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"math/rand"
 	"strconv"
 	"sync"
 	"time"
@@ -69,7 +70,7 @@ func main() {
 	startwg.Add(*numSubs)
 	for i := 0; i < *numSubs; i++ {
 		sem <- struct{}{}
-		go runSubscriber(&startwg, &donewg, *numMsgs, *msgSize, sem)
+		go runSubscriber(&startwg, &donewg, *numMsgs, *msgSize, sem, i)
 	}
 	startwg.Wait()
 	log.Printf("%d subscribers ready", *numSubs)
@@ -144,11 +145,11 @@ func runPublisher(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
 	start := time.Now()
 
 	for {
-		err := c.Publish(subj, payload)
+		err := c.Publish(subj+strconv.Itoa(rand.Intn(*numSubs)), payload)
 		if err != nil {
 			log.Fatalf("Error publish: %v", err)
 		}
-		time.Sleep(1000 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 	benchmark.AddPubSample(NewSample(numMsgs, msgSize, start, time.Now()))
 
@@ -164,6 +165,7 @@ type subEventHandler struct {
 	client   *centrifuge.Client
 	start    time.Time
 	sem      chan struct{}
+	i        int
 }
 
 func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
@@ -188,11 +190,11 @@ func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centr
 	log.Fatalf("Subscribe error: %v", e.Error)
 }
 
-func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, sem chan struct{}) {
+func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, sem chan struct{}, i int) {
 	c := newConnection()
 
 	args := flag.Args()
-	subj := args[0]
+	subj := args[0] + strconv.Itoa(i)
 
 	subEvents := &subEventHandler{
 		numMsgs: numMsgs,
@@ -202,6 +204,7 @@ func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, se
 		client:  c,
 		start:   time.Now(),
 		sem:     sem,
+		i:       i,
 	}
 	subEventHub := centrifuge.NewSubscriptionEventHub()
 	subEventHub.OnPublish(subEvents)
