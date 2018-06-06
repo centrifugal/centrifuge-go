@@ -63,12 +63,16 @@ func main() {
 
 	donewg.Add(*numPubs + *numSubs)
 
+	sem := make(chan struct{}, 64)
+
 	// Run Subscribers first
 	startwg.Add(*numSubs)
 	for i := 0; i < *numSubs; i++ {
-		go runSubscriber(&startwg, &donewg, *numMsgs, *msgSize)
+		sem <- struct{}{}
+		go runSubscriber(&startwg, &donewg, *numMsgs, *msgSize, sem)
 	}
 	startwg.Wait()
+	log.Printf("%d subscribers ready", *numSubs)
 
 	// Now Publishers
 	startwg.Add(*numPubs)
@@ -99,7 +103,8 @@ func newConnection() *centrifuge.Client {
 	h.OnError(events)
 	h.OnDisconnect(events)
 	h.OnMessage(events)
-	c := centrifuge.New(*url, h, centrifuge.DefaultConfig())
+	conf := centrifuge.DefaultConfig()
+	c := centrifuge.New(*url, h, conf)
 
 	err := c.Connect()
 	if err != nil {
@@ -138,11 +143,12 @@ func runPublisher(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
 
 	start := time.Now()
 
-	for i := 0; i < numMsgs; i++ {
+	for {
 		err := c.Publish(subj, payload)
 		if err != nil {
 			log.Fatalf("Error publish: %v", err)
 		}
+		time.Sleep(1000 * time.Millisecond)
 	}
 	benchmark.AddPubSample(NewSample(numMsgs, msgSize, start, time.Now()))
 
@@ -157,10 +163,11 @@ type subEventHandler struct {
 	startwg  *sync.WaitGroup
 	client   *centrifuge.Client
 	start    time.Time
+	sem      chan struct{}
 }
 
 func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
-	h.received++
+	//h.received++
 	if h.received >= h.numMsgs {
 		benchmark.AddSubSample(NewSample(h.numMsgs, h.msgSize, h.start, time.Now()))
 		h.donewg.Done()
@@ -168,7 +175,12 @@ func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.P
 	}
 }
 
+var count = 0
+
 func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
+	<-h.sem
+	count++
+	println(count)
 	h.startwg.Done()
 }
 
@@ -176,7 +188,7 @@ func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centr
 	log.Fatalf("Subscribe error: %v", e.Error)
 }
 
-func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
+func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int, sem chan struct{}) {
 	c := newConnection()
 
 	args := flag.Args()
@@ -189,6 +201,7 @@ func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
 		startwg: startwg,
 		client:  c,
 		start:   time.Now(),
+		sem:     sem,
 	}
 	subEventHub := centrifuge.NewSubscriptionEventHub()
 	subEventHub.OnPublish(subEvents)

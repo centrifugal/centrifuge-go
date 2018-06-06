@@ -1,11 +1,25 @@
-Results. Both server and client were running on the same machine which is not good pattern to benchmark things. Client script used much more CPU during run (~8 for server, ~17 for clients). So actually this was more stressful for client side.
+Here are some results when running server and client on the same machine (which is not good pattern to benchmark things actually). Numbers here are not scientific but can be useful to compare different transport performance.  
 
-So results here are not scientific but useful to compare different transport performance results.  
-
-Machine:
+Setup:
 
 * DigitalOcean droplet with 32 vCPU (Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz):
 * Debian 9.4
+* Message size 128 byte
+
+```bash
+apt-get update
+apt-get -y install git
+apt-get -y install curl
+apt-get -y install htop
+curl -O https://storage.googleapis.com/golang/go1.10.2.linux-amd64.tar.gz
+tar xvf go1.10.2.linux-amd64.tar.gz
+chown -R root:root ./go
+mv go /usr/local
+export GOPATH=$HOME/go
+export PATH=$PATH:/usr/local/go/bin:$GOPATH/bin
+go get -u github.com/centrifugal/centrifuge
+go get -u github.com/centrifugal/centrifuge-go
+```
 
 Websocket with Protobuf proto:
 
