@@ -24,9 +24,6 @@
 #   go-tests = true
 #   unused-packages = true
 
-ignored = [
-  "github.com/grpc-ecosystem/go-grpc-middleware"
-]
 
 [[constraint]]
   name = "github.com/gogo/protobuf"
@@ -39,14 +36,6 @@ ignored = [
 [[constraint]]
   name = "github.com/jpillora/backoff"
   version = "1.0.0"
-
-[[constraint]]
-  branch = "master"
-  name = "golang.org/x/net"
-
-[[constraint]]
-  name = "google.golang.org/grpc"
-  version = "1.11.3"
 
 [prune]
   go-tests = true
