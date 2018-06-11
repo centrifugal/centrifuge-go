@@ -58,9 +58,6 @@ import fmt "fmt"
 import math "math"
 import _ "github.com/gogo/protobuf/gogoproto"
 
-import context "golang.org/x/net/context"
-import grpc "google.golang.org/grpc"
-
 import io "io"
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -2283,111 +2280,6 @@ func (this *SendRequest) Equal(that interface{}) bool {
 	}
 	return true
 }
-
-// Reference imports to suppress errors if they are not otherwise used.
-var _ context.Context
-var _ grpc.ClientConn
-
-// This is a compile-time assertion to ensure that this generated file
-// is compatible with the grpc package it is being compiled against.
-const _ = grpc.SupportPackageIsVersion4
-
-// Client API for Centrifuge service
-
-type CentrifugeClient interface {
-	Communicate(ctx context.Context, opts ...grpc.CallOption) (Centrifuge_CommunicateClient, error)
-}
-
-type centrifugeClient struct {
-	cc *grpc.ClientConn
-}
-
-func NewCentrifugeClient(cc *grpc.ClientConn) CentrifugeClient {
-	return &centrifugeClient{cc}
-}
-
-func (c *centrifugeClient) Communicate(ctx context.Context, opts ...grpc.CallOption) (Centrifuge_CommunicateClient, error) {
-	stream, err := grpc.NewClientStream(ctx, &_Centrifuge_serviceDesc.Streams[0], c.cc, "/proto.Centrifuge/Communicate", opts...)
-	if err != nil {
-		return nil, err
-	}
-	x := &centrifugeCommunicateClient{stream}
-	return x, nil
-}
-
-type Centrifuge_CommunicateClient interface {
-	Send(*Command) error
-	Recv() (*Reply, error)
-	grpc.ClientStream
-}
-
-type centrifugeCommunicateClient struct {
-	grpc.ClientStream
-}
-
-func (x *centrifugeCommunicateClient) Send(m *Command) error {
-	return x.ClientStream.SendMsg(m)
-}
-
-func (x *centrifugeCommunicateClient) Recv() (*Reply, error) {
-	m := new(Reply)
-	if err := x.ClientStream.RecvMsg(m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-// Server API for Centrifuge service
-
-type CentrifugeServer interface {
-	Communicate(Centrifuge_CommunicateServer) error
-}
-
-func RegisterCentrifugeServer(s *grpc.Server, srv CentrifugeServer) {
-	s.RegisterService(&_Centrifuge_serviceDesc, srv)
-}
-
-func _Centrifuge_Communicate_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(CentrifugeServer).Communicate(&centrifugeCommunicateServer{stream})
-}
-
-type Centrifuge_CommunicateServer interface {
-	Send(*Reply) error
-	Recv() (*Command, error)
-	grpc.ServerStream
-}
-
-type centrifugeCommunicateServer struct {
-	grpc.ServerStream
-}
-
-func (x *centrifugeCommunicateServer) Send(m *Reply) error {
-	return x.ServerStream.SendMsg(m)
-}
-
-func (x *centrifugeCommunicateServer) Recv() (*Command, error) {
-	m := new(Command)
-	if err := x.ServerStream.RecvMsg(m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-var _Centrifuge_serviceDesc = grpc.ServiceDesc{
-	ServiceName: "proto.Centrifuge",
-	HandlerType: (*CentrifugeServer)(nil),
-	Methods:     []grpc.MethodDesc{},
-	Streams: []grpc.StreamDesc{
-		{
-			StreamName:    "Communicate",
-			Handler:       _Centrifuge_Communicate_Handler,
-			ServerStreams: true,
-			ClientStreams: true,
-		},
-	},
-	Metadata: "client.proto",
-}
-
 func (m *Error) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)

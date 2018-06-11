@@ -71,12 +71,11 @@ const (
 
 // Config contains various client options.
 type Config struct {
+	PrivateChannelPrefix string
 	ReadTimeout          time.Duration
 	WriteTimeout         time.Duration
 	PingInterval         time.Duration
-	PrivateChannelPrefix string
 	Websocket            WebsocketConfig
-	GRPC                 GRPCConfig
 }
 
 // DefaultConfig returns Config with default options.
@@ -87,7 +86,6 @@ func DefaultConfig() Config {
 		WriteTimeout:         DefaultWriteTimeout,
 		PrivateChannelPrefix: DefaultPrivateChannelPrefix,
 		Websocket:            WebsocketConfig{},
-		GRPC:                 GRPCConfig{},
 	}
 }
 
@@ -254,8 +252,6 @@ func New(u string, events *EventHub, config Config) *Client {
 		} else {
 			encoding = proto.EncodingJSON
 		}
-	} else if strings.HasPrefix(u, "grpc") {
-		encoding = proto.EncodingProtobuf
 	} else {
 		panic(fmt.Sprintf("unsupported connection endpoint: %s", u))
 	}
@@ -732,19 +728,9 @@ func (c *Client) connect() error {
 	c.closeCh = make(chan struct{})
 	c.mutex.Unlock()
 
-	var t transport
-	var err error
-
-	if strings.HasPrefix(c.url, "ws") {
-		t, err = newWebsocketTransport(c.url, c.encoding, c.config.Websocket)
-		if err != nil {
-			return err
-		}
-	} else {
-		t, err = newGRPCTransport(c.url, c.config.GRPC)
-		if err != nil {
-			return err
-		}
+	t, err := newWebsocketTransport(c.url, c.encoding, c.config.Websocket)
+	if err != nil {
+		return err
 	}
 
 	c.mutex.Lock()
@@ -1014,7 +1000,7 @@ func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) (*Subsc
 	return sub, nil
 }
 
-// SubscribeSync allows to subscribe on channel and wait until subscribe success or error.
+// SubscribeSync allows to subscribe on channel and wait until subscription success or error.
 func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*Subscription, error) {
 	c.subsMutex.Lock()
 	var sub *Subscription
