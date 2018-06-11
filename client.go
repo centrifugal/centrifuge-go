@@ -62,7 +62,7 @@ const (
 	// DefaultReadTimeout ...
 	DefaultReadTimeout = 5 * time.Second
 	// DefaultWriteTimeout ...
-	DefaultWriteTimeout = 5 * time.Second
+	DefaultWriteTimeout = 1 * time.Second
 	// DefaultPingInterval ...
 	DefaultPingInterval = 25 * time.Second
 	// DefaultPrivateChannelPrefix ...
@@ -434,6 +434,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	c.subsMutex.RUnlock()
 
 	for _, s := range unsubs {
+		s.unsubscribedAt = time.Now()
 		s.triggerOnUnsubscribe(true)
 	}
 
@@ -1030,41 +1031,15 @@ func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*S
 	return sub, err
 }
 
-func (c *Client) subscribe(sub *Subscription) error {
-
-	channel := sub.Channel()
-
-	privateSign, err := c.privateSign(channel)
-	if err != nil {
-		return err
-	}
-	sub.lastMessageMu.Lock()
-	res, err := c.sendSubscribe(channel, sub.lastMessageID, privateSign)
-	sub.lastMessageMu.Unlock()
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-
-	if err != nil {
-		c.subsMutex.Lock()
-		delete(c.subs, channel)
-		c.subsMutex.Unlock()
-		return err
-	}
-
-	sub.recover(res)
-
-	return nil
-}
-
-func (c *Client) sendSubscribe(channel string, lastMessageID *string, privateSign *PrivateSign) (proto.SubscribeResult, error) {
+func (c *Client) sendSubscribe(channel string, recover bool, away uint32, lastMessageID string, privateSign *PrivateSign) (proto.SubscribeResult, error) {
 	params := &proto.SubscribeRequest{
 		Channel: channel,
 	}
 
-	if lastMessageID != nil {
+	if recover {
 		params.Recover = true
-		params.Last = *lastMessageID
+		params.Last = lastMessageID
+		params.Away = away
 	}
 	if privateSign != nil {
 		params.Client = c.clientID()

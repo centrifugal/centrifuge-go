@@ -14,8 +14,7 @@ func init() {
 	log.SetFlags(log.Ldate | log.Ltime)
 }
 
-type eventHandler struct {
-}
+type eventHandler struct{}
 
 func (h *eventHandler) OnConnect(c *centrifuge.Client, e centrifuge.ConnectEvent) {
 	log.Printf("Connected with id: %s", e.ClientID)

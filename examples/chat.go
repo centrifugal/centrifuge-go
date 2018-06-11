@@ -55,7 +55,7 @@ func (h *eventHandler) OnLeave(sub *centrifuge.Subscription, e centrifuge.LeaveE
 }
 
 func (h *eventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Subscribed on channel %s", sub.Channel()))
+	fmt.Fprintln(h.out, fmt.Sprintf("Subscribed on channel %s, recovered: %v", sub.Channel(), e.Recovered))
 }
 
 func (h *eventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
@@ -68,7 +68,6 @@ func (h *eventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifuge.
 
 func main() {
 	url := "ws://localhost:8000/connection/websocket?format=protobuf"
-	//url := "grpc://localhost:8001"
 
 	fmt.Fprintf(os.Stdout, "Connect to %s\n", url)
 	fmt.Fprintf(os.Stdout, "Print something and press ENTER to send\n")

@@ -33,6 +33,7 @@ func main() {
 	started := time.Now()
 
 	url := "ws://localhost:8000/connection/websocket"
+
 	c := centrifuge.New(url, nil, centrifuge.DefaultConfig())
 	defer c.Close()
 
