@@ -12,32 +12,6 @@ import (
 	"github.com/jpillora/backoff"
 )
 
-// Credentials describe client connection parameters used for authentication.
-type Credentials struct {
-	// User is current user ID.
-	User string
-	// Exp is timestamp seconds connection must be kept open. Connection can
-	// be refreshed and prolonged using Refresh mechanism.
-	Exp string
-	// Optional base64 encoded connection information. It must be valid JSON
-	// encoded into UTF-8 and then transformed to base64 in case of JSON protocol
-	// and any bytes transformed to base64 in case of Protobuf protocol.
-	Info string
-	// Sign is HMAC SHA-256 sign based on credentials above and shared (between
-	// Centrifuge server and application backend) secret key.
-	Sign string
-}
-
-// NewCredentials initializes Credentials.
-func NewCredentials(user, exp, info, sign string) *Credentials {
-	return &Credentials{
-		User: user,
-		Exp:  exp,
-		Info: info,
-		Sign: sign,
-	}
-}
-
 type disconnect struct {
 	Reason    string
 	Reconnect bool
@@ -91,8 +65,7 @@ func DefaultConfig() Config {
 
 // PrivateSign confirmes that client can subscribe on private channel.
 type PrivateSign struct {
-	Sign string
-	Info string
+	Token string
 }
 
 // PrivateSubEvent contains info required to create PrivateSign when client
@@ -145,9 +118,9 @@ type PrivateSubHandler interface {
 	OnPrivateSub(*Client, PrivateSubEvent) (PrivateSign, error)
 }
 
-// RefreshHandler is an interface describing how to handle credentials refresh event.
+// RefreshHandler is an interface describing how to handle token refresh event.
 type RefreshHandler interface {
-	OnRefresh(*Client) (Credentials, error)
+	OnRefresh(*Client) (string, error)
 }
 
 // ErrorHandler is an interface describing how to handle error event.
@@ -214,7 +187,7 @@ type Client struct {
 	url               string
 	encoding          proto.Encoding
 	config            Config
-	credentials       *Credentials
+	token             string
 	connectData       proto.Raw
 	transport         transport
 	msgID             int32
@@ -275,12 +248,12 @@ func New(u string, events *EventHub, config Config) *Client {
 	return c
 }
 
-// SetCredentials allows to set credentials to let client
+// SetToken allows to set connection JWT token to let client
 // authenticate itself on connect.
-func (c *Client) SetCredentials(creds *Credentials) {
+func (c *Client) SetToken(token string) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	c.credentials = creds
+	c.token = token
 }
 
 // SetConnectData allows to set data to send in connect message.
@@ -758,7 +731,7 @@ func (c *Client) connect() error {
 
 	if res.Expires && res.Expired {
 		// Try to refresh credentials and repeat connection attempt.
-		err = c.refreshCredentials()
+		err = c.refreshToken()
 		if err != nil {
 			c.Close()
 			return err
@@ -836,7 +809,7 @@ func (c *Client) Disconnect() error {
 	return nil
 }
 
-func (c *Client) refreshCredentials() error {
+func (c *Client) refreshToken() error {
 	var handler RefreshHandler
 	if c.events != nil && c.events.onRefresh != nil {
 		handler = c.events.onRefresh
@@ -845,19 +818,19 @@ func (c *Client) refreshCredentials() error {
 		return errors.New("RefreshHandler must be set to handle expired credentials")
 	}
 
-	creds, err := handler.OnRefresh(c)
+	token, err := handler.OnRefresh(c)
 	if err != nil {
 		return err
 	}
 	c.mutex.Lock()
-	c.credentials = &creds
+	c.token = token
 	c.mutex.Unlock()
 	return nil
 }
 
 func (c *Client) sendRefresh() error {
 
-	err := c.refreshCredentials()
+	err := c.refreshToken()
 	if err != nil {
 		return err
 	}
@@ -868,12 +841,7 @@ func (c *Client) sendRefresh() error {
 		Method: proto.MethodTypeRefresh,
 	}
 	params := &proto.RefreshRequest{
-		Credentials: &proto.SignedCredentials{
-			User: c.credentials.User,
-			Exp:  c.credentials.Exp,
-			Info: c.credentials.Info,
-			Sign: c.credentials.Sign,
-		},
+		Token: c.token,
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
@@ -919,15 +887,10 @@ func (c *Client) sendConnect() (proto.ConnectResult, error) {
 	}
 
 	c.mutex.RLock()
-	if c.credentials != nil || c.connectData != nil {
+	if c.token != "" || c.connectData != nil {
 		params := &proto.ConnectRequest{}
-		if c.credentials != nil {
-			params.Credentials = &proto.SignedCredentials{
-				User: c.credentials.User,
-				Exp:  c.credentials.Exp,
-				Info: c.credentials.Info,
-				Sign: c.credentials.Sign,
-			}
+		if c.token != "" {
+			params.Token = c.token
 		}
 		if c.connectData != nil {
 			params.Data = c.connectData
@@ -1028,9 +991,7 @@ func (c *Client) sendSubscribe(channel string, recover bool, away uint32, lastMe
 		params.Away = away
 	}
 	if privateSign != nil {
-		params.Client = c.clientID()
-		params.Info = privateSign.Info
-		params.Sign = privateSign.Sign
+		params.Token = privateSign.Token
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)

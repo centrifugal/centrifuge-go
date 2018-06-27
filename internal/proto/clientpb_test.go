@@ -18,36 +18,25 @@ It has these top-level messages:
 	Leave
 	Unsub
 	Message
-	SignedCredentials
 	ConnectRequest
-	ConnectResponse
 	ConnectResult
 	RefreshRequest
-	RefreshResponse
 	RefreshResult
 	SubscribeRequest
-	SubscribeResponse
 	SubscribeResult
 	UnsubscribeRequest
-	UnsubscribeResponse
 	UnsubscribeResult
 	PublishRequest
-	PublishResponse
 	PublishResult
 	PresenceRequest
-	PresenceResponse
 	PresenceResult
 	PresenceStatsRequest
-	PresenceStatsResponse
 	PresenceStatsResult
 	HistoryRequest
-	HistoryResponse
 	HistoryResult
 	PingRequest
-	PingResponse
 	PingResult
 	RPCRequest
-	RPCResponse
 	RPCResult
 	SendRequest
 */
@@ -627,62 +616,6 @@ func TestMessageMarshalTo(t *testing.T) {
 	}
 }
 
-func TestSignedCredentialsProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSignedCredentials(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &SignedCredentials{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestSignedCredentialsMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSignedCredentials(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &SignedCredentials{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestConnectRequestProto(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -728,62 +661,6 @@ func TestConnectRequestMarshalTo(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &ConnectRequest{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestConnectResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedConnectResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &ConnectResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestConnectResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedConnectResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &ConnectResponse{}
 	if err := proto1.Unmarshal(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -907,62 +784,6 @@ func TestRefreshRequestMarshalTo(t *testing.T) {
 	}
 }
 
-func TestRefreshResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRefreshResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &RefreshResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestRefreshResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRefreshResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &RefreshResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestRefreshResultProto(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -1064,62 +885,6 @@ func TestSubscribeRequestMarshalTo(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &SubscribeRequest{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestSubscribeResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSubscribeResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &SubscribeResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestSubscribeResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSubscribeResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &SubscribeResponse{}
 	if err := proto1.Unmarshal(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -1243,62 +1008,6 @@ func TestUnsubscribeRequestMarshalTo(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedUnsubscribeResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &UnsubscribeResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestUnsubscribeResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedUnsubscribeResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &UnsubscribeResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestUnsubscribeResultProto(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -1400,62 +1109,6 @@ func TestPublishRequestMarshalTo(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &PublishRequest{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestPublishResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPublishResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PublishResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestPublishResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPublishResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PublishResponse{}
 	if err := proto1.Unmarshal(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -1579,62 +1232,6 @@ func TestPresenceRequestMarshalTo(t *testing.T) {
 	}
 }
 
-func TestPresenceResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PresenceResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestPresenceResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PresenceResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestPresenceResultProto(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -1736,62 +1333,6 @@ func TestPresenceStatsRequestMarshalTo(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &PresenceStatsRequest{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestPresenceStatsResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceStatsResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PresenceStatsResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestPresenceStatsResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceStatsResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PresenceStatsResponse{}
 	if err := proto1.Unmarshal(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -1915,62 +1456,6 @@ func TestHistoryRequestMarshalTo(t *testing.T) {
 	}
 }
 
-func TestHistoryResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedHistoryResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &HistoryResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestHistoryResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedHistoryResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &HistoryResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestHistoryResultProto(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -2083,62 +1568,6 @@ func TestPingRequestMarshalTo(t *testing.T) {
 	}
 }
 
-func TestPingResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPingResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PingResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestPingResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPingResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PingResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestPingResultProto(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -2240,62 +1669,6 @@ func TestRPCRequestMarshalTo(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &RPCRequest{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestRPCResponseProto(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRPCResponse(popr, false)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &RPCResponse{}
-	if err := proto1.Unmarshal(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	littlefuzz := make([]byte, len(dAtA))
-	copy(littlefuzz, dAtA)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-	if len(littlefuzz) > 0 {
-		fuzzamount := 100
-		for i := 0; i < fuzzamount; i++ {
-			littlefuzz[popr.Intn(len(littlefuzz))] = byte(popr.Intn(256))
-			littlefuzz = append(littlefuzz, byte(popr.Intn(256)))
-		}
-		// shouldn't panic
-		_ = proto1.Unmarshal(littlefuzz, msg)
-	}
-}
-
-func TestRPCResponseMarshalTo(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRPCResponse(popr, false)
-	size := p.Size()
-	dAtA := make([]byte, size)
-	for i := range dAtA {
-		dAtA[i] = byte(popr.Intn(256))
-	}
-	_, err := p.MarshalTo(dAtA)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &RPCResponse{}
 	if err := proto1.Unmarshal(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -2599,24 +1972,6 @@ func TestMessageJSON(t *testing.T) {
 		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
 	}
 }
-func TestSignedCredentialsJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSignedCredentials(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &SignedCredentials{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
 func TestConnectRequestJSON(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -2627,24 +1982,6 @@ func TestConnectRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &ConnectRequest{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
-func TestConnectResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedConnectResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &ConnectResponse{}
 	err = jsonpb.UnmarshalString(jsondata, msg)
 	if err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
@@ -2689,24 +2026,6 @@ func TestRefreshRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
 	}
 }
-func TestRefreshResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRefreshResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &RefreshResponse{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
 func TestRefreshResultJSON(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -2735,24 +2054,6 @@ func TestSubscribeRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &SubscribeRequest{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
-func TestSubscribeResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSubscribeResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &SubscribeResponse{}
 	err = jsonpb.UnmarshalString(jsondata, msg)
 	if err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
@@ -2797,24 +2098,6 @@ func TestUnsubscribeRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
 	}
 }
-func TestUnsubscribeResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedUnsubscribeResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &UnsubscribeResponse{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
 func TestUnsubscribeResultJSON(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -2843,24 +2126,6 @@ func TestPublishRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &PublishRequest{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
-func TestPublishResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPublishResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PublishResponse{}
 	err = jsonpb.UnmarshalString(jsondata, msg)
 	if err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
@@ -2905,24 +2170,6 @@ func TestPresenceRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
 	}
 }
-func TestPresenceResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PresenceResponse{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
 func TestPresenceResultJSON(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -2951,24 +2198,6 @@ func TestPresenceStatsRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &PresenceStatsRequest{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
-func TestPresenceStatsResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceStatsResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PresenceStatsResponse{}
 	err = jsonpb.UnmarshalString(jsondata, msg)
 	if err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
@@ -3013,24 +2242,6 @@ func TestHistoryRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
 	}
 }
-func TestHistoryResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedHistoryResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &HistoryResponse{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
 func TestHistoryResultJSON(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -3067,24 +2278,6 @@ func TestPingRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
 	}
 }
-func TestPingResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPingResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &PingResponse{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
 func TestPingResultJSON(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -3113,24 +2306,6 @@ func TestRPCRequestJSON(t *testing.T) {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
 	msg := &RPCRequest{}
-	err = jsonpb.UnmarshalString(jsondata, msg)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Json Equal %#v", seed, msg, p)
-	}
-}
-func TestRPCResponseJSON(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRPCResponse(popr, true)
-	marshaler := jsonpb.Marshaler{}
-	jsondata, err := marshaler.MarshalToString(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	msg := &RPCResponse{}
 	err = jsonpb.UnmarshalString(jsondata, msg)
 	if err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
@@ -3455,34 +2630,6 @@ func TestMessageProtoCompactText(t *testing.T) {
 	}
 }
 
-func TestSignedCredentialsProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSignedCredentials(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &SignedCredentials{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestSignedCredentialsProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSignedCredentials(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &SignedCredentials{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestConnectRequestProtoText(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -3503,34 +2650,6 @@ func TestConnectRequestProtoCompactText(t *testing.T) {
 	p := NewPopulatedConnectRequest(popr, true)
 	dAtA := proto1.CompactTextString(p)
 	msg := &ConnectRequest{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestConnectResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedConnectResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &ConnectResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestConnectResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedConnectResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &ConnectResponse{}
 	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -3595,34 +2714,6 @@ func TestRefreshRequestProtoCompactText(t *testing.T) {
 	}
 }
 
-func TestRefreshResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRefreshResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &RefreshResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestRefreshResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRefreshResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &RefreshResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestRefreshResultProtoText(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -3671,34 +2762,6 @@ func TestSubscribeRequestProtoCompactText(t *testing.T) {
 	p := NewPopulatedSubscribeRequest(popr, true)
 	dAtA := proto1.CompactTextString(p)
 	msg := &SubscribeRequest{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestSubscribeResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSubscribeResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &SubscribeResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestSubscribeResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSubscribeResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &SubscribeResponse{}
 	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -3763,34 +2826,6 @@ func TestUnsubscribeRequestProtoCompactText(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedUnsubscribeResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &UnsubscribeResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestUnsubscribeResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedUnsubscribeResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &UnsubscribeResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestUnsubscribeResultProtoText(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -3839,34 +2874,6 @@ func TestPublishRequestProtoCompactText(t *testing.T) {
 	p := NewPopulatedPublishRequest(popr, true)
 	dAtA := proto1.CompactTextString(p)
 	msg := &PublishRequest{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestPublishResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPublishResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &PublishResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestPublishResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPublishResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &PublishResponse{}
 	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -3931,34 +2938,6 @@ func TestPresenceRequestProtoCompactText(t *testing.T) {
 	}
 }
 
-func TestPresenceResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &PresenceResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestPresenceResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &PresenceResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestPresenceResultProtoText(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -4007,34 +2986,6 @@ func TestPresenceStatsRequestProtoCompactText(t *testing.T) {
 	p := NewPopulatedPresenceStatsRequest(popr, true)
 	dAtA := proto1.CompactTextString(p)
 	msg := &PresenceStatsRequest{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestPresenceStatsResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceStatsResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &PresenceStatsResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestPresenceStatsResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceStatsResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &PresenceStatsResponse{}
 	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -4099,34 +3050,6 @@ func TestHistoryRequestProtoCompactText(t *testing.T) {
 	}
 }
 
-func TestHistoryResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedHistoryResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &HistoryResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestHistoryResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedHistoryResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &HistoryResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestHistoryResultProtoText(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -4183,34 +3106,6 @@ func TestPingRequestProtoCompactText(t *testing.T) {
 	}
 }
 
-func TestPingResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPingResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &PingResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestPingResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPingResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &PingResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
 func TestPingResultProtoText(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -4259,34 +3154,6 @@ func TestRPCRequestProtoCompactText(t *testing.T) {
 	p := NewPopulatedRPCRequest(popr, true)
 	dAtA := proto1.CompactTextString(p)
 	msg := &RPCRequest{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestRPCResponseProtoText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRPCResponse(popr, true)
-	dAtA := proto1.MarshalTextString(p)
-	msg := &RPCResponse{}
-	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	if !p.Equal(msg) {
-		t.Fatalf("seed = %d, %#v !Proto %#v", seed, msg, p)
-	}
-}
-
-func TestRPCResponseProtoCompactText(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRPCResponse(popr, true)
-	dAtA := proto1.CompactTextString(p)
-	msg := &RPCResponse{}
 	if err := proto1.UnmarshalText(dAtA, msg); err != nil {
 		t.Fatalf("seed = %d, err = %v", seed, err)
 	}
@@ -4571,54 +3438,10 @@ func TestMessageSize(t *testing.T) {
 	}
 }
 
-func TestSignedCredentialsSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSignedCredentials(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
 func TestConnectRequestSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
 	p := NewPopulatedConnectRequest(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
-func TestConnectResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedConnectResponse(popr, true)
 	size2 := proto1.Size(p)
 	dAtA, err := proto1.Marshal(p)
 	if err != nil {
@@ -4681,28 +3504,6 @@ func TestRefreshRequestSize(t *testing.T) {
 	}
 }
 
-func TestRefreshResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRefreshResponse(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
 func TestRefreshResultSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -4729,28 +3530,6 @@ func TestSubscribeRequestSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
 	p := NewPopulatedSubscribeRequest(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
-func TestSubscribeResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedSubscribeResponse(popr, true)
 	size2 := proto1.Size(p)
 	dAtA, err := proto1.Marshal(p)
 	if err != nil {
@@ -4813,28 +3592,6 @@ func TestUnsubscribeRequestSize(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedUnsubscribeResponse(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
 func TestUnsubscribeResultSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -4861,28 +3618,6 @@ func TestPublishRequestSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
 	p := NewPopulatedPublishRequest(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
-func TestPublishResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPublishResponse(popr, true)
 	size2 := proto1.Size(p)
 	dAtA, err := proto1.Marshal(p)
 	if err != nil {
@@ -4945,28 +3680,6 @@ func TestPresenceRequestSize(t *testing.T) {
 	}
 }
 
-func TestPresenceResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceResponse(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
 func TestPresenceResultSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -4993,28 +3706,6 @@ func TestPresenceStatsRequestSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
 	p := NewPopulatedPresenceStatsRequest(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
-func TestPresenceStatsResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPresenceStatsResponse(popr, true)
 	size2 := proto1.Size(p)
 	dAtA, err := proto1.Marshal(p)
 	if err != nil {
@@ -5077,28 +3768,6 @@ func TestHistoryRequestSize(t *testing.T) {
 	}
 }
 
-func TestHistoryResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedHistoryResponse(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
 func TestHistoryResultSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -5143,28 +3812,6 @@ func TestPingRequestSize(t *testing.T) {
 	}
 }
 
-func TestPingResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedPingResponse(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
 func TestPingResultSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
@@ -5191,28 +3838,6 @@ func TestRPCRequestSize(t *testing.T) {
 	seed := time.Now().UnixNano()
 	popr := rand.New(rand.NewSource(seed))
 	p := NewPopulatedRPCRequest(popr, true)
-	size2 := proto1.Size(p)
-	dAtA, err := proto1.Marshal(p)
-	if err != nil {
-		t.Fatalf("seed = %d, err = %v", seed, err)
-	}
-	size := p.Size()
-	if len(dAtA) != size {
-		t.Errorf("seed = %d, size %v != marshalled size %v", seed, size, len(dAtA))
-	}
-	if size2 != size {
-		t.Errorf("seed = %d, size %v != before marshal proto.Size %v", seed, size, size2)
-	}
-	size3 := proto1.Size(p)
-	if size3 != size {
-		t.Errorf("seed = %d, size %v != after marshal proto.Size %v", seed, size, size3)
-	}
-}
-
-func TestRPCResponseSize(t *testing.T) {
-	seed := time.Now().UnixNano()
-	popr := rand.New(rand.NewSource(seed))
-	p := NewPopulatedRPCResponse(popr, true)
 	size2 := proto1.Size(p)
 	dAtA, err := proto1.Marshal(p)
 	if err != nil {

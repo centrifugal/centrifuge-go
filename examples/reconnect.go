@@ -33,7 +33,7 @@ func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.P
 }
 
 func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
-	log.Println(fmt.Sprintf("Subscribed on %s: recovered %s, resubscribed %s", sub.Channel(), e.Recovered, e.Resubscribed))
+	log.Println(fmt.Sprintf("Subscribed on %s: recovered %v, resubscribed %v", sub.Channel(), e.Recovered, e.Resubscribed))
 }
 
 func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
@@ -67,7 +67,7 @@ func newConnection() *centrifuge.Client {
 	subEvents.OnSubscribeError(subHandler)
 	subEvents.OnUnsubscribe(subHandler)
 
-	sub, err := c.Subscribe("public:chat", subEvents)
+	sub, err := c.Subscribe("chat:index", subEvents)
 	if err != nil {
 		log.Fatalln(err)
 	}

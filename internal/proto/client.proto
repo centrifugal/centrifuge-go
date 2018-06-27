@@ -86,22 +86,9 @@ message Message {
     bytes data = 1 [(gogoproto.customtype) = "Raw", (gogoproto.jsontag) = "data", (gogoproto.nullable) = false];
 }
 
-message SignedCredentials {
-    string user = 1 [(gogoproto.jsontag) = "user"];
-    string exp = 2 [(gogoproto.jsontag) = "exp"];
-    string info = 3 [(gogoproto.jsontag) = "info"];
-    string opts = 4 [(gogoproto.jsontag) = "opts"];
-    string sign = 5 [(gogoproto.jsontag) = "sign"];
-}
-
 message ConnectRequest {
-    SignedCredentials credentials = 1  [(gogoproto.jsontag) = "credentials"];
+    string token = 1  [(gogoproto.jsontag) = "token"];
     bytes data = 2 [(gogoproto.customtype) = "Raw", (gogoproto.jsontag) = "data,omitempty", (gogoproto.nullable) = false];
-}
-
-message ConnectResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    ConnectResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
 }
 
 message ConnectResult {
@@ -114,12 +101,7 @@ message ConnectResult {
 }
 
 message RefreshRequest {
-    SignedCredentials credentials = 1  [(gogoproto.jsontag) = "credentials"];
-}
-
-message RefreshResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    RefreshResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
+    string token = 1  [(gogoproto.jsontag) = "token"];
 }
 
 message RefreshResult {
@@ -128,37 +110,28 @@ message RefreshResult {
     bool expires = 3 [(gogoproto.jsontag) = "expires,omitempty"];
     bool expired = 4 [(gogoproto.jsontag) = "expired,omitempty"];
     uint32 ttl = 5 [(gogoproto.customname) = "TTL", (gogoproto.jsontag) = "ttl,omitempty"];
-    bytes meta = 6 [(gogoproto.customtype) = "Raw", (gogoproto.jsontag) = "meta,omitempty"];
+    bytes data = 6 [(gogoproto.customtype) = "Raw", (gogoproto.jsontag) = "data,omitempty"];
 }
 
 message SubscribeRequest {
     string channel = 1 [(gogoproto.jsontag) = "channel"];
-    string client = 2 [(gogoproto.jsontag) = "client"];
-    string info = 3 [(gogoproto.jsontag) = "info"];
-    string sign = 4 [(gogoproto.jsontag) = "sign"];
-    bool recover = 5 [(gogoproto.jsontag) = "recover"];
-    string last = 6 [(gogoproto.jsontag) = "last"];
-    uint32 away = 7 [(gogoproto.jsontag) = "away"];
-}
-
-message SubscribeResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    SubscribeResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
+    bool recover = 2 [(gogoproto.jsontag) = "recover"];
+    string last = 3 [(gogoproto.jsontag) = "last"];
+    uint32 away = 4 [(gogoproto.jsontag) = "away"];
+    string token = 5  [(gogoproto.jsontag) = "token"];
 }
 
 message SubscribeResult {
     string last = 1 [(gogoproto.jsontag) = "last,omitempty"];
     bool recovered = 2 [(gogoproto.jsontag) = "recovered,omitempty"];
     repeated Publication publications = 3 [(gogoproto.jsontag) = "publications,omitempty"];
+    bool expires = 4 [(gogoproto.jsontag) = "expires,omitempty"];
+    bool expired = 5 [(gogoproto.jsontag) = "expired,omitempty"];
+    uint32 ttl = 6 [(gogoproto.customname) = "TTL", (gogoproto.jsontag) = "ttl,omitempty"];
 }
 
 message UnsubscribeRequest {
     string channel = 1 [(gogoproto.jsontag) = "channel"];
-}
-
-message UnsubscribeResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    UnsubscribeResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
 }
 
 message UnsubscribeResult {}
@@ -168,20 +141,10 @@ message PublishRequest {
     bytes data = 2 [(gogoproto.customtype) = "Raw", (gogoproto.jsontag) = "data", (gogoproto.nullable) = false];
 }
 
-message PublishResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    PublishResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
-}
-
 message PublishResult {}
 
 message PresenceRequest {
     string channel = 1 [(gogoproto.jsontag) = "channel"];
-}
-
-message PresenceResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    PresenceResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
 }
 
 message PresenceResult {
@@ -190,11 +153,6 @@ message PresenceResult {
 
 message PresenceStatsRequest {
     string channel = 1 [(gogoproto.jsontag) = "channel"];
-}
-
-message PresenceStatsResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    PresenceStatsResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
 }
 
 message PresenceStatsResult {
@@ -206,22 +164,12 @@ message HistoryRequest {
     string channel = 1 [(gogoproto.jsontag) = "channel"];
 }
 
-message HistoryResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    HistoryResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
-}
-
 message HistoryResult {
     repeated Publication publications = 1 [(gogoproto.jsontag) = "publications"];
 }
 
 message PingRequest {
     string data = 1 [(gogoproto.jsontag) = "data"];
-}
-
-message PingResponse {
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    PingResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
 }
 
 message PingResult {
@@ -232,19 +180,10 @@ message RPCRequest{
     bytes data = 1 [(gogoproto.customtype) = "Raw", (gogoproto.jsontag) = "data", (gogoproto.nullable) = false];
 }
 
-message RPCResponse{
-    Error error = 1 [(gogoproto.jsontag) = "error,omitempty"];
-    RPCResult result = 2 [(gogoproto.jsontag) = "result,omitempty"];
-}
-
 message RPCResult {
     bytes data = 1  [(gogoproto.customtype) = "Raw", (gogoproto.jsontag) = "data,omitempty", (gogoproto.nullable) = false];
 }
 
 message SendRequest{
     bytes data = 1 [(gogoproto.customtype) = "Raw", (gogoproto.jsontag) = "data", (gogoproto.nullable) = false];
-}
-
-service Centrifuge {
-    rpc Communicate(stream Command) returns (stream Reply) {}
 }

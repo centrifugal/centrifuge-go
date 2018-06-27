@@ -9,37 +9,12 @@ import (
 	"github.com/centrifugal/centrifuge-go"
 )
 
-// In production you need to receive credentials from application backend.
-func credentials() *centrifuge.Credentials {
-	// Never show secret to client of your application. Keep it on your application backend only.
-	secret := "secret"
-	// Application user ID.
-	user := "42"
-	// Exp as string.
-	exp := centrifuge.Exp(1000000000)
-	// Empty info.
-	info := ""
-	// Generate sign so Centrifugo server can trust connection parameters received from client.
-	sign := centrifuge.GenerateClientSign(secret, user, exp, info)
-
-	return &centrifuge.Credentials{
-		User: user,
-		Exp:  exp,
-		Info: info,
-		Sign: sign,
-	}
-}
-
 type eventHandler struct{}
 
 func (h *eventHandler) OnPrivateSub(c *centrifuge.Client, e centrifuge.PrivateSubEvent) (centrifuge.PrivateSign, error) {
-	// Here we allow everyone to subscribe on private channel.
-	// To reject subscription we could return any error from this func.
-	// In most real application secret key must not be kept on client side
-	// and here must be request to your backend to get channel sign.
-	info := ""
-	sign := centrifuge.GenerateChannelSign("secret", e.ClientID, e.Channel, info)
-	privateSign := centrifuge.PrivateSign{Sign: sign, Info: info}
+	// TODO: receive subscription token.
+	token := ""
+	privateSign := centrifuge.PrivateSign{Token: token}
 	return privateSign, nil
 }
 
@@ -56,7 +31,6 @@ func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centr
 }
 
 func newConnection() *centrifuge.Client {
-	creds := credentials()
 	wsURL := "ws://localhost:8000/connection/websocket"
 
 	handler := &eventHandler{}
@@ -64,7 +38,8 @@ func newConnection() *centrifuge.Client {
 	events.OnPrivateSub(handler)
 
 	c := centrifuge.New(wsURL, events, centrifuge.DefaultConfig())
-	c.SetCredentials(creds)
+	// TODO: receive connection token.
+	c.SetToken("")
 
 	err := c.Connect()
 	if err != nil {
