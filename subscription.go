@@ -157,6 +157,13 @@ func (s *Subscription) Channel() string {
 	return s.channel
 }
 
+// Status returns current Subscription status.
+func (s *Subscription) Status() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.status
+}
+
 func (s *Subscription) newSubFuture() chan error {
 	fut := make(chan error, 1)
 	s.mu.Lock()
@@ -377,7 +384,7 @@ func (s *Subscription) resubscribe() error {
 	s.status = SUBSCRIBING
 	s.mu.Unlock()
 
-	privateSign, err := s.centrifuge.privateSign(s.channel)
+	token, err := s.centrifuge.privateSign(s.channel)
 	if err != nil {
 		return err
 	}
@@ -393,7 +400,7 @@ func (s *Subscription) resubscribe() error {
 	}
 	s.mu.Unlock()
 
-	res, err := s.centrifuge.sendSubscribe(s.channel, recover, away, last, privateSign)
+	res, err := s.centrifuge.sendSubscribe(s.channel, recover, away, last, token)
 	if err != nil {
 		if err == ErrTimeout {
 			s.mu.Lock()
@@ -403,6 +410,17 @@ func (s *Subscription) resubscribe() error {
 		}
 		s.subscribeError(err)
 		return nil
+	}
+
+	if res.Expires {
+		go func(interval uint32) {
+			select {
+			case <-s.centrifuge.closeCh:
+				return
+			case <-time.After(time.Duration(interval) * time.Second):
+				s.centrifuge.sendSubRefresh(s.channel)
+			}
+		}(res.TTL)
 	}
 
 	s.subscribeSuccess(res.Recovered)

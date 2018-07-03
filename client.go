@@ -63,11 +63,6 @@ func DefaultConfig() Config {
 	}
 }
 
-// PrivateSign confirmes that client can subscribe on private channel.
-type PrivateSign struct {
-	Token string
-}
-
 // PrivateSubEvent contains info required to create PrivateSign when client
 // wants to subscribe on private channel.
 type PrivateSubEvent struct {
@@ -115,7 +110,7 @@ type MessageHandler interface {
 
 // PrivateSubHandler is an interface describing how to handle private subscription request.
 type PrivateSubHandler interface {
-	OnPrivateSub(*Client, PrivateSubEvent) (PrivateSign, error)
+	OnPrivateSub(*Client, PrivateSubEvent) (string, error)
 }
 
 // RefreshHandler is an interface describing how to handle token refresh event.
@@ -190,7 +185,7 @@ type Client struct {
 	token             string
 	connectData       proto.Raw
 	transport         transport
-	msgID             int32
+	msgID             uint32
 	status            int
 	id                string
 	subsMutex         sync.RWMutex
@@ -211,8 +206,8 @@ type Client struct {
 	pushDecoder       proto.PushDecoder
 }
 
-func (c *Client) nextMsgID() int32 {
-	return atomic.AddInt32(&c.msgID, 1)
+func (c *Client) nextMsgID() uint32 {
+	return atomic.AddUint32(&c.msgID, 1)
 }
 
 // New initializes Client.
@@ -726,24 +721,25 @@ func (c *Client) connect() error {
 
 	res, err = c.sendConnect()
 	if err != nil {
-		return err
-	}
-
-	if res.Expires && res.Expired {
-		// Try to refresh credentials and repeat connection attempt.
-		err = c.refreshToken()
-		if err != nil {
-			c.Close()
-			return err
+		refreshed := false
+		if e, ok := err.(*Error); ok {
+			if e.Code == 109 {
+				// Try to refresh token and repeat connection attempt.
+				err = c.refreshToken()
+				if err != nil {
+					c.Close()
+					return err
+				}
+				res, err = c.sendConnect()
+				if err != nil {
+					c.Close()
+					return err
+				}
+				refreshed = true
+			}
 		}
-		res, err = c.sendConnect()
-		if err != nil {
-			c.Close()
+		if !refreshed {
 			return err
-		}
-		if res.Expires && res.Expired {
-			c.Close()
-			return ErrClientExpired
 		}
 	}
 
@@ -755,11 +751,10 @@ func (c *Client) connect() error {
 
 	if res.Expires {
 		go func(interval uint32) {
-			tick := time.After(time.Duration(interval) * time.Second)
 			select {
 			case <-c.closeCh:
 				return
-			case <-tick:
+			case <-time.After(time.Duration(interval) * time.Second):
 				c.sendRefresh()
 			}
 		}(res.TTL)
@@ -815,7 +810,7 @@ func (c *Client) refreshToken() error {
 		handler = c.events.onRefresh
 	}
 	if handler == nil {
-		return errors.New("RefreshHandler must be set to handle expired credentials")
+		return errors.New("RefreshHandler must be set to handle expired token")
 	}
 
 	token, err := handler.OnRefresh(c)
@@ -837,7 +832,7 @@ func (c *Client) sendRefresh() error {
 
 	c.mutex.RLock()
 	cmd := &proto.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: proto.MethodTypeRefresh,
 	}
 	params := &proto.RefreshRequest{
@@ -864,16 +859,73 @@ func (c *Client) sendRefresh() error {
 		return err
 	}
 	if res.Expires {
-		if res.Expired {
-			return ErrClientExpired
-		}
 		go func(interval uint32) {
-			tick := time.After(time.Duration(interval) * time.Second)
 			select {
 			case <-c.closeCh:
 				return
-			case <-tick:
+			case <-time.After(time.Duration(interval) * time.Second):
 				c.sendRefresh()
+			}
+		}(res.TTL)
+	}
+	return nil
+}
+
+func (c *Client) sendSubRefresh(channel string) error {
+
+	sub, ok := c.subs[channel]
+	if !ok {
+		return nil
+	}
+
+	if sub.Status() != SUBSCRIBED {
+		return nil
+	}
+
+	token, err := c.privateSign(channel)
+	if err != nil {
+		return err
+	}
+
+	c.mutex.RLock()
+	cmd := &proto.Command{
+		ID:     c.nextMsgID(),
+		Method: proto.MethodTypeSubRefresh,
+	}
+	params := &proto.SubRefreshRequest{
+		Channel: channel,
+		Token:   token,
+	}
+	paramsData, err := c.paramsEncoder.Encode(params)
+	if err != nil {
+		c.mutex.RUnlock()
+		return err
+	}
+	cmd.Params = paramsData
+	c.mutex.RUnlock()
+
+	r, err := c.sendSync(cmd)
+	if err != nil {
+		return err
+	}
+	if r.Error != nil {
+		return r.Error
+	}
+	var res proto.SubRefreshResult
+	err = c.resultDecoder.Decode(r.Result, &res)
+	if err != nil {
+		return err
+	}
+	if res.Expires {
+		if sub.Status() != SUBSCRIBED {
+			return nil
+		}
+		go func(interval uint32) {
+			select {
+			case <-c.closeCh:
+				return
+			case <-time.After(time.Duration(interval) * time.Second):
+				c.sendSubRefresh(channel)
 			}
 		}(res.TTL)
 	}
@@ -920,8 +972,8 @@ func (c *Client) sendConnect() (proto.ConnectResult, error) {
 	return res, nil
 }
 
-func (c *Client) privateSign(channel string) (*PrivateSign, error) {
-	var ps *PrivateSign
+func (c *Client) privateSign(channel string) (string, error) {
+	var token string
 	if strings.HasPrefix(channel, c.config.PrivateChannelPrefix) && c.events != nil {
 		handler := c.events.onPrivateSub
 		if handler != nil {
@@ -929,16 +981,16 @@ func (c *Client) privateSign(channel string) (*PrivateSign, error) {
 				ClientID: c.clientID(),
 				Channel:  channel,
 			}
-			privateSign, err := handler.OnPrivateSub(c, ev)
+			ps, err := handler.OnPrivateSub(c, ev)
 			if err != nil {
-				return nil, err
+				return "", err
 			}
-			ps = &privateSign
+			token = ps
 		} else {
-			return nil, errors.New("PrivateSubHandler must be set to handle private channel subscriptions")
+			return "", errors.New("PrivateSubHandler must be set to handle private channel subscriptions")
 		}
 	}
-	return ps, nil
+	return token, nil
 }
 
 // Subscribe allows to subscribe on channel.
@@ -980,7 +1032,7 @@ func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*S
 	return sub, err
 }
 
-func (c *Client) sendSubscribe(channel string, recover bool, away uint32, lastMessageID string, privateSign *PrivateSign) (proto.SubscribeResult, error) {
+func (c *Client) sendSubscribe(channel string, recover bool, away uint32, lastMessageID string, token string) (proto.SubscribeResult, error) {
 	params := &proto.SubscribeRequest{
 		Channel: channel,
 	}
@@ -990,8 +1042,8 @@ func (c *Client) sendSubscribe(channel string, recover bool, away uint32, lastMe
 		params.Last = lastMessageID
 		params.Away = away
 	}
-	if privateSign != nil {
-		params.Token = privateSign.Token
+	if token != "" {
+		params.Token = token
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)

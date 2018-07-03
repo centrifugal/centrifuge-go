@@ -24,6 +24,7 @@
 #   go-tests = true
 #   unused-packages = true
 
+ignored = ["github.com/centrifugal/centrifuge-go/examples*"]
 
 [[constraint]]
   name = "github.com/gogo/protobuf"
