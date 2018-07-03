@@ -358,6 +358,9 @@ func (s *Subscription) handleLeave(info proto.ClientInfo) {
 
 func (s *Subscription) handleUnsub(m proto.Unsub) {
 	s.Unsubscribe()
+	if m.Resubscribe {
+		s.Subscribe()
+	}
 }
 
 func (s *Subscription) resubscribe() error {
