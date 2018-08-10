@@ -36,7 +36,7 @@ func (h *eventHandler) OnError(c *centrifuge.Client, e centrifuge.ErrorEvent) {
 }
 
 func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
-	log.Println("Disconnected", e.Reason)
+	log.Printf("Disconnected, reason: %s, reconnect: %v", e.Reason, e.Reconnect)
 }
 
 func (h *eventHandler) OnRefresh(c *centrifuge.Client) (string, error) {
@@ -52,8 +52,16 @@ func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.P
 	log.Println(fmt.Sprintf("New message received in channel %s: %s", sub.Channel(), string(e.Data)))
 }
 
+func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
+	log.Println(fmt.Sprintf("Subscribed to channel channel %s: %#v", sub.Channel(), e))
+}
+
+func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifuge.UnsubscribeEvent) {
+	log.Println(fmt.Sprintf("Unsubscribed from channel channel %s", sub.Channel()))
+}
+
 func newConnection() *centrifuge.Client {
-	wsURL := "ws://localhost:8000/connection/websocket"
+	wsURL := "ws://192.168.1.33:8000/connection/websocket"
 
 	handler := &eventHandler{}
 
@@ -79,12 +87,22 @@ func main() {
 	defer c.Close()
 
 	subEvents := centrifuge.NewSubscriptionEventHub()
-	subEvents.OnPublish(&subEventHandler{})
+	eventHandler := &subEventHandler{}
+	subEvents.OnPublish(eventHandler)
+	subEvents.OnSubscribeSuccess(eventHandler)
+	subEvents.OnUnsubscribe(eventHandler)
 
-	_, err := c.Subscribe("chat:index", subEvents)
+	sub, err := c.Subscribe("chat:index", subEvents)
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	go func() {
+		time.Sleep(time.Second)
+		sub.Unsubscribe()
+		time.Sleep(time.Second)
+		sub.Subscribe()
+	}()
 
 	select {}
 }

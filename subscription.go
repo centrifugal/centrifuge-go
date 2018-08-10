@@ -268,7 +268,7 @@ func (s *Subscription) Subscribe() error {
 	s.mu.Lock()
 	s.needResubscribe = true
 	s.mu.Unlock()
-	return s.resubscribe()
+	return s.resubscribe(false)
 }
 
 func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool) {
@@ -286,7 +286,7 @@ func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool) {
 	}
 }
 
-func (s *Subscription) subscribeSuccess(recovered bool) {
+func (s *Subscription) subscribeSuccess(recovered bool, isResubscribe bool) {
 	s.mu.Lock()
 	if s.status == SUBSCRIBED {
 		s.mu.Unlock()
@@ -294,12 +294,12 @@ func (s *Subscription) subscribeSuccess(recovered bool) {
 	}
 	s.status = SUBSCRIBED
 	s.unsubscribedAt = time.Time{}
-	resubscribed := s.resubscribed
+	//resubscribed := s.resubscribed
 	s.resolveSubFutures(nil)
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeSuccess != nil {
 		handler := s.events.onSubscribeSuccess
-		ev := SubscribeSuccessEvent{Resubscribed: resubscribed, Recovered: recovered}
+		ev := SubscribeSuccessEvent{Resubscribed: isResubscribe, Recovered: recovered}
 		handler.OnSubscribeSuccess(s, ev)
 	}
 	s.mu.Lock()
@@ -363,7 +363,7 @@ func (s *Subscription) handleUnsub(m proto.Unsub) {
 	}
 }
 
-func (s *Subscription) resubscribe() error {
+func (s *Subscription) resubscribe(isResubscribe bool) error {
 	s.mu.Lock()
 	if s.status == SUBSCRIBED || s.status == SUBSCRIBING {
 		s.mu.Unlock()
@@ -426,7 +426,7 @@ func (s *Subscription) resubscribe() error {
 		}(res.TTL)
 	}
 
-	s.subscribeSuccess(res.Recovered)
+	s.subscribeSuccess(res.Recovered, isResubscribe)
 	s.recover(res)
 	return nil
 }

@@ -779,7 +779,7 @@ func (c *Client) resubscribe() error {
 	c.subsMutex.RLock()
 	defer c.subsMutex.RUnlock()
 	for _, sub := range c.subs {
-		err := sub.resubscribe()
+		err := sub.resubscribe(true)
 		if err != nil {
 			return err
 		}
@@ -1006,7 +1006,7 @@ func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) (*Subsc
 	c.subsMutex.Unlock()
 
 	go func() {
-		err := sub.resubscribe()
+		err := sub.resubscribe(false)
 		if err != nil {
 			c.handleError(err)
 			c.disconnect(true)
@@ -1028,7 +1028,7 @@ func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*S
 	c.subs[channel] = sub
 	c.subsMutex.Unlock()
 
-	err := sub.resubscribe()
+	err := sub.resubscribe(false)
 	return sub, err
 }
 
