@@ -246,8 +246,7 @@ func NewProtobufParamsEncoder() *ProtobufParamsEncoder {
 func (d *ProtobufParamsEncoder) Encode(r interface{}) ([]byte, error) {
 	m, ok := r.(proto.Marshaler)
 	if !ok {
-		fmt.Printf("%#v\n", r)
-		return nil, fmt.Errorf("can not marshal type to Protobuf")
+		return nil, fmt.Errorf("can not marshal type %T to Protobuf", r)
 	}
 	return m.Marshal()
 }

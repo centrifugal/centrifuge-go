@@ -3,6 +3,7 @@ package centrifuge
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -59,7 +60,9 @@ func DefaultConfig() Config {
 		ReadTimeout:          DefaultReadTimeout,
 		WriteTimeout:         DefaultWriteTimeout,
 		PrivateChannelPrefix: DefaultPrivateChannelPrefix,
-		Websocket:            WebsocketConfig{},
+		Websocket: WebsocketConfig{
+			Header: http.Header{},
+		},
 	}
 }
 
@@ -193,7 +196,6 @@ type Client struct {
 	requestsMutex     sync.RWMutex
 	requests          map[uint32]chan proto.Reply
 	receive           chan []byte
-	write             chan *proto.Command
 	closeCh           chan struct{}
 	reconnect         bool
 	reconnectStrategy reconnectStrategy
@@ -204,6 +206,7 @@ type Client struct {
 	commandEncoder    proto.CommandEncoder
 	pushEncoder       proto.PushEncoder
 	pushDecoder       proto.PushDecoder
+	lastMessageTime   time.Time
 }
 
 func (c *Client) nextMsgID() uint32 {
@@ -215,7 +218,7 @@ func New(u string, events *EventHub, config Config) *Client {
 	var encoding proto.Encoding
 
 	if strings.HasPrefix(u, "ws") {
-		if strings.Contains(strings.ToLower(u), "format=protobuf") {
+		if strings.Contains(u, "format=protobuf") {
 			encoding = proto.EncodingProtobuf
 		} else {
 			encoding = proto.EncodingJSON
@@ -303,14 +306,15 @@ func (c *Client) Send(data []byte) error {
 // RPC handler must be registered on server.
 func (c *Client) RPC(data []byte) ([]byte, error) {
 	cmd := &proto.Command{
+		ID:     c.nextMsgID(),
 		Method: proto.MethodTypeRPC,
 	}
-	params := proto.RPCRequest{
+	params := &proto.RPCRequest{
 		Data: data,
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("encode error: %v", err)
 	}
 	cmd.Params = paramsData
 	r, err := c.sendSync(cmd)
@@ -320,17 +324,15 @@ func (c *Client) RPC(data []byte) ([]byte, error) {
 	if r.Error != nil {
 		return nil, r.Error
 	}
-
 	var res proto.RPCResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
 		return nil, err
 	}
-
 	return res.Data, nil
 }
 
-// Close closes Client connection and cleans ups everything.
+// Close closes Client connection and cleans up state.
 func (c *Client) Close() error {
 	err := c.Disconnect()
 	c.mutex.Lock()
@@ -371,17 +373,17 @@ func (c *Client) handleDisconnect(d *disconnect) {
 
 	c.reconnect = d.Reconnect
 
-	if c.transport != nil {
-		c.transport.Close()
-		c.transport = nil
-	}
-
 	c.requestsMutex.Lock()
 	for uid, ch := range c.requests {
 		close(ch)
 		delete(c.requests, uid)
 	}
 	c.requestsMutex.Unlock()
+
+	if c.transport != nil {
+		c.transport.Close()
+		c.transport = nil
+	}
 
 	select {
 	case <-c.closeCh:
@@ -398,7 +400,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	c.subsMutex.RUnlock()
 
 	for _, s := range unsubs {
-		s.unsubscribedAt = time.Now()
+		s.unsubscribedAt = c.lastMessageTime
 		s.triggerOnUnsubscribe(true)
 	}
 
@@ -444,7 +446,7 @@ type backoffReconnect struct {
 var defaultBackoffReconnect = &backoffReconnect{
 	NumReconnect:    0,
 	MinMilliseconds: 100,
-	MaxMilliseconds: 10 * 1000,
+	MaxMilliseconds: 20 * 1000,
 	Factor:          2,
 	Jitter:          true,
 }
@@ -502,7 +504,7 @@ func (c *Client) pinger(closeCh chan struct{}) {
 		case <-time.After(timeout):
 			err := c.sendPing()
 			if err != nil {
-				c.handleDisconnect(&disconnect{Reason: "no ping", Reconnect: true})
+				go c.handleDisconnect(&disconnect{Reason: "no ping", Reconnect: true})
 				return
 			}
 		case <-closeCh:
@@ -515,9 +517,17 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 	for {
 		reply, disconnect, err := t.Read()
 		if err != nil {
+			if disconnect != nil {
+				c.mutex.Lock()
+				c.lastMessageTime = time.Now()
+				c.mutex.Unlock()
+			}
 			c.handleDisconnect(disconnect)
 			return
 		}
+		c.mutex.Lock()
+		c.lastMessageTime = time.Now()
+		c.mutex.Unlock()
 		select {
 		case <-closeCh:
 			return
@@ -530,21 +540,6 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 			if err != nil {
 				c.handleError(err)
 			}
-		}
-	}
-}
-
-func (c *Client) writer(t transport, closeCh chan struct{}) {
-	for {
-		select {
-		case cmd := <-c.write:
-			err := t.Write(cmd, c.config.WriteTimeout)
-			if err != nil {
-				c.handleDisconnect(&disconnect{Reason: "write error", Reconnect: true})
-				return
-			}
-		case <-closeCh:
-			return
 		}
 	}
 }
@@ -710,12 +705,10 @@ func (c *Client) connect() error {
 	c.transport = t
 	closeCh := make(chan struct{})
 	c.closeCh = closeCh
-	c.write = make(chan *proto.Command, 64)
 	c.receive = make(chan []byte, 64)
 	c.mutex.Unlock()
 
 	go c.reader(t, closeCh)
-	go c.writer(t, closeCh)
 
 	var res proto.ConnectResult
 
@@ -1270,7 +1263,11 @@ func (c *Client) send(cmd *proto.Command) error {
 	case <-c.closeCh:
 		return ErrClientDisconnected
 	default:
-		c.write <- cmd
+		err := c.transport.Write(cmd, c.config.WriteTimeout)
+		if err != nil {
+			go c.handleDisconnect(&disconnect{Reason: "write error", Reconnect: true})
+			return err
+		}
 	}
 	return nil
 }

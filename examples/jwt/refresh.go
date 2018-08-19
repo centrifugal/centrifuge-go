@@ -14,7 +14,7 @@ import (
 func connToken(user string, exp int64) string {
 	// NOTE that JWT must be generated on backend side of your application!
 	// Here we are generating it on client side only for example simplicity.
-	claims := jwt.MapClaims{"user": user}
+	claims := jwt.MapClaims{"sub": user}
 	if exp > 0 {
 		claims["exp"] = exp
 	}

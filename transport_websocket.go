@@ -58,10 +58,13 @@ type WebsocketConfig struct {
 	// If CookieJar is nil, cookies are not sent in requests and ignored
 	// in responses.
 	CookieJar http.CookieJar
+
+	// Header specifies custom HTTP Header to send.
+	Header http.Header
 }
 
 func newWebsocketTransport(url string, encoding proto.Encoding, config WebsocketConfig) (transport, error) {
-	wsHeaders := http.Header{}
+	wsHeaders := config.Header
 	dialer := websocket.DefaultDialer
 
 	dialer.HandshakeTimeout = config.HandshakeTimeout
@@ -71,10 +74,10 @@ func newWebsocketTransport(url string, encoding proto.Encoding, config Websocket
 
 	conn, resp, err := dialer.Dial(url, wsHeaders)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Error dial: %v", err)
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		return nil, fmt.Errorf("Wrong status code while connecting to server: '%d'", resp.StatusCode)
+		return nil, fmt.Errorf("Wrong status code while connecting to server: %d", resp.StatusCode)
 	}
 
 	t := &websocketTransport{
@@ -97,6 +100,7 @@ func (t *websocketTransport) Close() error {
 	}
 	t.closed = true
 	close(t.closeCh)
+	t.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
 	return t.conn.Close()
 }
 

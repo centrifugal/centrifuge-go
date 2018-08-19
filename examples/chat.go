@@ -4,8 +4,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"os"
 
@@ -17,22 +15,20 @@ type ChatMessage struct {
 	Input string `json:"input"`
 }
 
-type eventHandler struct {
-	out io.Writer
-}
+type eventHandler struct{}
 
 func (h *eventHandler) OnConnect(c *centrifuge.Client, e centrifuge.ConnectEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Connected to chat with ID %s", e.ClientID))
+	log.Printf("Connected to chat with ID %s", e.ClientID)
 	return
 }
 
 func (h *eventHandler) OnError(c *centrifuge.Client, e centrifuge.ErrorEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Error: %s", e.Message))
+	log.Printf("Error: %s", e.Message)
 	return
 }
 
 func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Disconnected from chat: %s", e.Reason))
+	log.Printf("Disconnected from chat: %s", e.Reason)
 	return
 }
 
@@ -42,37 +38,36 @@ func (h *eventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.Publ
 	if err != nil {
 		return
 	}
-	rePrefix := "Someone says:"
-	fmt.Fprintln(h.out, rePrefix, chatMessage.Input)
+	log.Printf("Someone says: %s", chatMessage.Input)
 }
 
 func (h *eventHandler) OnJoin(sub *centrifuge.Subscription, e centrifuge.JoinEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Someone joined: user id %s, client id %s", e.User, e.Client))
+	log.Printf("Someone joined: user id %s, client id %s", e.User, e.Client)
 }
 
 func (h *eventHandler) OnLeave(sub *centrifuge.Subscription, e centrifuge.LeaveEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Someone left: user id %s, client id %s", e.User, e.Client))
+	log.Printf("Someone left: user id %s, client id %s", e.User, e.Client)
 }
 
 func (h *eventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Subscribed on channel %s, recovered: %v", sub.Channel(), e.Recovered))
+	log.Printf("Subscribed on channel %s, resubscribed: %v, recovered: %v", sub.Channel(), e.Resubscribed, e.Recovered)
 }
 
 func (h *eventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Subscribed on channel %s failed, error: %s", sub.Channel(), e.Error))
+	log.Printf("Subscribed on channel %s failed, error: %s", sub.Channel(), e.Error)
 }
 
 func (h *eventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifuge.UnsubscribeEvent) {
-	fmt.Fprintln(h.out, fmt.Sprintf("Unsubscribed from channel %s", sub.Channel()))
+	log.Printf("Unsubscribed from channel %s", sub.Channel())
 }
 
 func main() {
 	url := "ws://localhost:8000/connection/websocket?format=protobuf"
 
-	fmt.Fprintf(os.Stdout, "Connect to %s\n", url)
-	fmt.Fprintf(os.Stdout, "Print something and press ENTER to send\n")
+	log.Printf("Connect to %s\n", url)
+	log.Printf("Print something and press ENTER to send\n")
 
-	handler := &eventHandler{os.Stdout}
+	handler := &eventHandler{}
 
 	events := centrifuge.NewEventHub()
 	events.OnConnect(handler)

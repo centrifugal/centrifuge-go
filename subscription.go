@@ -294,7 +294,6 @@ func (s *Subscription) subscribeSuccess(recovered bool, isResubscribe bool) {
 	}
 	s.status = SUBSCRIBED
 	s.unsubscribedAt = time.Time{}
-	//resubscribed := s.resubscribed
 	s.resolveSubFutures(nil)
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeSuccess != nil {
@@ -398,7 +397,9 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 	var last string
 	if !s.unsubscribedAt.IsZero() {
 		recover = true
+		s.centrifuge.mutex.RLock()
 		away = uint32(time.Now().Sub(s.unsubscribedAt).Seconds() + s.centrifuge.config.ReadTimeout.Seconds() + s.centrifuge.config.WriteTimeout.Seconds())
+		s.centrifuge.mutex.RUnlock()
 		last = s.lastMessageID
 	}
 	s.mu.Unlock()
@@ -426,7 +427,7 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 		}(res.TTL)
 	}
 
-	s.subscribeSuccess(res.Recovered, isResubscribe)
+	s.subscribeSuccess(res.Recovered, isResubscribe && !s.unsubscribedAt.IsZero())
 	s.recover(res)
 	return nil
 }

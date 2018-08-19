@@ -3,6 +3,6 @@ install:
 - go get -u github.com/golang/dep/cmd/dep
 - dep ensure
 go:
-  - "1.10.2" 
+  - "1.10.3"
   - "tip"
 script: go test -v
