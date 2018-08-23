@@ -41,7 +41,7 @@ func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifu
 func testCustomHeader() {
 	url := "ws://localhost:10000/connection/websocket"
 	config := centrifuge.DefaultConfig()
-	config.Websocket.Header.Add("Authorization", "testsuite")
+	config.Header.Add("Authorization", "testsuite")
 
 	events := centrifuge.NewEventHub()
 	eventHandler := &eventHandler{}

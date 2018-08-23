@@ -1,6 +1,7 @@
 package centrifuge
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -46,11 +47,30 @@ const (
 
 // Config contains various client options.
 type Config struct {
+	// PrivateChannelPrefix is private channel prefix.
 	PrivateChannelPrefix string
-	ReadTimeout          time.Duration
-	WriteTimeout         time.Duration
-	PingInterval         time.Duration
-	Websocket            WebsocketConfig
+	// ReadTimeout is how long to wait read operations to complete.
+	ReadTimeout time.Duration
+	// WriteTimeout is Websocket write timeout.
+	WriteTimeout time.Duration
+	// PingInterval is how often to send ping commands to server.
+	PingInterval time.Duration
+	// HandshakeTimeout specifies the duration for the handshake to complete.
+	HandshakeTimeout time.Duration
+	// TLSConfig specifies the TLS configuration to use with tls.Client.
+	// If nil, the default configuration is used.
+	TLSConfig *tls.Config
+	// EnableCompression specifies if the client should attempt to negotiate
+	// per message compression (RFC 7692). Setting this value to true does not
+	// guarantee that compression will be supported. Currently only "no context
+	// takeover" modes are supported.
+	EnableCompression bool
+	// CookieJar specifies the cookie jar.
+	// If CookieJar is nil, cookies are not sent in requests and ignored
+	// in responses.
+	CookieJar http.CookieJar
+	// Header specifies custom HTTP Header to send.
+	Header http.Header
 }
 
 // DefaultConfig returns Config with default options.
@@ -60,9 +80,7 @@ func DefaultConfig() Config {
 		ReadTimeout:          DefaultReadTimeout,
 		WriteTimeout:         DefaultWriteTimeout,
 		PrivateChannelPrefix: DefaultPrivateChannelPrefix,
-		Websocket: WebsocketConfig{
-			Header: http.Header{},
-		},
+		Header:               http.Header{},
 	}
 }
 
@@ -207,6 +225,8 @@ type Client struct {
 	pushEncoder       proto.PushEncoder
 	pushDecoder       proto.PushDecoder
 	lastMessageTime   time.Time
+	connectedAt       int64
+	serverTime        int64
 }
 
 func (c *Client) nextMsgID() uint32 {
@@ -357,6 +377,16 @@ func (c *Client) close() {
 	}
 }
 
+// lock is held outside.
+func (c *Client) getSince() uint32 {
+	// const now = new Date();
+	// const delta = Math.floor((now - this._connectedAt) / 1000);
+	// return this._serverTime + delta;
+	now := time.Now().Unix()
+	delta := now - c.connectedAt
+	return uint32(c.serverTime + delta)
+}
+
 func (c *Client) handleDisconnect(d *disconnect) {
 	if d == nil {
 		d = &disconnect{
@@ -400,7 +430,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	c.subsMutex.RUnlock()
 
 	for _, s := range unsubs {
-		s.unsubscribedAt = c.lastMessageTime
+		s.since = c.getSince()
 		s.triggerOnUnsubscribe(true)
 	}
 
@@ -691,7 +721,15 @@ func (c *Client) connect() error {
 	c.closeCh = make(chan struct{})
 	c.mutex.Unlock()
 
-	t, err := newWebsocketTransport(c.url, c.encoding, c.config.Websocket)
+	wsConfig := websocketConfig{
+		TLSConfig:         c.config.TLSConfig,
+		HandshakeTimeout:  c.config.HandshakeTimeout,
+		EnableCompression: c.config.EnableCompression,
+		CookieJar:         c.config.CookieJar,
+		Header:            c.config.Header,
+	}
+
+	t, err := newWebsocketTransport(c.url, c.encoding, wsConfig)
 	if err != nil {
 		return err
 	}
@@ -740,6 +778,8 @@ func (c *Client) connect() error {
 	c.id = res.Client
 	prevStatus := c.status
 	c.status = CONNECTED
+	c.serverTime = int64(res.Time)
+	c.connectedAt = time.Now().Unix()
 	c.mutex.Unlock()
 
 	if res.Expires {
@@ -1025,7 +1065,7 @@ func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*S
 	return sub, err
 }
 
-func (c *Client) sendSubscribe(channel string, recover bool, away uint32, lastMessageID string, token string) (proto.SubscribeResult, error) {
+func (c *Client) sendSubscribe(channel string, recover bool, since uint32, lastMessageID string, token string) (proto.SubscribeResult, error) {
 	params := &proto.SubscribeRequest{
 		Channel: channel,
 	}
@@ -1033,7 +1073,7 @@ func (c *Client) sendSubscribe(channel string, recover bool, away uint32, lastMe
 	if recover {
 		params.Recover = true
 		params.Last = lastMessageID
-		params.Away = away
+		params.Since = since
 	}
 	if token != "" {
 		params.Token = token

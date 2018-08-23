@@ -138,7 +138,7 @@ type Subscription struct {
 	err             error
 	needResubscribe bool
 	subFutures      []chan error
-	unsubscribedAt  time.Time
+	since           uint32
 }
 
 func (c *Client) newSubscription(channel string, events *SubscriptionEventHub) *Subscription {
@@ -257,7 +257,7 @@ func (s *Subscription) presence() (map[string]proto.ClientInfo, error) {
 func (s *Subscription) Unsubscribe() error {
 	s.centrifuge.unsubscribe(s.channel)
 	s.mu.Lock()
-	s.unsubscribedAt = time.Time{}
+	s.since = 0
 	s.mu.Unlock()
 	s.triggerOnUnsubscribe(false)
 	return nil
@@ -293,7 +293,7 @@ func (s *Subscription) subscribeSuccess(recovered bool, isResubscribe bool) {
 		return
 	}
 	s.status = SUBSCRIBED
-	s.unsubscribedAt = time.Time{}
+	s.since = 0
 	s.resolveSubFutures(nil)
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeSuccess != nil {
@@ -393,18 +393,18 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 
 	s.mu.Lock()
 	var recover bool
-	var away uint32
+	var since uint32
 	var last string
-	if !s.unsubscribedAt.IsZero() {
+	if s.since != 0 {
 		recover = true
 		s.centrifuge.mutex.RLock()
-		away = uint32(time.Now().Sub(s.unsubscribedAt).Seconds() + s.centrifuge.config.ReadTimeout.Seconds() + s.centrifuge.config.WriteTimeout.Seconds())
+		since = s.since
 		s.centrifuge.mutex.RUnlock()
 		last = s.lastMessageID
 	}
 	s.mu.Unlock()
 
-	res, err := s.centrifuge.sendSubscribe(s.channel, recover, away, last, token)
+	res, err := s.centrifuge.sendSubscribe(s.channel, recover, since, last, token)
 	if err != nil {
 		if err == ErrTimeout {
 			s.mu.Lock()
@@ -427,7 +427,7 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 		}(res.TTL)
 	}
 
-	s.subscribeSuccess(res.Recovered, isResubscribe && !s.unsubscribedAt.IsZero())
+	s.subscribeSuccess(res.Recovered, isResubscribe && s.since != 0)
 	s.recover(res)
 	return nil
 }

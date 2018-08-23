@@ -33,14 +33,14 @@ type websocketTransport struct {
 	commandEncoder proto.CommandEncoder
 	replyDecoder   proto.ReplyDecoder
 	replyCh        chan *proto.Reply
-	config         WebsocketConfig
+	config         websocketConfig
 	disconnect     *disconnect
 	closed         bool
 	closeCh        chan struct{}
 }
 
-// WebsocketConfig configures Websocket transport.
-type WebsocketConfig struct {
+// websocketConfig configures Websocket transport.
+type websocketConfig struct {
 	// TLSConfig specifies the TLS configuration to use with tls.Client.
 	// If nil, the default configuration is used.
 	TLSConfig *tls.Config
@@ -63,7 +63,7 @@ type WebsocketConfig struct {
 	Header http.Header
 }
 
-func newWebsocketTransport(url string, encoding proto.Encoding, config WebsocketConfig) (transport, error) {
+func newWebsocketTransport(url string, encoding proto.Encoding, config websocketConfig) (transport, error) {
 	wsHeaders := config.Header
 	dialer := websocket.DefaultDialer
 
