@@ -218,7 +218,6 @@ type Client struct {
 	reconnect         bool
 	reconnectStrategy reconnectStrategy
 	events            *EventHub
-	delayPing         chan struct{}
 	paramsEncoder     proto.ParamsEncoder
 	resultDecoder     proto.ResultDecoder
 	commandEncoder    proto.CommandEncoder
@@ -256,7 +255,6 @@ func New(u string, events *EventHub, config Config) *Client {
 		reconnect:         true,
 		reconnectStrategy: defaultBackoffReconnect,
 		events:            events,
-		delayPing:         make(chan struct{}, 32),
 		paramsEncoder:     proto.NewParamsEncoder(encoding),
 		resultDecoder:     proto.NewResultDecoder(encoding),
 		commandEncoder:    proto.NewCommandEncoder(encoding),
@@ -379,12 +377,7 @@ func (c *Client) close() {
 
 // lock is held outside.
 func (c *Client) getSince() uint32 {
-	// const now = new Date();
-	// const delta = Math.floor((now - this._connectedAt) / 1000);
-	// return this._serverTime + delta;
-	now := time.Now().Unix()
-	delta := now - c.connectedAt
-	return uint32(c.serverTime + delta)
+	return uint32(c.serverTime)
 }
 
 func (c *Client) handleDisconnect(d *disconnect) {
@@ -430,7 +423,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	c.subsMutex.RUnlock()
 
 	for _, s := range unsubs {
-		s.since = c.getSince()
+		s.setSince(c.getSince())
 		s.triggerOnUnsubscribe(true)
 	}
 
@@ -530,7 +523,6 @@ func (c *Client) pinger(closeCh chan struct{}) {
 	timeout := time.Duration(c.config.PingInterval)
 	for {
 		select {
-		case <-c.delayPing:
 		case <-time.After(timeout):
 			err := c.sendPing()
 			if err != nil {
@@ -562,10 +554,6 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 		case <-closeCh:
 			return
 		default:
-			select {
-			case c.delayPing <- struct{}{}:
-			default:
-			}
 			err := c.handle(reply)
 			if err != nil {
 				c.handleError(err)
@@ -1281,6 +1269,16 @@ func (c *Client) sendPing() error {
 	}
 	if r.Error != nil {
 		return r.Error
+	}
+	var res proto.PingResult
+	err = c.resultDecoder.Decode(r.Result, &res)
+	if err != nil {
+		return err
+	}
+	if res.Time != 0 {
+		c.mutex.Lock()
+		c.serverTime = int64(res.Time)
+		c.mutex.Unlock()
 	}
 	return nil
 }

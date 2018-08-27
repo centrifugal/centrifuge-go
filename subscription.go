@@ -164,6 +164,12 @@ func (s *Subscription) Status() int {
 	return s.status
 }
 
+func (s *Subscription) setSince(since uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.since = since
+}
+
 func (s *Subscription) newSubFuture() chan error {
 	fut := make(chan error, 1)
 	s.mu.Lock()
@@ -288,7 +294,7 @@ func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool) {
 
 func (s *Subscription) subscribeSuccess(recovered bool, isResubscribe bool) {
 	s.mu.Lock()
-	if s.status == SUBSCRIBED {
+	if s.status != SUBSCRIBING {
 		s.mu.Unlock()
 		return
 	}
@@ -308,7 +314,7 @@ func (s *Subscription) subscribeSuccess(recovered bool, isResubscribe bool) {
 
 func (s *Subscription) subscribeError(err error) {
 	s.mu.Lock()
-	if s.status == SUBERROR {
+	if s.status != SUBSCRIBING {
 		s.mu.Unlock()
 		return
 	}
@@ -425,6 +431,10 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 				s.centrifuge.sendSubRefresh(s.channel)
 			}
 		}(res.TTL)
+	}
+
+	if res.Time != 0 {
+		s.setSince(res.Time)
 	}
 
 	s.subscribeSuccess(res.Recovered, isResubscribe && s.since != 0)
