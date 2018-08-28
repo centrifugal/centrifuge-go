@@ -12,7 +12,7 @@ type transport interface {
 	Read() (*proto.Reply, *disconnect, error)
 	// Write should write Command to connection with specified write timeout.
 	// It should not be thread-safe as we will call it from one goroutine.
-	Write(*proto.Command, time.Duration) error
+	Write(cmd *proto.Command, timeout time.Duration) error
 	// Close should close connection and do all clean ups required.
 	// It must be safe to call Close several times and concurrently with Read
 	// and Write methods.
