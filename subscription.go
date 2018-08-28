@@ -231,6 +231,11 @@ func (s *Subscription) Presence() (map[string]ClientInfo, error) {
 	return s.presence()
 }
 
+// PresenceStats allows to extract channel presence stats.
+func (s *Subscription) PresenceStats() (PresenceStats, error) {
+	return s.presenceStats()
+}
+
 func (s *Subscription) history() ([]Publication, error) {
 	subFuture := s.newSubFuture()
 	select {
@@ -256,6 +261,20 @@ func (s *Subscription) presence() (map[string]proto.ClientInfo, error) {
 	case <-time.After(s.centrifuge.config.ReadTimeout):
 		s.removeSubFuture(subFuture)
 		return nil, ErrTimeout
+	}
+}
+
+func (s *Subscription) presenceStats() (PresenceStats, error) {
+	subFuture := s.newSubFuture()
+	select {
+	case err := <-subFuture:
+		if err != nil {
+			return PresenceStats{}, err
+		}
+		return s.centrifuge.presenceStats(s.channel)
+	case <-time.After(s.centrifuge.config.ReadTimeout):
+		s.removeSubFuture(subFuture)
+		return PresenceStats{}, ErrTimeout
 	}
 }
 

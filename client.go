@@ -279,6 +279,14 @@ func (c *Client) SetConnectData(data proto.Raw) {
 	c.connectData = data
 }
 
+// SetHeader allows to set custom header sent in Upgrade HTTP request.
+func (c *Client) SetHeader(key, value string) {
+	if c.config.Header == nil {
+		c.config.Header = http.Header{}
+	}
+	c.config.Header.Set(key, value)
+}
+
 func (c *Client) subscribed(channel string) bool {
 	c.subsMutex.RLock()
 	_, ok := c.subs[channel]
@@ -1213,6 +1221,52 @@ func (c *Client) sendPresence(channel string) (proto.PresenceResult, error) {
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
 		return proto.PresenceResult{}, err
+	}
+	return res, nil
+}
+
+// PresenceStats represents short presence information.
+type PresenceStats struct {
+	NumClients int
+	NumUsers   int
+}
+
+func (c *Client) presenceStats(channel string) (PresenceStats, error) {
+	res, err := c.sendPresenceStats(channel)
+	if err != nil {
+		return PresenceStats{}, err
+	}
+	return PresenceStats{
+		NumClients: int(res.NumClients),
+		NumUsers:   int(res.NumUsers),
+	}, nil
+}
+
+func (c *Client) sendPresenceStats(channel string) (proto.PresenceStatsResult, error) {
+	params := &proto.PresenceStatsRequest{
+		Channel: channel,
+	}
+	paramsData, err := c.paramsEncoder.Encode(params)
+	if err != nil {
+		return proto.PresenceStatsResult{}, err
+	}
+
+	cmd := &proto.Command{
+		ID:     uint32(c.nextMsgID()),
+		Method: proto.MethodTypePresenceStats,
+		Params: paramsData,
+	}
+	r, err := c.sendSync(cmd)
+	if err != nil {
+		return proto.PresenceStatsResult{}, err
+	}
+	if r.Error != nil {
+		return proto.PresenceStatsResult{}, r.Error
+	}
+	var res proto.PresenceStatsResult
+	err = c.resultDecoder.Decode(r.Result, &res)
+	if err != nil {
+		return proto.PresenceStatsResult{}, err
 	}
 	return res, nil
 }
