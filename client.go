@@ -223,9 +223,7 @@ type Client struct {
 	commandEncoder    proto.CommandEncoder
 	pushEncoder       proto.PushEncoder
 	pushDecoder       proto.PushDecoder
-	lastMessageTime   time.Time
-	connectedAt       int64
-	serverTime        int64
+	delayPing         chan struct{}
 }
 
 func (c *Client) nextMsgID() uint32 {
@@ -260,6 +258,7 @@ func New(u string, events *EventHub, config Config) *Client {
 		commandEncoder:    proto.NewCommandEncoder(encoding),
 		pushEncoder:       proto.NewPushEncoder(encoding),
 		pushDecoder:       proto.NewPushDecoder(encoding),
+		delayPing:         make(chan struct{}, 32),
 	}
 	return c
 }
@@ -383,11 +382,6 @@ func (c *Client) close() {
 	}
 }
 
-// lock is held outside.
-func (c *Client) getSince() uint32 {
-	return uint32(c.serverTime)
-}
-
 func (c *Client) handleDisconnect(d *disconnect) {
 	if d == nil {
 		d = &disconnect{
@@ -431,8 +425,16 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	c.subsMutex.RUnlock()
 
 	for _, s := range unsubs {
-		s.setSince(c.getSince())
 		s.triggerOnUnsubscribe(true)
+		if c.reconnect {
+			s.mu.Lock()
+			s.recover = true
+			s.mu.Unlock()
+		} else {
+			s.mu.Lock()
+			s.recover = false
+			s.mu.Unlock()
+		}
 	}
 
 	reconnect := c.reconnect
@@ -531,6 +533,7 @@ func (c *Client) pinger(closeCh chan struct{}) {
 	timeout := time.Duration(c.config.PingInterval)
 	for {
 		select {
+		case <-c.delayPing:
 		case <-time.After(timeout):
 			err := c.sendPing()
 			if err != nil {
@@ -547,21 +550,17 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 	for {
 		reply, disconnect, err := t.Read()
 		if err != nil {
-			if disconnect != nil {
-				c.mutex.Lock()
-				c.lastMessageTime = time.Now()
-				c.mutex.Unlock()
-			}
 			c.handleDisconnect(disconnect)
 			return
 		}
-		c.mutex.Lock()
-		c.lastMessageTime = time.Now()
-		c.mutex.Unlock()
 		select {
 		case <-closeCh:
 			return
 		default:
+			select {
+			case c.delayPing <- struct{}{}:
+			default:
+			}
 			err := c.handle(reply)
 			if err != nil {
 				c.handleError(err)
@@ -774,8 +773,6 @@ func (c *Client) connect() error {
 	c.id = res.Client
 	prevStatus := c.status
 	c.status = CONNECTED
-	c.serverTime = int64(res.Time)
-	c.connectedAt = time.Now().Unix()
 	c.mutex.Unlock()
 
 	if res.Expires {
@@ -1061,15 +1058,16 @@ func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*S
 	return sub, err
 }
 
-func (c *Client) sendSubscribe(channel string, recover bool, since uint32, lastMessageID string, token string) (proto.SubscribeResult, error) {
+func (c *Client) sendSubscribe(channel string, recover bool, seq uint32, gen uint32, epoch string, token string) (proto.SubscribeResult, error) {
 	params := &proto.SubscribeRequest{
 		Channel: channel,
 	}
 
 	if recover {
 		params.Recover = true
-		params.Last = lastMessageID
-		params.Since = since
+		params.Seq = seq
+		params.Gen = gen
+		params.Epoch = epoch
 	}
 	if token != "" {
 		params.Token = token
@@ -1328,11 +1326,6 @@ func (c *Client) sendPing() error {
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
 		return err
-	}
-	if res.Time != 0 {
-		c.mutex.Lock()
-		c.serverTime = int64(res.Time)
-		c.mutex.Unlock()
 	}
 	return nil
 }
