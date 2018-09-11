@@ -132,13 +132,17 @@ type Subscription struct {
 	centrifuge      *Client
 	status          int
 	events          *SubscriptionEventHub
-	lastMessageID   string
+	lastSeq         uint32
+	lastGen         uint32
+	lastEpoch       string
 	resubscribed    bool
 	recovered       bool
+	recoverable     bool
+	recover         bool
 	err             error
 	needResubscribe bool
+	subscribedAt    int64
 	subFutures      []chan error
-	since           uint32
 }
 
 func (c *Client) newSubscription(channel string, events *SubscriptionEventHub) *Subscription {
@@ -164,10 +168,10 @@ func (s *Subscription) Status() int {
 	return s.status
 }
 
-func (s *Subscription) setSince(since uint32) {
+func (s *Subscription) setSubscribedAt(val int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.since = since
+	s.subscribedAt = val
 }
 
 func (s *Subscription) newSubFuture() chan error {
@@ -281,9 +285,7 @@ func (s *Subscription) presenceStats() (PresenceStats, error) {
 // Unsubscribe allows to unsubscribe from channel.
 func (s *Subscription) Unsubscribe() error {
 	s.centrifuge.unsubscribe(s.channel)
-	s.mu.Lock()
-	s.since = 0
-	s.mu.Unlock()
+	s.setSubscribedAt(0)
 	s.triggerOnUnsubscribe(false)
 	return nil
 }
@@ -318,7 +320,6 @@ func (s *Subscription) subscribeSuccess(recovered bool, isResubscribe bool) {
 		return
 	}
 	s.status = SUBSCRIBED
-	s.since = 0
 	s.resolveSubFutures(nil)
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeSuccess != nil {
@@ -353,7 +354,8 @@ func (s *Subscription) handlePublication(pub Publication) {
 		handler = s.events.onPublish
 	}
 	s.mu.Lock()
-	s.lastMessageID = pub.UID
+	s.lastSeq = pub.Seq
+	s.lastGen = pub.Gen
 	s.mu.Unlock()
 	if handler != nil {
 		handler.OnPublish(s, PublishEvent{Publication: pub})
@@ -418,18 +420,18 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 
 	s.mu.Lock()
 	var recover bool
-	var since uint32
-	var last string
-	if s.since != 0 {
+	var seq uint32
+	var gen uint32
+	var epoch string
+	if s.subscribedAt != 0 && s.recover {
 		recover = true
-		s.centrifuge.mutex.RLock()
-		since = s.since
-		s.centrifuge.mutex.RUnlock()
-		last = s.lastMessageID
+		seq = s.lastSeq
+		gen = s.lastGen
+		epoch = s.lastEpoch
 	}
 	s.mu.Unlock()
 
-	res, err := s.centrifuge.sendSubscribe(s.channel, recover, since, last, token)
+	res, err := s.centrifuge.sendSubscribe(s.channel, recover, seq, gen, epoch, token)
 	if err != nil {
 		if err == ErrTimeout {
 			s.mu.Lock()
@@ -452,24 +454,28 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 		}(res.TTL)
 	}
 
-	if res.Time != 0 {
-		s.setSince(res.Time)
-	}
+	s.mu.Lock()
+	previousSubscribedAt := s.subscribedAt
+	s.mu.Unlock()
 
-	s.subscribeSuccess(res.Recovered, isResubscribe && s.since != 0)
-	s.recover(res)
+	s.subscribeSuccess(res.Recovered, isResubscribe && previousSubscribedAt != 0)
+	s.setSubscribedAt(time.Now().Unix())
+	s.processRecover(res)
 	return nil
 }
 
-func (s *Subscription) recover(res proto.SubscribeResult) {
+func (s *Subscription) processRecover(res proto.SubscribeResult) {
+	s.mu.Lock()
+	s.lastEpoch = res.Epoch
+	s.mu.Unlock()
 	if len(res.Publications) > 0 {
 		for i := len(res.Publications) - 1; i >= 0; i-- {
 			s.handlePublication(*res.Publications[i])
 		}
 	} else {
-		lastID := string(res.Last)
 		s.mu.Lock()
-		s.lastMessageID = lastID
+		s.lastSeq = res.Seq
+		s.lastGen = res.Gen
 		s.mu.Unlock()
 	}
 }
