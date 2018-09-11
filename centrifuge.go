@@ -341,8 +341,6 @@ func (c *centrifuge) subscribed(channel string) bool {
 // ClientID returns client ID of this connection. It only available after connection
 // was established and authorized.
 func (c *centrifuge) ClientID() string {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
 	return string(c.clientID)
 }
 
