@@ -263,15 +263,15 @@ func (s *sub) handleLeaveMessage(info ClientInfo) {
 	}
 }
 
-func (s *sub) resubscribe() error {
-	privateSign, err := s.centrifuge.privateSign(s.channel)
+func (s *sub) resubscribe(clientID string) error {
+	privateSign, err := s.centrifuge.privateSign(s.channel, clientID)
 	if err != nil {
 		return err
 	}
 	s.lastMessageMu.Lock()
 	msgID := *s.lastMessageID
 	s.lastMessageMu.Unlock()
-	body, err := s.centrifuge.sendSubscribe(s.channel, &msgID, privateSign)
+	body, err := s.centrifuge.sendSubscribe(s.channel, clientID, &msgID, privateSign)
 	if err != nil {
 		return err
 	}
@@ -540,7 +540,6 @@ func (r *BackoffReconnect) reconnect(c *centrifuge) error {
 func (c *centrifuge) doReconnect() error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-
 	c.closed = make(chan struct{})
 
 	err := c.connect()
@@ -549,7 +548,9 @@ func (c *centrifuge) doReconnect() error {
 		return err
 	}
 
-	err = c.resubscribe()
+	clientID := c.clientID
+
+	err = c.resubscribe(clientID)
 	if err != nil {
 		// we need just to close the connection and outgoing requests here
 		// but preserve all subscriptions.
@@ -573,9 +574,9 @@ func (c *centrifuge) Reconnect(strategy ReconnectStrategy) error {
 	return strategy.reconnect(c)
 }
 
-func (c *centrifuge) resubscribe() error {
+func (c *centrifuge) resubscribe(clientID string) error {
 	for _, sub := range c.subs {
-		err := sub.resubscribe()
+		err := sub.resubscribe(clientID)
 		if err != nil {
 			return err
 		}
@@ -914,12 +915,12 @@ func (c *centrifuge) sendConnect() (connectResponseBody, error) {
 	return body, nil
 }
 
-func (c *centrifuge) privateSign(channel string) (*PrivateSign, error) {
+func (c *centrifuge) privateSign(channel string, clientID string) (*PrivateSign, error) {
 	var ps *PrivateSign
 	var err error
 	if strings.HasPrefix(channel, c.config.PrivateChannelPrefix) {
 		if c.events != nil && c.events.OnPrivateSub != nil {
-			privateReq := newPrivateRequest(c.ClientID(), channel)
+			privateReq := newPrivateRequest(clientID, channel)
 			ps, err = c.events.OnPrivateSub(c, privateReq)
 			if err != nil {
 				return nil, err
@@ -936,7 +937,11 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 	if !c.Connected() {
 		return nil, ErrClientDisconnected
 	}
-	privateSign, err := c.privateSign(channel)
+	c.mutex.RLock()
+	clientID := c.clientID
+	c.mutex.RUnlock()
+
+	privateSign, err := c.privateSign(channel, clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -946,7 +951,7 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 	c.subsMutex.Unlock()
 
 	sub.lastMessageMu.Lock()
-	body, err := c.sendSubscribe(channel, sub.lastMessageID, privateSign)
+	body, err := c.sendSubscribe(channel, clientID, sub.lastMessageID, privateSign)
 	sub.lastMessageMu.Unlock()
 
 	c.mutex.Lock()
@@ -980,7 +985,7 @@ func (c *centrifuge) Subscribe(channel string, events *SubEventHandler) (Sub, er
 	return sub, nil
 }
 
-func (c *centrifuge) sendSubscribe(channel string, lastMessageID *string, privateSign *PrivateSign) (subscribeResponseBody, error) {
+func (c *centrifuge) sendSubscribe(channel string, clientID string, lastMessageID *string, privateSign *PrivateSign) (subscribeResponseBody, error) {
 
 	params := subscribeParams{
 		Channel: channel,
@@ -990,7 +995,7 @@ func (c *centrifuge) sendSubscribe(channel string, lastMessageID *string, privat
 		params.Last = *lastMessageID
 	}
 	if privateSign != nil {
-		params.Client = c.ClientID()
+		params.Client = clientID
 		params.Info = privateSign.Info
 		params.Sign = privateSign.Sign
 	}
