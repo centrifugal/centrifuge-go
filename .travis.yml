@@ -1,8 +1,9 @@
 language: go
 install:
-- go get github.com/centrifugal/centrifugo/libcentrifugo/auth
-- go get github.com/gorilla/websocket
-- go get github.com/jpillora/backoff
+- go get -u github.com/golang/dep/cmd/dep
+- dep ensure
 go:
-  - 1.6.2 
+  - "1.11.x"
+  - "1.10.x"
+  - "tip"
 script: go test -v

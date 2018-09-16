@@ -9,37 +9,32 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/centrifugal/centrifugo/libcentrifugo/auth"
 )
 
+type testMessage struct {
+	Input string `json:"input"`
+}
+
+type subEventHandler struct{}
+
+func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
+	log.Println(fmt.Sprintf("New publication received from channel %s: %s", sub.Channel(), string(e.Data)))
+}
+
+func (h *subEventHandler) OnJoin(sub *centrifuge.Subscription, e centrifuge.JoinEvent) {
+	log.Println(fmt.Sprintf("User %s (client ID %s) joined channel %s", e.User, e.Client, sub.Channel()))
+}
+
+func (h *subEventHandler) OnLeave(sub *centrifuge.Subscription, e centrifuge.LeaveEvent) {
+	log.Println(fmt.Sprintf("User %s (client ID %s) left channel %s", e.User, e.Client, sub.Channel()))
+}
+
 func main() {
-	// Never show secret to client of your application. Keep it on your application backend only.
-	secret := "secret"
-
-	// Application user ID.
-	user := "42"
-
-	// Current timestamp as string.
-	timestamp := centrifuge.Timestamp()
-
-	// Empty info.
-	info := ""
-
-	// Generate client token so Centrifugo server can trust connection parameters received from client.
-	token := auth.GenerateClientToken(secret, user, timestamp, info)
-
-	creds := &centrifuge.Credentials{
-		User:      user,
-		Timestamp: timestamp,
-		Info:      info,
-		Token:     token,
-	}
-
 	started := time.Now()
 
-	wsURL := "ws://localhost:8000/connection/websocket"
-	conf := centrifuge.DefaultConfig
-	c := centrifuge.NewCentrifuge(wsURL, creds, nil, conf)
+	url := "ws://localhost:8000/connection/websocket"
+
+	c := centrifuge.New(url, nil, centrifuge.DefaultConfig())
 	defer c.Close()
 
 	err := c.Connect()
@@ -47,35 +42,18 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	onMessage := func(sub centrifuge.Sub, msg centrifuge.Message) error {
-		log.Println(fmt.Sprintf("New message received in channel %s: %#v", sub.Channel(), msg))
-		return nil
-	}
+	events := centrifuge.NewSubscriptionEventHub()
+	subEventHandler := &subEventHandler{}
+	events.OnPublish(subEventHandler)
+	events.OnJoin(subEventHandler)
+	events.OnLeave(subEventHandler)
 
-	onJoin := func(sub centrifuge.Sub, msg centrifuge.ClientInfo) error {
-		log.Println(fmt.Sprintf("User %s joined channel %s with client ID %s", msg.User, sub.Channel(), msg.Client))
-		return nil
-	}
-
-	onLeave := func(sub centrifuge.Sub, msg centrifuge.ClientInfo) error {
-		log.Println(fmt.Sprintf("User %s with clientID left channel %s with client ID %s", msg.User, msg.Client, sub.Channel()))
-		return nil
-	}
-
-	events := &centrifuge.SubEventHandler{
-		OnMessage: onMessage,
-		OnJoin:    onJoin,
-		OnLeave:   onLeave,
-	}
-
-	sub, err := c.Subscribe("public:chat", events)
+	sub, err := c.Subscribe("chat:index", events)
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	data := map[string]string{
-		"input": "test",
-	}
+	data := testMessage{Input: "example input"}
 	dataBytes, _ := json.Marshal(data)
 	err = sub.Publish(dataBytes)
 	if err != nil {
@@ -100,5 +78,4 @@ func main() {
 	}
 
 	log.Printf("%s", time.Since(started))
-
 }
