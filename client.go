@@ -1322,11 +1322,6 @@ func (c *Client) sendPing() error {
 	if r.Error != nil {
 		return r.Error
 	}
-	var res proto.PingResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
