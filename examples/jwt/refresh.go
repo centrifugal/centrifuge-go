@@ -61,7 +61,7 @@ func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifu
 }
 
 func newConnection() *centrifuge.Client {
-	wsURL := "ws://192.168.1.33:8000/connection/websocket"
+	wsURL := "ws://localhost:8000/connection/websocket"
 
 	handler := &eventHandler{}
 
@@ -92,17 +92,10 @@ func main() {
 	subEvents.OnSubscribeSuccess(eventHandler)
 	subEvents.OnUnsubscribe(eventHandler)
 
-	sub, err := c.Subscribe("chat:index", subEvents)
+	_, err := c.Subscribe("chat:index", subEvents)
 	if err != nil {
 		log.Fatalln(err)
 	}
-
-	go func() {
-		time.Sleep(time.Second)
-		sub.Unsubscribe()
-		time.Sleep(time.Second)
-		sub.Subscribe()
-	}()
 
 	select {}
 }
