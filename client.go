@@ -778,10 +778,10 @@ func (c *Client) connect() error {
 	if res.Expires {
 		go func(interval uint32) {
 			select {
-			case <-c.closeCh:
+			case <-closeCh:
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
-				c.sendRefresh()
+				c.sendRefresh(closeCh)
 			}
 		}(res.TTL)
 	}
@@ -849,7 +849,7 @@ func (c *Client) refreshToken() error {
 	return nil
 }
 
-func (c *Client) sendRefresh() error {
+func (c *Client) sendRefresh(closeCh chan struct{}) error {
 
 	err := c.refreshToken()
 	if err != nil {
@@ -887,10 +887,10 @@ func (c *Client) sendRefresh() error {
 	if res.Expires {
 		go func(interval uint32) {
 			select {
-			case <-c.closeCh:
+			case <-closeCh:
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
-				c.sendRefresh()
+				c.sendRefresh(closeCh)
 			}
 		}(res.TTL)
 	}
