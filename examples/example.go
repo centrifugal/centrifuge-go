@@ -15,6 +15,16 @@ type testMessage struct {
 	Input string `json:"input"`
 }
 
+type eventHandler struct{}
+
+func (h *eventHandler) OnConnect(c *centrifuge.Client, e centrifuge.ConnectEvent) {
+	log.Printf("client connected")
+}
+
+func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
+	log.Println("client diconnected")
+}
+
 type subEventHandler struct{}
 
 func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
@@ -34,7 +44,12 @@ func main() {
 
 	url := "ws://localhost:8000/connection/websocket"
 
-	c := centrifuge.New(url, nil, centrifuge.DefaultConfig())
+	eventHandler := &eventHandler{}
+	events := centrifuge.NewEventHub()
+	events.OnConnect(eventHandler)
+	events.OnDisconnect(eventHandler)
+
+	c := centrifuge.New(url, events, centrifuge.DefaultConfig())
 	defer c.Close()
 
 	err := c.Connect()
@@ -42,13 +57,13 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	events := centrifuge.NewSubscriptionEventHub()
+	subEvents := centrifuge.NewSubscriptionEventHub()
 	subEventHandler := &subEventHandler{}
-	events.OnPublish(subEventHandler)
-	events.OnJoin(subEventHandler)
-	events.OnLeave(subEventHandler)
+	subEvents.OnPublish(subEventHandler)
+	subEvents.OnJoin(subEventHandler)
+	subEvents.OnLeave(subEventHandler)
 
-	sub, err := c.Subscribe("chat:index", events)
+	sub, err := c.Subscribe("chat:index", subEvents)
 	if err != nil {
 		log.Fatalln(err)
 	}
