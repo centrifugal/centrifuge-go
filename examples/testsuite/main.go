@@ -43,13 +43,13 @@ func testCustomHeader() {
 	config := centrifuge.DefaultConfig()
 	config.Header.Add("Authorization", "testsuite")
 
-	events := centrifuge.NewEventHub()
-	eventHandler := &eventHandler{}
-	events.OnConnect(eventHandler)
-	events.OnDisconnect(eventHandler)
-
-	c := centrifuge.New(url, events, config)
+	c := centrifuge.New(url, config)
 	defer c.Close()
+
+	eventHandler := &eventHandler{}
+	c.OnConnect(eventHandler)
+	c.OnDisconnect(eventHandler)
+
 	err := c.Connect()
 	if err != nil {
 		panic(err.Error())
@@ -59,14 +59,15 @@ func testCustomHeader() {
 func testJWTAuth() {
 	url := "ws://localhost:10001/connection/websocket"
 	config := centrifuge.DefaultConfig()
-	events := centrifuge.NewEventHub()
-	eventHandler := &eventHandler{}
-	events.OnConnect(eventHandler)
-	events.OnDisconnect(eventHandler)
 
-	c := centrifuge.New(url, events, config)
-	c.SetToken("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0c3VpdGVfand0IiwiZXhwIjoxNTM0NjY0MjE0fQ.pFyddmlMVYQWmed3dfzuHOViNew9DP2yHjzE20unFb4")
+	c := centrifuge.New(url, config)
+	c.SetToken("eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0c3VpdGVfand0In0.hPmHsVqvtY88PvK4EmJlcdwNuKFuy3BGaF7dMaKdPlw")
 	defer c.Close()
+
+	eventHandler := &eventHandler{}
+	c.OnConnect(eventHandler)
+	c.OnDisconnect(eventHandler)
+
 	err := c.Connect()
 	if err != nil {
 		panic(err.Error())
@@ -76,18 +77,25 @@ func testJWTAuth() {
 func testSimpleSubscribe() {
 	url := "ws://localhost:10002/connection/websocket"
 	config := centrifuge.DefaultConfig()
-	events := centrifuge.NewEventHub()
-	eventHandler := &eventHandler{}
-	events.OnConnect(eventHandler)
-	events.OnDisconnect(eventHandler)
 
-	c := centrifuge.New(url, events, config)
+	c := centrifuge.New(url, config)
 	defer c.Close()
+
+	eventHandler := &eventHandler{}
+	c.OnConnect(eventHandler)
+	c.OnDisconnect(eventHandler)
+
 	err := c.Connect()
 	if err != nil {
 		panic(err.Error())
 	}
-	c.Subscribe("testsuite", nil)
+
+	sub, err := c.NewSubscription("testsuite")
+	if err != nil {
+		panic(err.Error())
+	}
+
+	sub.Subscribe()
 	time.Sleep(time.Second)
 }
 
@@ -97,13 +105,14 @@ func testReceiveRPCReceiveMessage(protobuf bool) {
 		url = "ws://localhost:10004/connection/websocket?format=protobuf"
 	}
 	config := centrifuge.DefaultConfig()
-	events := centrifuge.NewEventHub()
-	eventHandler := &eventHandler{}
-	events.OnConnect(eventHandler)
-	events.OnDisconnect(eventHandler)
 
-	c := centrifuge.New(url, events, config)
+	c := centrifuge.New(url, config)
 	defer c.Close()
+
+	eventHandler := &eventHandler{}
+	c.OnConnect(eventHandler)
+	c.OnDisconnect(eventHandler)
+
 	err := c.Connect()
 	if err != nil {
 		panic(err)

@@ -81,39 +81,39 @@ type SubscriptionEventHub struct {
 	onSubscribeError   SubscribeErrorHandler
 }
 
-// NewSubscriptionEventHub initializes new SubscriptionEventHub.
-func NewSubscriptionEventHub() *SubscriptionEventHub {
+// newSubscriptionEventHub initializes new SubscriptionEventHub.
+func newSubscriptionEventHub() *SubscriptionEventHub {
 	return &SubscriptionEventHub{}
 }
 
 // OnPublish allows to set PublishHandler to SubEventHandler.
-func (h *SubscriptionEventHub) OnPublish(handler PublishHandler) {
-	h.onPublish = handler
+func (s *Subscription) OnPublish(handler PublishHandler) {
+	s.events.onPublish = handler
 }
 
 // OnJoin allows to set JoinHandler to SubEventHandler.
-func (h *SubscriptionEventHub) OnJoin(handler JoinHandler) {
-	h.onJoin = handler
+func (s *Subscription) OnJoin(handler JoinHandler) {
+	s.events.onJoin = handler
 }
 
 // OnLeave allows to set LeaveHandler to SubEventHandler.
-func (h *SubscriptionEventHub) OnLeave(handler LeaveHandler) {
-	h.onLeave = handler
+func (s *Subscription) OnLeave(handler LeaveHandler) {
+	s.events.onLeave = handler
 }
 
 // OnUnsubscribe allows to set UnsubscribeHandler to SubEventHandler.
-func (h *SubscriptionEventHub) OnUnsubscribe(handler UnsubscribeHandler) {
-	h.onUnsubscribe = handler
+func (s *Subscription) OnUnsubscribe(handler UnsubscribeHandler) {
+	s.events.onUnsubscribe = handler
 }
 
 // OnSubscribeSuccess allows to set SubscribeSuccessHandler to SubEventHandler.
-func (h *SubscriptionEventHub) OnSubscribeSuccess(handler SubscribeSuccessHandler) {
-	h.onSubscribeSuccess = handler
+func (s *Subscription) OnSubscribeSuccess(handler SubscribeSuccessHandler) {
+	s.events.onSubscribeSuccess = handler
 }
 
 // OnSubscribeError allows to set SubscribeErrorHandler to SubEventHandler.
-func (h *SubscriptionEventHub) OnSubscribeError(handler SubscribeErrorHandler) {
-	h.onSubscribeError = handler
+func (s *Subscription) OnSubscribeError(handler SubscribeErrorHandler) {
+	s.events.onSubscribeError = handler
 }
 
 // Describe different states of Sub.
@@ -145,11 +145,11 @@ type Subscription struct {
 	subFutures      []chan error
 }
 
-func (c *Client) newSubscription(channel string, events *SubscriptionEventHub) *Subscription {
+func (c *Client) newSubscription(channel string) *Subscription {
 	s := &Subscription{
 		centrifuge:      c,
 		channel:         channel,
-		events:          events,
+		events:          newSubscriptionEventHub(),
 		subFutures:      make([]chan error, 0),
 		needResubscribe: true,
 	}

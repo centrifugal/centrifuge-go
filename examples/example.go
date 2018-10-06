@@ -44,26 +44,29 @@ func main() {
 
 	url := "ws://localhost:8000/connection/websocket"
 
-	eventHandler := &eventHandler{}
-	events := centrifuge.NewEventHub()
-	events.OnConnect(eventHandler)
-	events.OnDisconnect(eventHandler)
-
-	c := centrifuge.New(url, events, centrifuge.DefaultConfig())
+	c := centrifuge.New(url, centrifuge.DefaultConfig())
 	defer c.Close()
+
+	eventHandler := &eventHandler{}
+	c.OnConnect(eventHandler)
+	c.OnDisconnect(eventHandler)
 
 	err := c.Connect()
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	subEvents := centrifuge.NewSubscriptionEventHub()
-	subEventHandler := &subEventHandler{}
-	subEvents.OnPublish(subEventHandler)
-	subEvents.OnJoin(subEventHandler)
-	subEvents.OnLeave(subEventHandler)
+	sub, err := c.NewSubscription("chat:index")
+	if err != nil {
+		log.Fatalln(err)
+	}
 
-	sub, err := c.Subscribe("chat:index", subEvents)
+	subEventHandler := &subEventHandler{}
+	sub.OnPublish(subEventHandler)
+	sub.OnJoin(subEventHandler)
+	sub.OnLeave(subEventHandler)
+
+	err = sub.Subscribe()
 	if err != nil {
 		log.Fatalln(err)
 	}

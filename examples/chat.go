@@ -67,24 +67,26 @@ func main() {
 	log.Printf("Connect to %s\n", url)
 	log.Printf("Print something and press ENTER to send\n")
 
+	c := centrifuge.New(url, centrifuge.DefaultConfig())
+	defer c.Close()
 	handler := &eventHandler{}
+	c.OnConnect(handler)
+	c.OnError(handler)
+	c.OnDisconnect(handler)
 
-	events := centrifuge.NewEventHub()
-	events.OnConnect(handler)
-	events.OnError(handler)
-	events.OnDisconnect(handler)
+	sub, err := c.NewSubscription("chat:index")
+	if err != nil {
+		log.Fatalln(err)
+	}
 
-	c := centrifuge.New(url, events, centrifuge.DefaultConfig())
+	sub.OnPublish(handler)
+	sub.OnJoin(handler)
+	sub.OnLeave(handler)
+	sub.OnSubscribeSuccess(handler)
+	sub.OnSubscribeError(handler)
+	sub.OnUnsubscribe(handler)
 
-	subEvents := centrifuge.NewSubscriptionEventHub()
-	subEvents.OnPublish(handler)
-	subEvents.OnJoin(handler)
-	subEvents.OnLeave(handler)
-	subEvents.OnSubscribeSuccess(handler)
-	subEvents.OnSubscribeError(handler)
-	subEvents.OnUnsubscribe(handler)
-
-	sub, err := c.Subscribe("chat:index", subEvents)
+	err = sub.Subscribe()
 	if err != nil {
 		log.Fatalln(err)
 	}
