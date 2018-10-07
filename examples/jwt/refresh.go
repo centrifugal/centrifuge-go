@@ -63,16 +63,14 @@ func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifu
 func newConnection() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
 
-	handler := &eventHandler{}
-
-	events := centrifuge.NewEventHub()
-	events.OnDisconnect(handler)
-	events.OnRefresh(handler)
-	events.OnConnect(handler)
-	events.OnError(handler)
-
-	c := centrifuge.New(wsURL, events, centrifuge.DefaultConfig())
+	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
 	c.SetToken(connToken("113", time.Now().Unix()+10))
+
+	handler := &eventHandler{}
+	c.OnDisconnect(handler)
+	c.OnRefresh(handler)
+	c.OnConnect(handler)
+	c.OnError(handler)
 
 	err := c.Connect()
 	if err != nil {
@@ -86,13 +84,17 @@ func main() {
 	c := newConnection()
 	defer c.Close()
 
-	subEvents := centrifuge.NewSubscriptionEventHub()
-	eventHandler := &subEventHandler{}
-	subEvents.OnPublish(eventHandler)
-	subEvents.OnSubscribeSuccess(eventHandler)
-	subEvents.OnUnsubscribe(eventHandler)
+	sub, err := c.NewSubscription("chat:index")
+	if err != nil {
+		log.Fatalln(err)
+	}
 
-	_, err := c.Subscribe("chat:index", subEvents)
+	eventHandler := &subEventHandler{}
+	sub.OnPublish(eventHandler)
+	sub.OnSubscribeSuccess(eventHandler)
+	sub.OnUnsubscribe(eventHandler)
+
+	err = sub.Subscribe()
 	if err != nil {
 		log.Fatalln(err)
 	}

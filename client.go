@@ -154,39 +154,9 @@ type EventHub struct {
 	onMessage    MessageHandler
 }
 
-// NewEventHub initializes new EventHub.
-func NewEventHub() *EventHub {
+// newEventHub initializes new EventHub.
+func newEventHub() *EventHub {
 	return &EventHub{}
-}
-
-// OnConnect is a function to handle connect event.
-func (h *EventHub) OnConnect(handler ConnectHandler) {
-	h.onConnect = handler
-}
-
-// OnDisconnect is a function to handle disconnect event.
-func (h *EventHub) OnDisconnect(handler DisconnectHandler) {
-	h.onDisconnect = handler
-}
-
-// OnPrivateSub needed to handle private channel subscriptions.
-func (h *EventHub) OnPrivateSub(handler PrivateSubHandler) {
-	h.onPrivateSub = handler
-}
-
-// OnRefresh handles refresh event when client's credentials expired and must be refreshed.
-func (h *EventHub) OnRefresh(handler RefreshHandler) {
-	h.onRefresh = handler
-}
-
-// OnError is a function that will receive unhandled errors for logging.
-func (h *EventHub) OnError(handler ErrorHandler) {
-	h.onError = handler
-}
-
-// OnMessage allows to process async message from server to client.
-func (h *EventHub) OnMessage(handler MessageHandler) {
-	h.onMessage = handler
 }
 
 // Describe client connection statuses.
@@ -231,7 +201,7 @@ func (c *Client) nextMsgID() uint32 {
 }
 
 // New initializes Client.
-func New(u string, events *EventHub, config Config) *Client {
+func New(u string, config Config) *Client {
 	var encoding proto.Encoding
 
 	if strings.HasPrefix(u, "ws") {
@@ -252,15 +222,45 @@ func New(u string, events *EventHub, config Config) *Client {
 		requests:          make(map[uint32]chan proto.Reply),
 		reconnect:         true,
 		reconnectStrategy: defaultBackoffReconnect,
-		events:            events,
 		paramsEncoder:     proto.NewParamsEncoder(encoding),
 		resultDecoder:     proto.NewResultDecoder(encoding),
 		commandEncoder:    proto.NewCommandEncoder(encoding),
 		pushEncoder:       proto.NewPushEncoder(encoding),
 		pushDecoder:       proto.NewPushDecoder(encoding),
 		delayPing:         make(chan struct{}, 32),
+		events:            newEventHub(),
 	}
 	return c
+}
+
+// OnConnect is a function to handle connect event.
+func (c *Client) OnConnect(handler ConnectHandler) {
+	c.events.onConnect = handler
+}
+
+// OnDisconnect is a function to handle disconnect event.
+func (c *Client) OnDisconnect(handler DisconnectHandler) {
+	c.events.onDisconnect = handler
+}
+
+// OnPrivateSub needed to handle private channel subscriptions.
+func (c *Client) OnPrivateSub(handler PrivateSubHandler) {
+	c.events.onPrivateSub = handler
+}
+
+// OnRefresh handles refresh event when client's credentials expired and must be refreshed.
+func (c *Client) OnRefresh(handler RefreshHandler) {
+	c.events.onRefresh = handler
+}
+
+// OnError is a function that will receive unhandled errors for logging.
+func (c *Client) OnError(handler ErrorHandler) {
+	c.events.onError = handler
+}
+
+// OnMessage allows to process async message from server to client.
+func (c *Client) OnMessage(handler MessageHandler) {
+	c.events.onMessage = handler
 }
 
 // SetToken allows to set connection JWT token to let client
@@ -1019,44 +1019,58 @@ func (c *Client) privateSign(channel string) (string, error) {
 	return token, nil
 }
 
-// Subscribe allows to subscribe on channel.
-func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) (*Subscription, error) {
+// NewSubscription allows to create new subscription on channel.
+func (c *Client) NewSubscription(channel string) (*Subscription, error) {
 	c.subsMutex.Lock()
 	var sub *Subscription
 	if _, ok := c.subs[channel]; ok {
 		c.subsMutex.Unlock()
 		return nil, ErrDuplicateSubscription
 	}
-	sub = c.newSubscription(channel, events)
+	sub = c.newSubscription(channel)
 	c.subs[channel] = sub
 	c.subsMutex.Unlock()
-
-	go func() {
-		err := sub.resubscribe(false)
-		if err != nil {
-			c.handleError(err)
-			c.disconnect(true)
-		}
-	}()
 	return sub, nil
 }
 
-// SubscribeSync allows to subscribe on channel and wait until subscription success or error.
-func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*Subscription, error) {
-	c.subsMutex.Lock()
-	var sub *Subscription
-	if _, ok := c.subs[channel]; ok {
-		sub = c.subs[channel]
-		sub.events = events
-	} else {
-		sub = c.newSubscription(channel, events)
-	}
-	c.subs[channel] = sub
-	c.subsMutex.Unlock()
+// // Subscribe allows to subscribe on channel.
+// func (c *Client) Subscribe(channel string, events *SubscriptionEventHub) error {
+// 	c.subsMutex.Lock()
+// 	var sub *Subscription
+// 	if _, ok := c.subs[channel]; ok {
+// 		c.subsMutex.Unlock()
+// 		return nil, ErrDuplicateSubscription
+// 	}
+// 	sub = c.newSubscription(channel)
+// 	c.subs[channel] = sub
+// 	c.subsMutex.Unlock()
 
-	err := sub.resubscribe(false)
-	return sub, err
-}
+// 	go func() {
+// 		err := sub.resubscribe(false)
+// 		if err != nil {
+// 			c.handleError(err)
+// 			c.disconnect(true)
+// 		}
+// 	}()
+// 	return sub, nil
+// }
+
+// // SubscribeSync allows to subscribe on channel and wait until subscription success or error.
+// func (c *Client) SubscribeSync(channel string, events *SubscriptionEventHub) (*Subscription, error) {
+// 	c.subsMutex.Lock()
+// 	var sub *Subscription
+// 	if _, ok := c.subs[channel]; ok {
+// 		sub = c.subs[channel]
+// 		sub.events = events
+// 	} else {
+// 		sub = c.newSubscription(channel, events)
+// 	}
+// 	c.subs[channel] = sub
+// 	c.subsMutex.Unlock()
+
+// 	err := sub.resubscribe(false)
+// 	return sub, err
+// }
 
 func (c *Client) sendSubscribe(channel string, recover bool, seq uint32, gen uint32, epoch string, token string) (proto.SubscribeResult, error) {
 	params := &proto.SubscribeRequest{

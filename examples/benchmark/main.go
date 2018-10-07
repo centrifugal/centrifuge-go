@@ -94,12 +94,12 @@ func main() {
 }
 
 func newConnection() *centrifuge.Client {
-	h := centrifuge.NewEventHub()
+	c := centrifuge.New(*url, centrifuge.DefaultConfig())
+
 	events := &eventHandler{}
-	h.OnError(events)
-	h.OnDisconnect(events)
-	h.OnMessage(events)
-	c := centrifuge.New(*url, h, centrifuge.DefaultConfig())
+	c.OnError(events)
+	c.OnDisconnect(events)
+	c.OnMessage(events)
 
 	err := c.Connect()
 	if err != nil {
@@ -190,12 +190,17 @@ func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
 		client:  c,
 		start:   time.Now(),
 	}
-	subEventHub := centrifuge.NewSubscriptionEventHub()
-	subEventHub.OnPublish(subEvents)
-	subEventHub.OnSubscribeSuccess(subEvents)
-	subEventHub.OnSubscribeError(subEvents)
 
-	c.Subscribe(subj, subEventHub)
+	sub, err := c.NewSubscription(subj)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	sub.OnPublish(subEvents)
+	sub.OnSubscribeSuccess(subEvents)
+	sub.OnSubscribeError(subEvents)
+
+	sub.Subscribe()
 }
 
 // A Sample for a particular client

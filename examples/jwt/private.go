@@ -78,15 +78,14 @@ func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.P
 func newConnection() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
 
-	handler := &eventHandler{}
-	events := centrifuge.NewEventHub()
-	events.OnPrivateSub(handler)
-	events.OnDisconnect(handler)
-	events.OnConnect(handler)
-	events.OnError(handler)
-
-	c := centrifuge.New(wsURL, events, centrifuge.DefaultConfig())
+	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
 	c.SetToken(connToken("112", 0))
+
+	handler := &eventHandler{}
+	c.OnPrivateSub(handler)
+	c.OnDisconnect(handler)
+	c.OnConnect(handler)
+	c.OnError(handler)
 
 	err := c.Connect()
 	if err != nil {
@@ -100,15 +99,19 @@ func main() {
 	c := newConnection()
 	defer c.Close()
 
-	subEvents := centrifuge.NewSubscriptionEventHub()
+	sub, err := c.NewSubscription("$chat:index")
+	if err != nil {
+		log.Fatalln(err)
+	}
+
 	subEventHandler := &subEventHandler{}
-	subEvents.OnSubscribeSuccess(subEventHandler)
-	subEvents.OnSubscribeError(subEventHandler)
-	subEvents.OnUnsubscribe(subEventHandler)
-	subEvents.OnPublish(subEventHandler)
+	sub.OnSubscribeSuccess(subEventHandler)
+	sub.OnSubscribeError(subEventHandler)
+	sub.OnUnsubscribe(subEventHandler)
+	sub.OnPublish(subEventHandler)
 
 	// Subscribe on private channel.
-	c.Subscribe("$chat:index", subEvents)
+	sub.Subscribe()
 
 	select {}
 }
