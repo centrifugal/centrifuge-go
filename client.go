@@ -32,6 +32,8 @@ var (
 	ErrReconnectFailed = errors.New("reconnect failed")
 	// ErrDuplicateSubscription ...
 	ErrDuplicateSubscription = errors.New("duplicate subscription")
+	//ErrConnectionClosed
+	ErrClientDestroyed = errors.New("client destroyed")
 )
 
 const (
@@ -359,11 +361,10 @@ func (c *Client) RPC(data []byte) ([]byte, error) {
 
 // Close closes Client connection and cleans up state.
 func (c *Client) Close() error {
-	err := c.Disconnect()
 	c.mutex.Lock()
 	c.status = CLOSED
 	c.mutex.Unlock()
-	return err
+	return c.Disconnect()
 }
 
 // close clean ups ws connection and all outgoing requests.
@@ -502,6 +503,9 @@ func (r *backoffReconnect) reconnect(c *Client) error {
 		reconnects++
 		err := c.doReconnect()
 		if err != nil {
+			if err == ErrClientDestroyed {
+				return err
+			}
 			continue
 		}
 
@@ -512,6 +516,9 @@ func (r *backoffReconnect) reconnect(c *Client) error {
 }
 
 func (c *Client) doReconnect() error {
+	if c.status == CLOSED {
+		return ErrClientDestroyed
+	}
 	err := c.connect()
 	if err != nil {
 		c.close()
