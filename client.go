@@ -32,8 +32,6 @@ var (
 	ErrReconnectFailed = errors.New("reconnect failed")
 	// ErrDuplicateSubscription ...
 	ErrDuplicateSubscription = errors.New("duplicate subscription")
-	//ErrConnectionClosed
-	ErrClientDestroyed = errors.New("client destroyed")
 )
 
 const (
@@ -503,8 +501,8 @@ func (r *backoffReconnect) reconnect(c *Client) error {
 		reconnects++
 		err := c.doReconnect()
 		if err != nil {
-			if err == ErrClientDestroyed {
-				return err
+			if err == ErrClientClosed {
+				return nil
 			}
 			continue
 		}
@@ -516,9 +514,12 @@ func (r *backoffReconnect) reconnect(c *Client) error {
 }
 
 func (c *Client) doReconnect() error {
+	c.mutex.RLock()
 	if c.status == CLOSED {
-		return ErrClientDestroyed
+		c.mutex.RUnlock()
+		return ErrClientClosed
 	}
+	c.mutex.RUnlock()
 	err := c.connect()
 	if err != nil {
 		c.close()
