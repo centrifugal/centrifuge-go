@@ -23,6 +23,7 @@ const (
 	DISCONNECTED = iota
 	CONNECTING
 	CONNECTED
+	RECONNECTING
 	CLOSED
 )
 
@@ -220,7 +221,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	}
 
 	c.mutex.Lock()
-	if c.status == DISCONNECTED || c.status == CLOSED {
+	if c.status == DISCONNECTED || c.status == CLOSED || c.status == RECONNECTING {
 		c.mutex.Unlock()
 		return
 	}
@@ -282,10 +283,13 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		return
 	}
 
-	err := c.reconnectStrategy.reconnect(c)
-	if err != nil {
-		c.Close()
-	}
+	go func() {
+		err := c.reconnectStrategy.reconnect(c)
+		if err != nil {
+			c.handleError(err)
+			c.Close()
+		}
+	}()
 }
 
 type reconnectStrategy interface {
@@ -329,6 +333,12 @@ func (r *backoffReconnect) reconnect(c *Client) error {
 		time.Sleep(b.Duration())
 
 		reconnects++
+		c.mutex.RLock()
+		reconnect := c.reconnect
+		c.mutex.RUnlock()
+		if !reconnect {
+			return nil
+		}
 		err := c.doReconnect()
 		if err != nil {
 			continue
@@ -341,7 +351,7 @@ func (r *backoffReconnect) reconnect(c *Client) error {
 }
 
 func (c *Client) doReconnect() error {
-	err := c.connect()
+	err := c.connect(true)
 	if err != nil {
 		c.close()
 		return err
@@ -379,7 +389,7 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 	for {
 		reply, disconnect, err := t.Read()
 		if err != nil {
-			c.handleDisconnect(disconnect)
+			go c.handleDisconnect(disconnect)
 			return
 		}
 		select {
@@ -504,7 +514,7 @@ func (c *Client) handlePush(msg proto.Push) error {
 // Connect dials to server and sends connect message.
 func (c *Client) Connect() error {
 	c.mutex.Lock()
-	if c.status == CONNECTED || c.status == CONNECTING {
+	if c.status == CONNECTED || c.status == CONNECTING || c.status == RECONNECTING {
 		c.mutex.Unlock()
 		return nil
 	}
@@ -516,11 +526,11 @@ func (c *Client) Connect() error {
 	c.reconnect = true
 	c.mutex.Unlock()
 
-	err := c.connect()
+	err := c.connect(false)
 	if err != nil {
 		if c.transport == nil {
 			c.handleError(err)
-			c.handleDisconnect(nil)
+			go c.handleDisconnect(nil)
 		}
 		return nil
 	}
@@ -535,13 +545,17 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-func (c *Client) connect() error {
+func (c *Client) connect(isReconnect bool) error {
 	c.mutex.Lock()
 	if c.status == CONNECTED {
 		c.mutex.Unlock()
 		return nil
 	}
-	c.status = CONNECTING
+	if isReconnect {
+		c.status = RECONNECTING
+	} else {
+		c.status = CONNECTING
+	}
 	c.closeCh = make(chan struct{})
 	c.mutex.Unlock()
 
