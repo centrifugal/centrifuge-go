@@ -1,6 +1,7 @@
 package centrifuge
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -415,7 +416,10 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 
 	token, err := s.centrifuge.privateSign(s.channel)
 	if err != nil {
-		return err
+		s.mu.Lock()
+		s.status = UNSUBSCRIBED
+		s.mu.Unlock()
+		return fmt.Errorf("error subscribing on channel %s: %v", s.channel, err)
 	}
 
 	s.mu.Lock()
