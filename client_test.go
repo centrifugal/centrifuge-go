@@ -50,6 +50,7 @@ func (h *testSubscriptionHandler) OnPublish(c *Subscription, e PublishEvent) {
 
 func TestConnectWrongAddress(t *testing.T) {
 	client := New("ws://localhost:9000/connection/websocket", DefaultConfig())
+	defer client.Close()
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
 		onDisconnect: func(c *Client, e DisconnectEvent) {
@@ -74,6 +75,7 @@ func TestConnectWrongAddress(t *testing.T) {
 
 func TestSuccessfulConnect(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
+	defer client.Close()
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
 		onConnect: func(c *Client, e ConnectEvent) {
@@ -96,8 +98,48 @@ func TestSuccessfulConnect(t *testing.T) {
 	}
 }
 
+func TestDisconnect(t *testing.T) {
+	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
+	defer client.Close()
+	connectDoneCh := make(chan error, 1)
+	disconnectDoneCh := make(chan error, 1)
+	handler := &testEventHandler{
+		onConnect: func(c *Client, e ConnectEvent) {
+			close(connectDoneCh)
+		},
+		onDisconnect: func(c *Client, e DisconnectEvent) {
+			if e.Reconnect != false {
+				disconnectDoneCh <- fmt.Errorf("wrong reconnect value")
+				return
+			}
+			close(disconnectDoneCh)
+		},
+	}
+	client.OnConnect(handler)
+	client.OnDisconnect(handler)
+	client.Connect()
+	select {
+	case err := <-connectDoneCh:
+		if err != nil {
+			t.Errorf("finish with error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Errorf("expecting successful connect")
+	}
+	client.Disconnect()
+	select {
+	case err := <-disconnectDoneCh:
+		if err != nil {
+			t.Errorf("finish with error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Errorf("expecting successful disconnect")
+	}
+}
+
 func TestPublishProtobuf(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
+	defer client.Close()
 	client.Connect()
 	err := client.Publish("test", []byte("boom"))
 	if err != nil {
@@ -107,6 +149,7 @@ func TestPublishProtobuf(t *testing.T) {
 
 func TestPublishJSON(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
+	defer client.Close()
 	client.Connect()
 	err := client.Publish("test", []byte("{}"))
 	if err != nil {
@@ -116,6 +159,7 @@ func TestPublishJSON(t *testing.T) {
 
 func TestPublishInvalidJSON(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer client.Close()
 	client.Connect()
 	err := client.Publish("test", []byte("boom"))
 	if err == nil {
@@ -126,6 +170,7 @@ func TestPublishInvalidJSON(t *testing.T) {
 func TestSubscribeSuccess(t *testing.T) {
 	doneCh := make(chan error, 1)
 	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer client.Close()
 	client.Connect()
 	sub, err := client.NewSubscription("test")
 	if err != nil {
@@ -150,6 +195,7 @@ func TestSubscribeSuccess(t *testing.T) {
 func TestSubscribeError(t *testing.T) {
 	doneCh := make(chan error, 1)
 	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer client.Close()
 	client.Connect()
 	sub, err := client.NewSubscription("test:test")
 	if err != nil {
@@ -175,6 +221,7 @@ func TestSubscribeError(t *testing.T) {
 func TestHandlePublish(t *testing.T) {
 	doneCh := make(chan error, 1)
 	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer client.Close()
 	client.Connect()
 	sub, err := client.NewSubscription("test")
 	if err != nil {
