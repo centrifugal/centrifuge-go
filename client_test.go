@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-const token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0c3VpdGVfand0In0.hPmHsVqvtY88PvK4EmJlcdwNuKFuy3BGaF7dMaKdPlw"
-
 type testEventHandler struct {
 	onConnect    func(*Client, ConnectEvent)
 	onDisconnect func(*Client, DisconnectEvent)
@@ -51,7 +49,6 @@ func TestConnectWrongAddress(t *testing.T) {
 
 func TestConnectJSON(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
-	client.SetToken(token)
 	doneCh := make(chan error)
 	handler := &testEventHandler{
 		onConnect: func(c *Client, e ConnectEvent) {
