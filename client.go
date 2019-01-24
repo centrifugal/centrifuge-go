@@ -288,7 +288,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 
 	go func() {
 		c.mutex.Lock()
-		duration, err := c.reconnectStrategy.waitBeforeNextAttempt(c.reconnectAttempts)
+		duration, err := c.reconnectStrategy.timeBeforeNextAttempt(c.reconnectAttempts)
 		c.mutex.Unlock()
 		if err != nil {
 			c.handleError(err)
@@ -312,7 +312,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 }
 
 type reconnectStrategy interface {
-	waitBeforeNextAttempt(attempt int) (time.Duration, error)
+	timeBeforeNextAttempt(attempt int) (time.Duration, error)
 }
 
 type backoffReconnect struct {
@@ -336,7 +336,7 @@ var defaultBackoffReconnect = &backoffReconnect{
 	Jitter:          true,
 }
 
-func (r *backoffReconnect) waitBeforeNextAttempt(attempt int) (time.Duration, error) {
+func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) (time.Duration, error) {
 	b := &backoff.Backoff{
 		Min:    time.Duration(r.MinMilliseconds) * time.Millisecond,
 		Max:    time.Duration(r.MaxMilliseconds) * time.Millisecond,
