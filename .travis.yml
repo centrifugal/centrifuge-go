@@ -1,4 +1,9 @@
 language: go
+services:
+- docker
+before_install:
+- docker pull centrifugo/centrifugo
+- docker run -d -p 8000:8000 centrifugo/centrifugo centrifugo --client_insecure
 install:
 - go get -u github.com/golang/dep/cmd/dep
 - dep ensure

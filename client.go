@@ -46,6 +46,7 @@ type Client struct {
 	receive           chan []byte
 	closeCh           chan struct{}
 	reconnect         bool
+	reconnectAttempts int
 	reconnectStrategy reconnectStrategy
 	events            *EventHub
 	paramsEncoder     proto.ParamsEncoder
@@ -221,10 +222,12 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	}
 
 	c.mutex.Lock()
-	if c.status == DISCONNECTED || c.status == CLOSED || c.status == RECONNECTING {
+	if c.status == DISCONNECTED || c.status == CLOSED {
 		c.mutex.Unlock()
 		return
 	}
+
+	isReconnecting := c.status == RECONNECTING
 
 	c.reconnect = d.Reconnect
 
@@ -275,7 +278,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		handler = c.events.onDisconnect
 	}
 
-	if handler != nil {
+	if handler != nil && !isReconnecting {
 		handler.OnDisconnect(c, DisconnectEvent{Reason: d.Reason, Reconnect: reconnect})
 	}
 
@@ -284,16 +287,32 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	}
 
 	go func() {
-		err := c.reconnectStrategy.reconnect(c)
+		c.mutex.Lock()
+		duration, err := c.reconnectStrategy.timeBeforeNextAttempt(c.reconnectAttempts)
+		c.mutex.Unlock()
 		if err != nil {
 			c.handleError(err)
-			c.Close()
+			return
+		}
+		select {
+		case <-time.After(duration):
+			c.mutex.Lock()
+			c.reconnectAttempts++
+			if !c.reconnect {
+				c.mutex.Unlock()
+				return
+			}
+			c.mutex.Unlock()
+			err := c.connectFromScratch(true)
+			if err != nil {
+				c.handleError(err)
+			}
 		}
 	}()
 }
 
 type reconnectStrategy interface {
-	reconnect(c *Client) error
+	timeBeforeNextAttempt(attempt int) (time.Duration, error)
 }
 
 type backoffReconnect struct {
@@ -317,55 +336,17 @@ var defaultBackoffReconnect = &backoffReconnect{
 	Jitter:          true,
 }
 
-func (r *backoffReconnect) reconnect(c *Client) error {
+func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) (time.Duration, error) {
 	b := &backoff.Backoff{
 		Min:    time.Duration(r.MinMilliseconds) * time.Millisecond,
 		Max:    time.Duration(r.MaxMilliseconds) * time.Millisecond,
 		Factor: r.Factor,
 		Jitter: r.Jitter,
 	}
-	reconnects := 0
-
-	for {
-		if r.NumReconnect > 0 && reconnects >= r.NumReconnect {
-			break
-		}
-		time.Sleep(b.Duration())
-
-		reconnects++
-		c.mutex.RLock()
-		reconnect := c.reconnect
-		c.mutex.RUnlock()
-		if !reconnect {
-			return nil
-		}
-		err := c.doReconnect()
-		if err != nil {
-			continue
-		}
-
-		// successfully reconnected
-		return nil
+	if r.NumReconnect > 0 && attempt >= r.NumReconnect {
+		return 0, ErrReconnectFailed
 	}
-	return ErrReconnectFailed
-}
-
-func (c *Client) doReconnect() error {
-	err := c.connect(true)
-	if err != nil {
-		c.close()
-		return err
-	}
-
-	err = c.resubscribe()
-	if err != nil {
-		// we need just to close the connection and outgoing requests here
-		// but preserve all subscriptions.
-		c.close()
-		return err
-	}
-
-	return nil
+	return b.ForAttempt(float64(attempt)), nil
 }
 
 func (c *Client) pinger(closeCh chan struct{}) {
@@ -511,8 +492,7 @@ func (c *Client) handlePush(msg proto.Push) error {
 	return nil
 }
 
-// Connect dials to server and sends connect message.
-func (c *Client) Connect() error {
+func (c *Client) connectFromScratch(isReconnect bool) error {
 	c.mutex.Lock()
 	if c.status == CONNECTED || c.status == CONNECTING || c.status == RECONNECTING {
 		c.mutex.Unlock()
@@ -522,11 +502,15 @@ func (c *Client) Connect() error {
 		c.mutex.Unlock()
 		return ErrClientClosed
 	}
-	c.status = CONNECTING
+	if isReconnect {
+		c.status = RECONNECTING
+	} else {
+		c.status = CONNECTING
+	}
 	c.reconnect = true
 	c.mutex.Unlock()
 
-	err := c.connect(false)
+	err := c.connect(isReconnect)
 	if err != nil {
 		if c.transport == nil {
 			c.handleError(err)
@@ -538,11 +522,22 @@ func (c *Client) Connect() error {
 	if err != nil {
 		// we need just to close the connection and outgoing requests here
 		// but preserve all subscriptions.
+		c.handleError(err)
 		c.close()
 		return nil
 	}
 
+	// Looks like we successfully reconnected so can reset reconnect attempts.
+	c.mutex.Lock()
+	c.reconnectAttempts = 0
+	c.mutex.Unlock()
+
 	return nil
+}
+
+// Connect dials to server and sends connect message.
+func (c *Client) Connect() error {
+	return c.connectFromScratch(false)
 }
 
 func (c *Client) connect(isReconnect bool) error {
@@ -558,7 +553,6 @@ func (c *Client) connect(isReconnect bool) error {
 	}
 	c.closeCh = make(chan struct{})
 	c.mutex.Unlock()
-
 	wsConfig := websocketConfig{
 		TLSConfig:         c.config.TLSConfig,
 		HandshakeTimeout:  c.config.HandshakeTimeout,
@@ -1161,7 +1155,13 @@ func (c *Client) send(cmd *proto.Command) error {
 	case <-c.closeCh:
 		return ErrClientDisconnected
 	default:
-		err := c.transport.Write(cmd, c.config.WriteTimeout)
+		c.mutex.Lock()
+		transport := c.transport
+		c.mutex.Unlock()
+		if transport == nil {
+			return ErrClientDisconnected
+		}
+		err := transport.Write(cmd, c.config.WriteTimeout)
 		if err != nil {
 			go c.handleDisconnect(&disconnect{Reason: "write error", Reconnect: true})
 			return err
