@@ -302,6 +302,7 @@ func (s *Subscription) Subscribe() error {
 func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool) {
 	s.mu.Lock()
 	if s.status != SUBSCRIBED {
+		s.status = UNSUBSCRIBED
 		s.mu.Unlock()
 		return
 	}
@@ -414,7 +415,11 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 	s.status = SUBSCRIBING
 	s.mu.Unlock()
 
+	clientID := s.centrifuge.clientID()
 	token, err := s.centrifuge.privateSign(s.channel)
+	if s.centrifuge.clientID() != clientID {
+		return nil
+	}
 	if err != nil {
 		s.mu.Lock()
 		s.status = UNSUBSCRIBED
