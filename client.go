@@ -745,12 +745,20 @@ func (c *Client) sendSubRefresh(channel string) error {
 		return nil
 	}
 
+	c.mutex.RLock()
+	clientID := c.id
+	c.mutex.RUnlock()
+
 	token, err := c.privateSign(channel)
 	if err != nil {
 		return err
 	}
 
 	c.mutex.RLock()
+	if c.id != clientID {
+		c.mutex.RUnlock()
+		return nil
+	}
 	cmd := &proto.Command{
 		ID:     c.nextMsgID(),
 		Method: proto.MethodTypeSubRefresh,
