@@ -119,7 +119,7 @@ func (e *ProtobufPushEncoder) EncodePublication(message *Publication) ([]byte, e
 	return message.Marshal()
 }
 
-// EncodePush ...
+// EncodeMessage ...
 func (e *ProtobufPushEncoder) EncodeMessage(message *Message) ([]byte, error) {
 	return message.Marshal()
 }
