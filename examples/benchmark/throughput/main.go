@@ -6,11 +6,9 @@ package main
 
 import (
 	"bytes"
-	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math"
 	"strconv"
@@ -22,22 +20,21 @@ import (
 
 // Some sane defaults
 const (
-	DefaultNumMsgs     = 100000
+	DefaultNumMsgs     = 10000
 	DefaultNumPubs     = 1
-	DefaultNumSubs     = 0
+	DefaultNumSubs     = 1
 	DefaultMessageSize = 128
 )
 
 func usage() {
-	log.Fatalf("Usage: benchmark [-s uri] [--tls] [-np NUM_PUBLISHERS] [-ns NUM_SUBSCRIBERS] [-n NUM_MSGS] [-ms MESSAGE_SIZE] [-csv csvfile] <subject>\n")
+	log.Fatalf("Usage: benchmark [-u uri] [--tls] [-np NUM_PUBLISHERS] [-ns NUM_SUBSCRIBERS] [-n NUM_MSGS] [-ms MESSAGE_SIZE] [-csv csvfile] <subject>\n")
 }
 
-var url = flag.String("s", "ws://localhost:8000/connection/websocket", "Connection URI")
+var url = flag.String("u", "ws://localhost:8000/connection/websocket", "Connection URI")
 var numPubs = flag.Int("np", DefaultNumPubs, "Number of Concurrent Publishers")
 var numSubs = flag.Int("ns", DefaultNumSubs, "Number of Concurrent Subscribers")
 var numMsgs = flag.Int("n", DefaultNumMsgs, "Number of Messages to Publish")
 var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message.")
-var csvFile = flag.String("csv", "", "Save bench data to csv file")
 
 var benchmark *Benchmark
 
@@ -66,6 +63,7 @@ func main() {
 	// Run Subscribers first
 	startwg.Add(*numSubs)
 	for i := 0; i < *numSubs; i++ {
+		time.Sleep(time.Millisecond)
 		go runSubscriber(&startwg, &donewg, *numMsgs, *msgSize)
 	}
 	startwg.Wait()
@@ -85,12 +83,6 @@ func main() {
 	benchmark.Close()
 
 	fmt.Print(benchmark.Report())
-
-	if len(*csvFile) > 0 {
-		csv := benchmark.CSV()
-		ioutil.WriteFile(*csvFile, []byte(csv), 0644)
-		fmt.Printf("Saved metric data in csv file %s\n", *csvFile)
-	}
 }
 
 func newConnection() *centrifuge.Client {
@@ -291,32 +283,6 @@ func (bm *Benchmark) AddSubSample(s *Sample) {
 // AddPubSample to the benchmark
 func (bm *Benchmark) AddPubSample(s *Sample) {
 	bm.pubChannel <- s
-}
-
-// CSV generates a csv report of all the samples collected
-func (bm *Benchmark) CSV() string {
-	var buffer bytes.Buffer
-	writer := csv.NewWriter(&buffer)
-	headers := []string{"#RunID", "ClientID", "MsgCount", "MsgBytes", "MsgsPerSec", "BytesPerSec", "DurationSecs"}
-	if err := writer.Write(headers); err != nil {
-		log.Fatalf("Error while serializing headers %q: %v", headers, err)
-	}
-	groups := []*SampleGroup{bm.Subs, bm.Pubs}
-	pre := "S"
-	for i, g := range groups {
-		if i == 1 {
-			pre = "P"
-		}
-		for j, c := range g.Samples {
-			r := []string{bm.RunID, fmt.Sprintf("%s%d", pre, j), fmt.Sprintf("%d", c.MsgCnt), fmt.Sprintf("%d", c.MsgBytes), fmt.Sprintf("%d", c.Rate()), fmt.Sprintf("%f", c.Throughput()), fmt.Sprintf("%f", c.Duration().Seconds())}
-			if err := writer.Write(r); err != nil {
-				log.Fatalf("Error while serializing %v: %v", c, err)
-			}
-		}
-	}
-
-	writer.Flush()
-	return buffer.String()
 }
 
 // NewSample creates a new Sample initialized to the provided values.
