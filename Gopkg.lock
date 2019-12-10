@@ -2,6 +2,14 @@
 
 
 [[projects]]
+  branch = "master"
+  digest = "1:12db72c3065d1ca53e39675d9ef4a83eeaffde537ff8121f3dcf1d191c4837ac"
+  name = "github.com/centrifugal/protocol"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "33b44672940bda32f2d74414d1d4fb1603d5fd48"
+
+[[projects]]
   digest = "1:2fc13c72e191ca921adb98f9f4991b1a036d5431b4128fa21dbdd974b9b45822"
   name = "github.com/gogo/protobuf"
   packages = [
@@ -36,6 +44,7 @@
   analyzer-name = "dep"
   analyzer-version = 1
   input-imports = [
+    "github.com/centrifugal/protocol",
     "github.com/gogo/protobuf/gogoproto",
     "github.com/gogo/protobuf/jsonpb",
     "github.com/gogo/protobuf/proto",

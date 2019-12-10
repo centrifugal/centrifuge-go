@@ -1,12 +1,12 @@
 package centrifuge
 
-import "github.com/centrifugal/centrifuge-go/internal/proto"
+import "github.com/centrifugal/protocol"
 
 // Error represents client reply error.
-type Error = proto.Error
+type Error = protocol.Error
 
 // Publication allows to deliver custom payload to all channel subscribers.
-type Publication = proto.Publication
+type Publication = protocol.Publication
 
 // ClientInfo is short information about client connection.
-type ClientInfo = proto.ClientInfo
+type ClientInfo = protocol.ClientInfo

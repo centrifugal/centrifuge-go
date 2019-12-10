@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/internal/proto"
+	"github.com/centrifugal/protocol"
 )
 
 // SubscribeSuccessEvent is a subscribe success event context passed
@@ -255,7 +255,7 @@ func (s *Subscription) history() ([]Publication, error) {
 	}
 }
 
-func (s *Subscription) presence() (map[string]proto.ClientInfo, error) {
+func (s *Subscription) presence() (map[string]protocol.ClientInfo, error) {
 	subFuture := s.newSubFuture()
 	select {
 	case err := <-subFuture:
@@ -364,7 +364,7 @@ func (s *Subscription) handlePublication(pub Publication) {
 	}
 }
 
-func (s *Subscription) handleJoin(info proto.ClientInfo) {
+func (s *Subscription) handleJoin(info protocol.ClientInfo) {
 	var handler JoinHandler
 	if s.events != nil && s.events.onJoin != nil {
 		handler = s.events.onJoin
@@ -374,7 +374,7 @@ func (s *Subscription) handleJoin(info proto.ClientInfo) {
 	}
 }
 
-func (s *Subscription) handleLeave(info proto.ClientInfo) {
+func (s *Subscription) handleLeave(info protocol.ClientInfo) {
 	var handler LeaveHandler
 	if s.events != nil && s.events.onLeave != nil {
 		handler = s.events.onLeave
@@ -384,7 +384,7 @@ func (s *Subscription) handleLeave(info proto.ClientInfo) {
 	}
 }
 
-func (s *Subscription) handleUnsub(m proto.Unsub) {
+func (s *Subscription) handleUnsub(m protocol.Unsub) {
 	s.Unsubscribe()
 	if m.Resubscribe {
 		s.Subscribe()
@@ -473,7 +473,7 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 	return nil
 }
 
-func (s *Subscription) processRecover(res proto.SubscribeResult) {
+func (s *Subscription) processRecover(res protocol.SubscribeResult) {
 	s.mu.Lock()
 	s.lastEpoch = res.Epoch
 	s.mu.Unlock()
