@@ -2,6 +2,7 @@
 
 
 [[projects]]
+  digest = "1:2fc13c72e191ca921adb98f9f4991b1a036d5431b4128fa21dbdd974b9b45822"
   name = "github.com/gogo/protobuf"
   packages = [
     "gogoproto",
@@ -9,26 +10,37 @@
     "proto",
     "protoc-gen-gogo/descriptor",
     "sortkeys",
-    "types"
+    "types",
   ]
-  revision = "1adfc126b41513cc696b209667c8656ea7aac67c"
-  version = "v1.0.0"
+  pruneopts = "UT"
+  revision = "5628607bb4c51c3157aacc3a50f0ab707582b805"
+  version = "v1.3.1"
 
 [[projects]]
+  digest = "1:e62657cca9badaa308d86e7716083e4c5933bb78e30a17743fc67f50be26f6f4"
   name = "github.com/gorilla/websocket"
   packages = ["."]
-  revision = "ea4d1f681babbce9545c9c5f3d5194a789c89f5b"
-  version = "v1.2.0"
+  pruneopts = "UT"
+  revision = "c3e18be99d19e6b3e8f1559eea2c161a665c4b6b"
+  version = "v1.4.1"
 
 [[projects]]
+  digest = "1:b6bbd2f9e0724bd81890c8644259f920c6d61c08453978faff0bebd25f3e7d3e"
   name = "github.com/jpillora/backoff"
   packages = ["."]
+  pruneopts = "UT"
   revision = "8eab2debe79d12b7bd3d10653910df25fa9552ba"
   version = "1.0.0"
 
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "d70482f5f00e2f7e07a659ebed50a4b7ae58476b9e11f9e91d56014a890d4764"
+  input-imports = [
+    "github.com/gogo/protobuf/gogoproto",
+    "github.com/gogo/protobuf/jsonpb",
+    "github.com/gogo/protobuf/proto",
+    "github.com/gorilla/websocket",
+    "github.com/jpillora/backoff",
+  ]
   solver-name = "gps-cdcl"
   solver-version = 1
