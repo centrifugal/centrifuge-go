@@ -36,7 +36,7 @@ ignored = ["github.com/centrifugal/centrifuge-go/examples*"]
 
 [[constraint]]
   name = "github.com/centrifugal/protocol"
-  branch = "master"
+  version = "0.1.0"
 
 [prune]
   go-tests = true
