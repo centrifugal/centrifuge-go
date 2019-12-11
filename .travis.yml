@@ -1,4 +1,6 @@
 language: go
+env:
+  - GO111MODULE=off
 services:
 - docker
 before_install:
@@ -8,7 +10,7 @@ install:
 - go get -u github.com/golang/dep/cmd/dep
 - dep ensure
 go:
-  - "1.11.x"
-  - "1.10.x"
+  - "1.13.x"
+  - "1.12.x"
   - "tip"
 script: go test -v
