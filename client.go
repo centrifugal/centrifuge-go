@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/internal/proto"
+	"github.com/centrifugal/protocol"
 	"github.com/jpillora/backoff"
 )
 
@@ -31,10 +31,10 @@ const (
 type Client struct {
 	mutex             sync.RWMutex
 	url               string
-	encoding          proto.Encoding
+	encoding          protocol.Type
 	config            Config
 	token             string
-	connectData       proto.Raw
+	connectData       protocol.Raw
 	transport         transport
 	msgID             uint32
 	status            int
@@ -42,18 +42,18 @@ type Client struct {
 	subsMutex         sync.RWMutex
 	subs              map[string]*Subscription
 	requestsMutex     sync.RWMutex
-	requests          map[uint32]chan proto.Reply
+	requests          map[uint32]chan protocol.Reply
 	receive           chan []byte
 	closeCh           chan struct{}
 	reconnect         bool
 	reconnectAttempts int
 	reconnectStrategy reconnectStrategy
 	events            *EventHub
-	paramsEncoder     proto.ParamsEncoder
-	resultDecoder     proto.ResultDecoder
-	commandEncoder    proto.CommandEncoder
-	pushEncoder       proto.PushEncoder
-	pushDecoder       proto.PushDecoder
+	paramsEncoder     protocol.ParamsEncoder
+	resultDecoder     protocol.ResultDecoder
+	commandEncoder    protocol.CommandEncoder
+	pushEncoder       protocol.PushEncoder
+	pushDecoder       protocol.PushDecoder
 	delayPing         chan struct{}
 }
 
@@ -61,15 +61,57 @@ func (c *Client) nextMsgID() uint32 {
 	return atomic.AddUint32(&c.msgID, 1)
 }
 
+func newPushEncoder(enc protocol.Type) protocol.PushEncoder {
+	if enc == protocol.TypeJSON {
+		return protocol.NewJSONPushEncoder()
+	}
+	return protocol.NewProtobufPushEncoder()
+}
+
+func newPushDecoder(enc protocol.Type) protocol.PushDecoder {
+	if enc == protocol.TypeJSON {
+		return protocol.NewJSONPushDecoder()
+	}
+	return protocol.NewProtobufPushDecoder()
+}
+
+func newReplyDecoder(enc protocol.Type, data []byte) protocol.ReplyDecoder {
+	if enc == protocol.TypeJSON {
+		return protocol.NewJSONReplyDecoder(data)
+	}
+	return protocol.NewProtobufReplyDecoder(data)
+}
+
+func newResultDecoder(enc protocol.Type) protocol.ResultDecoder {
+	if enc == protocol.TypeJSON {
+		return protocol.NewJSONResultDecoder()
+	}
+	return protocol.NewProtobufResultDecoder()
+}
+
+func newParamsEncoder(enc protocol.Type) protocol.ParamsEncoder {
+	if enc == protocol.TypeJSON {
+		return protocol.NewJSONParamsEncoder()
+	}
+	return protocol.NewProtobufParamsEncoder()
+}
+
+func newCommandEncoder(enc protocol.Type) protocol.CommandEncoder {
+	if enc == protocol.TypeJSON {
+		return protocol.NewJSONCommandEncoder()
+	}
+	return protocol.NewProtobufCommandEncoder()
+}
+
 // New initializes Client.
 func New(u string, config Config) *Client {
-	var encoding proto.Encoding
+	var encoding protocol.Type
 
 	if strings.HasPrefix(u, "ws") {
 		if strings.Contains(u, "format=protobuf") {
-			encoding = proto.EncodingProtobuf
+			encoding = protocol.TypeProtobuf
 		} else {
-			encoding = proto.EncodingJSON
+			encoding = protocol.TypeJSON
 		}
 	} else {
 		panic(fmt.Sprintf("unsupported connection endpoint: %s", u))
@@ -80,14 +122,14 @@ func New(u string, config Config) *Client {
 		encoding:          encoding,
 		subs:              make(map[string]*Subscription),
 		config:            config,
-		requests:          make(map[uint32]chan proto.Reply),
+		requests:          make(map[uint32]chan protocol.Reply),
 		reconnect:         true,
 		reconnectStrategy: defaultBackoffReconnect,
-		paramsEncoder:     proto.NewParamsEncoder(encoding),
-		resultDecoder:     proto.NewResultDecoder(encoding),
-		commandEncoder:    proto.NewCommandEncoder(encoding),
-		pushEncoder:       proto.NewPushEncoder(encoding),
-		pushDecoder:       proto.NewPushDecoder(encoding),
+		paramsEncoder:     newParamsEncoder(encoding),
+		resultDecoder:     newResultDecoder(encoding),
+		commandEncoder:    newCommandEncoder(encoding),
+		pushEncoder:       newPushEncoder(encoding),
+		pushDecoder:       newPushDecoder(encoding),
 		delayPing:         make(chan struct{}, 32),
 		events:            newEventHub(),
 	}
@@ -103,7 +145,7 @@ func (c *Client) SetToken(token string) {
 }
 
 // SetConnectData allows to set data to send in connect message.
-func (c *Client) SetConnectData(data proto.Raw) {
+func (c *Client) SetConnectData(data protocol.Raw) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.connectData = data
@@ -144,10 +186,10 @@ func (c *Client) handleError(err error) {
 
 // Send data to server asynchronously.
 func (c *Client) Send(data []byte) error {
-	cmd := &proto.Command{
-		Method: proto.MethodTypeSend,
+	cmd := &protocol.Command{
+		Method: protocol.MethodTypeSend,
 	}
-	params := &proto.SendRequest{
+	params := &protocol.SendRequest{
 		Data: data,
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
@@ -161,11 +203,11 @@ func (c *Client) Send(data []byte) error {
 // RPC allows to make RPC – send data to server ant wait for response.
 // RPC handler must be registered on server.
 func (c *Client) RPC(data []byte) ([]byte, error) {
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
-		Method: proto.MethodTypeRPC,
+		Method: protocol.MethodTypeRPC,
 	}
-	params := &proto.RPCRequest{
+	params := &protocol.RPCRequest{
 		Data: data,
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
@@ -180,7 +222,7 @@ func (c *Client) RPC(data []byte) ([]byte, error) {
 	if r.Error != nil {
 		return nil, r.Error
 	}
-	var res proto.RPCResult
+	var res protocol.RPCResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
 		return nil, err
@@ -389,7 +431,7 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 	}
 }
 
-func (c *Client) handle(reply *proto.Reply) error {
+func (c *Client) handle(reply *protocol.Reply) error {
 	if reply.ID > 0 {
 		c.requestsMutex.RLock()
 		if waiter, ok := c.requests[reply.ID]; ok {
@@ -411,7 +453,7 @@ func (c *Client) handle(reply *proto.Reply) error {
 	return nil
 }
 
-func (c *Client) handleMessage(msg proto.Message) error {
+func (c *Client) handleMessage(msg protocol.Message) error {
 
 	var handler MessageHandler
 	if c.events != nil && c.events.onMessage != nil {
@@ -426,15 +468,15 @@ func (c *Client) handleMessage(msg proto.Message) error {
 	return nil
 }
 
-func (c *Client) handlePush(msg proto.Push) error {
+func (c *Client) handlePush(msg protocol.Push) error {
 	switch msg.Type {
-	case proto.PushTypeMessage:
+	case protocol.PushTypeMessage:
 		m, err := c.pushDecoder.DecodeMessage(msg.Data)
 		if err != nil {
 			return err
 		}
 		c.handleMessage(*m)
-	case proto.PushTypeUnsub:
+	case protocol.PushTypeUnsub:
 		m, err := c.pushDecoder.DecodeUnsub(msg.Data)
 		if err != nil {
 			return err
@@ -447,7 +489,7 @@ func (c *Client) handlePush(msg proto.Push) error {
 			return nil
 		}
 		sub.handleUnsub(*m)
-	case proto.PushTypePublication:
+	case protocol.PushTypePublication:
 		m, err := c.pushDecoder.DecodePublication(msg.Data)
 		if err != nil {
 			return err
@@ -460,7 +502,7 @@ func (c *Client) handlePush(msg proto.Push) error {
 			return nil
 		}
 		sub.handlePublication(*m)
-	case proto.PushTypeJoin:
+	case protocol.PushTypeJoin:
 		m, err := c.pushDecoder.DecodeJoin(msg.Data)
 		if err != nil {
 			return nil
@@ -473,7 +515,7 @@ func (c *Client) handlePush(msg proto.Push) error {
 			return nil
 		}
 		sub.handleJoin(m.Info)
-	case proto.PushTypeLeave:
+	case protocol.PushTypeLeave:
 		m, err := c.pushDecoder.DecodeLeave(msg.Data)
 		if err != nil {
 			return nil
@@ -580,7 +622,7 @@ func (c *Client) connect(isReconnect bool) error {
 
 	go c.reader(t, closeCh)
 
-	var res proto.ConnectResult
+	var res protocol.ConnectResult
 
 	res, err = c.sendConnect()
 	if err != nil {
@@ -694,11 +736,11 @@ func (c *Client) sendRefresh(closeCh chan struct{}) error {
 	}
 
 	c.mutex.RLock()
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
-		Method: proto.MethodTypeRefresh,
+		Method: protocol.MethodTypeRefresh,
 	}
-	params := &proto.RefreshRequest{
+	params := &protocol.RefreshRequest{
 		Token: c.token,
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
@@ -716,7 +758,7 @@ func (c *Client) sendRefresh(closeCh chan struct{}) error {
 	if r.Error != nil {
 		return r.Error
 	}
-	var res proto.RefreshResult
+	var res protocol.RefreshResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
 		return err
@@ -759,11 +801,11 @@ func (c *Client) sendSubRefresh(channel string) error {
 		c.mutex.RUnlock()
 		return nil
 	}
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
-		Method: proto.MethodTypeSubRefresh,
+		Method: protocol.MethodTypeSubRefresh,
 	}
-	params := &proto.SubRefreshRequest{
+	params := &protocol.SubRefreshRequest{
 		Channel: channel,
 		Token:   token,
 	}
@@ -782,7 +824,7 @@ func (c *Client) sendSubRefresh(channel string) error {
 	if r.Error != nil {
 		return r.Error
 	}
-	var res proto.SubRefreshResult
+	var res protocol.SubRefreshResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
 		return err
@@ -803,15 +845,15 @@ func (c *Client) sendSubRefresh(channel string) error {
 	return nil
 }
 
-func (c *Client) sendConnect() (proto.ConnectResult, error) {
-	cmd := &proto.Command{
+func (c *Client) sendConnect() (protocol.ConnectResult, error) {
+	cmd := &protocol.Command{
 		ID:     uint32(c.nextMsgID()),
-		Method: proto.MethodTypeConnect,
+		Method: protocol.MethodTypeConnect,
 	}
 
 	c.mutex.RLock()
 	if c.token != "" || c.connectData != nil {
-		params := &proto.ConnectRequest{}
+		params := &protocol.ConnectRequest{}
 		if c.token != "" {
 			params.Token = c.token
 		}
@@ -821,7 +863,7 @@ func (c *Client) sendConnect() (proto.ConnectResult, error) {
 		paramsData, err := c.paramsEncoder.Encode(params)
 		if err != nil {
 			c.mutex.RUnlock()
-			return proto.ConnectResult{}, err
+			return protocol.ConnectResult{}, err
 		}
 		cmd.Params = paramsData
 	}
@@ -829,16 +871,16 @@ func (c *Client) sendConnect() (proto.ConnectResult, error) {
 
 	r, err := c.sendSync(cmd)
 	if err != nil {
-		return proto.ConnectResult{}, err
+		return protocol.ConnectResult{}, err
 	}
 	if r.Error != nil {
-		return proto.ConnectResult{}, r.Error
+		return protocol.ConnectResult{}, r.Error
 	}
 
-	var res proto.ConnectResult
+	var res protocol.ConnectResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
-		return proto.ConnectResult{}, err
+		return protocol.ConnectResult{}, err
 	}
 	return res, nil
 }
@@ -878,8 +920,8 @@ func (c *Client) NewSubscription(channel string) (*Subscription, error) {
 	return sub, nil
 }
 
-func (c *Client) sendSubscribe(channel string, recover bool, seq uint32, gen uint32, epoch string, token string) (proto.SubscribeResult, error) {
-	params := &proto.SubscribeRequest{
+func (c *Client) sendSubscribe(channel string, recover bool, seq uint32, gen uint32, epoch string, token string) (protocol.SubscribeResult, error) {
+	params := &protocol.SubscribeRequest{
 		Channel: channel,
 	}
 
@@ -895,26 +937,26 @@ func (c *Client) sendSubscribe(channel string, recover bool, seq uint32, gen uin
 
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return proto.SubscribeResult{}, err
+		return protocol.SubscribeResult{}, err
 	}
 
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     uint32(c.nextMsgID()),
-		Method: proto.MethodTypeSubscribe,
+		Method: protocol.MethodTypeSubscribe,
 		Params: paramsData,
 	}
 	r, err := c.sendSync(cmd)
 	if err != nil {
-		return proto.SubscribeResult{}, err
+		return protocol.SubscribeResult{}, err
 	}
 	if r.Error != nil {
-		return proto.SubscribeResult{}, r.Error
+		return protocol.SubscribeResult{}, r.Error
 	}
 
-	var res proto.SubscribeResult
+	var res protocol.SubscribeResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
-		return proto.SubscribeResult{}, err
+		return protocol.SubscribeResult{}, err
 	}
 	return res, nil
 }
@@ -932,113 +974,113 @@ func (c *Client) Publish(channel string, data []byte) error {
 	return c.publish(channel, data)
 }
 
-func (c *Client) sendPublish(channel string, data []byte) (proto.PublishResult, error) {
-	params := &proto.PublishRequest{
+func (c *Client) sendPublish(channel string, data []byte) (protocol.PublishResult, error) {
+	params := &protocol.PublishRequest{
 		Channel: channel,
-		Data:    proto.Raw(data),
+		Data:    protocol.Raw(data),
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return proto.PublishResult{}, err
+		return protocol.PublishResult{}, err
 	}
 
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     uint32(c.nextMsgID()),
-		Method: proto.MethodTypePublish,
+		Method: protocol.MethodTypePublish,
 		Params: paramsData,
 	}
 	r, err := c.sendSync(cmd)
 	if err != nil {
-		return proto.PublishResult{}, err
+		return protocol.PublishResult{}, err
 	}
 	if r.Error != nil {
-		return proto.PublishResult{}, r.Error
+		return protocol.PublishResult{}, r.Error
 	}
-	var res proto.PublishResult
+	var res protocol.PublishResult
 	return res, nil
 }
 
-func (c *Client) history(channel string) ([]proto.Publication, error) {
+func (c *Client) history(channel string) ([]protocol.Publication, error) {
 	res, err := c.sendHistory(channel)
 	if err != nil {
-		return []proto.Publication{}, err
+		return []protocol.Publication{}, err
 	}
-	pubs := make([]proto.Publication, len(res.Publications))
+	pubs := make([]protocol.Publication, len(res.Publications))
 	for i, m := range res.Publications {
 		pubs[i] = *m
 	}
 	return pubs, nil
 }
 
-func (c *Client) sendHistory(channel string) (proto.HistoryResult, error) {
-	params := &proto.HistoryRequest{
+func (c *Client) sendHistory(channel string) (protocol.HistoryResult, error) {
+	params := &protocol.HistoryRequest{
 		Channel: channel,
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return proto.HistoryResult{}, err
+		return protocol.HistoryResult{}, err
 	}
 
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     uint32(c.nextMsgID()),
-		Method: proto.MethodTypeHistory,
+		Method: protocol.MethodTypeHistory,
 		Params: paramsData,
 	}
 	r, err := c.sendSync(cmd)
 	if err != nil {
-		return proto.HistoryResult{}, err
+		return protocol.HistoryResult{}, err
 	}
 	if r.Error != nil {
-		return proto.HistoryResult{}, r.Error
+		return protocol.HistoryResult{}, r.Error
 	}
-	var res proto.HistoryResult
+	var res protocol.HistoryResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
-		return proto.HistoryResult{}, err
+		return protocol.HistoryResult{}, err
 	}
 	return res, nil
 }
 
-func (c *Client) presence(channel string) (map[string]proto.ClientInfo, error) {
+func (c *Client) presence(channel string) (map[string]protocol.ClientInfo, error) {
 	res, err := c.sendPresence(channel)
 	if err != nil {
-		return map[string]proto.ClientInfo{}, err
+		return map[string]protocol.ClientInfo{}, err
 	}
-	p := make(map[string]proto.ClientInfo)
+	p := make(map[string]protocol.ClientInfo)
 	for uid, info := range res.Presence {
 		p[uid] = *info
 	}
 	return p, nil
 }
 
-func (c *Client) sendPresence(channel string) (proto.PresenceResult, error) {
-	params := &proto.PresenceRequest{
+func (c *Client) sendPresence(channel string) (protocol.PresenceResult, error) {
+	params := &protocol.PresenceRequest{
 		Channel: channel,
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return proto.PresenceResult{}, err
+		return protocol.PresenceResult{}, err
 	}
 
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     uint32(c.nextMsgID()),
-		Method: proto.MethodTypePresence,
+		Method: protocol.MethodTypePresence,
 		Params: paramsData,
 	}
 	r, err := c.sendSync(cmd)
 	if err != nil {
-		return proto.PresenceResult{}, err
+		return protocol.PresenceResult{}, err
 	}
 	if r.Error != nil {
-		return proto.PresenceResult{}, r.Error
+		return protocol.PresenceResult{}, r.Error
 	}
-	var res proto.PresenceResult
+	var res protocol.PresenceResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
-		return proto.PresenceResult{}, err
+		return protocol.PresenceResult{}, err
 	}
 	return res, nil
 }
@@ -1060,31 +1102,31 @@ func (c *Client) presenceStats(channel string) (PresenceStats, error) {
 	}, nil
 }
 
-func (c *Client) sendPresenceStats(channel string) (proto.PresenceStatsResult, error) {
-	params := &proto.PresenceStatsRequest{
+func (c *Client) sendPresenceStats(channel string) (protocol.PresenceStatsResult, error) {
+	params := &protocol.PresenceStatsRequest{
 		Channel: channel,
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return proto.PresenceStatsResult{}, err
+		return protocol.PresenceStatsResult{}, err
 	}
 
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     uint32(c.nextMsgID()),
-		Method: proto.MethodTypePresenceStats,
+		Method: protocol.MethodTypePresenceStats,
 		Params: paramsData,
 	}
 	r, err := c.sendSync(cmd)
 	if err != nil {
-		return proto.PresenceStatsResult{}, err
+		return protocol.PresenceStatsResult{}, err
 	}
 	if r.Error != nil {
-		return proto.PresenceStatsResult{}, r.Error
+		return protocol.PresenceStatsResult{}, r.Error
 	}
-	var res proto.PresenceStatsResult
+	var res protocol.PresenceStatsResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
-		return proto.PresenceStatsResult{}, err
+		return protocol.PresenceStatsResult{}, err
 	}
 	return res, nil
 }
@@ -1100,40 +1142,40 @@ func (c *Client) unsubscribe(channel string) error {
 	return nil
 }
 
-func (c *Client) sendUnsubscribe(channel string) (proto.UnsubscribeResult, error) {
-	params := &proto.UnsubscribeRequest{
+func (c *Client) sendUnsubscribe(channel string) (protocol.UnsubscribeResult, error) {
+	params := &protocol.UnsubscribeRequest{
 		Channel: channel,
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return proto.UnsubscribeResult{}, err
+		return protocol.UnsubscribeResult{}, err
 	}
 
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     uint32(c.nextMsgID()),
-		Method: proto.MethodTypeUnsubscribe,
+		Method: protocol.MethodTypeUnsubscribe,
 		Params: paramsData,
 	}
 	r, err := c.sendSync(cmd)
 	if err != nil {
-		return proto.UnsubscribeResult{}, err
+		return protocol.UnsubscribeResult{}, err
 	}
 	if r.Error != nil {
-		return proto.UnsubscribeResult{}, r.Error
+		return protocol.UnsubscribeResult{}, r.Error
 	}
-	var res proto.UnsubscribeResult
+	var res protocol.UnsubscribeResult
 	err = c.resultDecoder.Decode(r.Result, &res)
 	if err != nil {
-		return proto.UnsubscribeResult{}, err
+		return protocol.UnsubscribeResult{}, err
 	}
 	return res, nil
 }
 
 func (c *Client) sendPing() error {
-	cmd := &proto.Command{
+	cmd := &protocol.Command{
 		ID:     uint32(c.nextMsgID()),
-		Method: proto.MethodTypePing,
+		Method: protocol.MethodTypePing,
 	}
 	r, err := c.sendSync(cmd)
 	if err != nil {
@@ -1145,20 +1187,20 @@ func (c *Client) sendPing() error {
 	return nil
 }
 
-func (c *Client) sendSync(cmd *proto.Command) (proto.Reply, error) {
-	waitCh := make(chan proto.Reply, 1)
+func (c *Client) sendSync(cmd *protocol.Command) (protocol.Reply, error) {
+	waitCh := make(chan protocol.Reply, 1)
 
 	c.addRequest(cmd.ID, waitCh)
 	defer c.removeRequest(cmd.ID)
 
 	err := c.send(cmd)
 	if err != nil {
-		return proto.Reply{}, err
+		return protocol.Reply{}, err
 	}
 	return c.wait(waitCh, c.config.ReadTimeout)
 }
 
-func (c *Client) send(cmd *proto.Command) error {
+func (c *Client) send(cmd *protocol.Command) error {
 	select {
 	case <-c.closeCh:
 		return ErrClientDisconnected
@@ -1178,7 +1220,7 @@ func (c *Client) send(cmd *proto.Command) error {
 	return nil
 }
 
-func (c *Client) addRequest(id uint32, ch chan proto.Reply) {
+func (c *Client) addRequest(id uint32, ch chan protocol.Reply) {
 	c.requestsMutex.Lock()
 	defer c.requestsMutex.Unlock()
 	c.requests[id] = ch
@@ -1190,16 +1232,16 @@ func (c *Client) removeRequest(id uint32) {
 	delete(c.requests, id)
 }
 
-func (c *Client) wait(ch chan proto.Reply, timeout time.Duration) (proto.Reply, error) {
+func (c *Client) wait(ch chan protocol.Reply, timeout time.Duration) (protocol.Reply, error) {
 	select {
 	case data, ok := <-ch:
 		if !ok {
-			return proto.Reply{}, ErrClientDisconnected
+			return protocol.Reply{}, ErrClientDisconnected
 		}
 		return data, nil
 	case <-time.After(timeout):
-		return proto.Reply{}, ErrTimeout
+		return protocol.Reply{}, ErrTimeout
 	case <-c.closeCh:
-		return proto.Reply{}, ErrClientClosed
+		return protocol.Reply{}, ErrClientClosed
 	}
 }

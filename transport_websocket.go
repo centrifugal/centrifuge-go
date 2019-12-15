@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/centrifugal/centrifuge-go/internal/proto"
+	"github.com/centrifugal/protocol"
 	"github.com/gorilla/websocket"
 )
 
@@ -29,10 +29,10 @@ func extractDisconnectWebsocket(err error) *disconnect {
 type websocketTransport struct {
 	mu             sync.Mutex
 	conn           *websocket.Conn
-	encoding       proto.Encoding
-	commandEncoder proto.CommandEncoder
-	replyDecoder   proto.ReplyDecoder
-	replyCh        chan *proto.Reply
+	encoding       protocol.Type
+	commandEncoder protocol.CommandEncoder
+	replyDecoder   protocol.ReplyDecoder
+	replyCh        chan *protocol.Reply
 	config         websocketConfig
 	disconnect     *disconnect
 	closed         bool
@@ -63,7 +63,7 @@ type websocketConfig struct {
 	Header http.Header
 }
 
-func newWebsocketTransport(url string, encoding proto.Encoding, config websocketConfig) (transport, error) {
+func newWebsocketTransport(url string, encoding protocol.Type, config websocketConfig) (transport, error) {
 	wsHeaders := config.Header
 	dialer := websocket.DefaultDialer
 
@@ -82,10 +82,10 @@ func newWebsocketTransport(url string, encoding proto.Encoding, config websocket
 
 	t := &websocketTransport{
 		conn:           conn,
-		replyCh:        make(chan *proto.Reply, 128),
+		replyCh:        make(chan *protocol.Reply, 128),
 		config:         config,
 		closeCh:        make(chan struct{}),
-		commandEncoder: proto.NewCommandEncoder(encoding),
+		commandEncoder: newCommandEncoder(encoding),
 		encoding:       encoding,
 	}
 	go t.reader()
@@ -117,7 +117,7 @@ func (t *websocketTransport) reader() {
 		}
 	loop:
 		for {
-			decoder := proto.NewReplyDecoder(t.encoding, data)
+			decoder := newReplyDecoder(t.encoding, data)
 			for {
 				reply, err := decoder.Decode()
 				if err != nil {
@@ -141,7 +141,7 @@ func (t *websocketTransport) reader() {
 	}
 }
 
-func (t *websocketTransport) Write(cmd *proto.Command, timeout time.Duration) error {
+func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration) error {
 	data, err := t.commandEncoder.Encode(cmd)
 	if err != nil {
 		return err
@@ -151,7 +151,7 @@ func (t *websocketTransport) Write(cmd *proto.Command, timeout time.Duration) er
 	if timeout > 0 {
 		t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
-	if t.encoding == proto.EncodingJSON {
+	if t.encoding == protocol.TypeJSON {
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
 	} else {
 		err = t.conn.WriteMessage(websocket.BinaryMessage, data)
@@ -162,7 +162,7 @@ func (t *websocketTransport) Write(cmd *proto.Command, timeout time.Duration) er
 	return err
 }
 
-func (t *websocketTransport) Read() (*proto.Reply, *disconnect, error) {
+func (t *websocketTransport) Read() (*protocol.Reply, *disconnect, error) {
 	reply, ok := <-t.replyCh
 	if !ok {
 		return nil, t.disconnect, io.EOF
