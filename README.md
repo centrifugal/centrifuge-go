@@ -10,8 +10,6 @@ There is no v1 release of this library yet, API is not stable – so use with to
 Feature matrix
 --------------
 
-## Feature matrix
-
 - [x] connect to server using JSON protocol format
 - [x] connect to server using Protobuf protocol format
 - [x] connect with JWT
