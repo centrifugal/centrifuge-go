@@ -1,16 +1,17 @@
 language: go
+
 env:
-  - GO111MODULE=off
+  - GO111MODULE=on
+
 services:
-- docker
+  - docker
+
 before_install:
-- docker pull centrifugo/centrifugo
-- docker run -d -p 8000:8000 centrifugo/centrifugo centrifugo --client_insecure
-install:
-- go get -u github.com/golang/dep/cmd/dep
-- dep ensure
+  - docker pull centrifugo/centrifugo
+  - docker run -d -p 8000:8000 centrifugo/centrifugo centrifugo --client_insecure
 go:
+  - "1.14.x"
   - "1.13.x"
-  - "1.12.x"
   - "tip"
-script: go test -v
+
+script: go test -race -v
