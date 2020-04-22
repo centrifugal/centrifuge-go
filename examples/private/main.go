@@ -113,5 +113,11 @@ func main() {
 	// Subscribe on private channel.
 	sub.Subscribe()
 
+	res, err := c.RPC([]byte("{}"))
+	if err != nil {
+		panic(err)
+	}
+	println(string(res))
+
 	select {}
 }
