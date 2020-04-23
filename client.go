@@ -408,7 +408,7 @@ func (c *Client) pinger(closeCh chan struct{}) {
 	}
 }
 
-func (c *Client) reader(t transport, closeCh chan struct{}) {
+func (c *Client) reader(t transport, syncReplyCh, asyncReplyCh chan *protocol.Reply, closeCh chan struct{}) {
 	for {
 		reply, disconnect, err := t.Read()
 		if err != nil {
@@ -423,7 +423,7 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 			case c.delayPing <- struct{}{}:
 			default:
 			}
-			err := c.handle(reply)
+			err := c.handle(reply, syncReplyCh, asyncReplyCh, closeCh)
 			if err != nil {
 				c.handleError(err)
 			}
@@ -431,25 +431,52 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 	}
 }
 
-func (c *Client) handle(reply *protocol.Reply) error {
-	if reply.ID > 0 {
-		c.requestsMutex.RLock()
-		if waiter, ok := c.requests[reply.ID]; ok {
-			waiter <- *reply
-		}
-		c.requestsMutex.RUnlock()
-	} else {
-		push, err := c.pushDecoder.Decode(reply.Result)
-		if err != nil {
-			c.handleError(err)
-			return err
-		}
-		err = c.handlePush(*push)
-		if err != nil {
-			c.handleError(err)
+func (c *Client) processSyncReplies(syncReplyCh chan *protocol.Reply, closeCh chan struct{}) {
+	for {
+		select {
+		case reply := <-syncReplyCh:
+			c.requestsMutex.RLock()
+			if waiter, ok := c.requests[reply.ID]; ok {
+				waiter <- *reply
+			}
+			c.requestsMutex.RUnlock()
+		case <-closeCh:
+			close(syncReplyCh)
+			return
 		}
 	}
+}
 
+func (c *Client) processAsyncReplies(asyncReplyCh chan *protocol.Reply, closeCh chan struct{}) {
+	for {
+		select {
+		case reply := <-asyncReplyCh:
+			push, err := c.pushDecoder.Decode(reply.Result)
+			if err != nil {
+				c.handleError(err)
+				continue
+			}
+			err = c.handlePush(*push)
+			if err != nil {
+				c.handleError(err)
+			}
+		case <-closeCh:
+			close(asyncReplyCh)
+			return
+		}
+	}
+}
+
+func (c *Client) handle(reply *protocol.Reply, syncReplyCh, asyncReplyCh chan *protocol.Reply, closeCh chan struct{}) error {
+	if reply.ID > 0 {
+		syncReplyCh <- reply
+	} else {
+		select {
+		case asyncReplyCh <- reply:
+		case <-closeCh:
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -620,7 +647,12 @@ func (c *Client) connect(isReconnect bool) error {
 	c.receive = make(chan []byte, 64)
 	c.mutex.Unlock()
 
-	go c.reader(t, closeCh)
+	syncReplyCh := make(chan *protocol.Reply)
+	asyncReplyCh := make(chan *protocol.Reply, 128)
+
+	go c.reader(t, syncReplyCh, asyncReplyCh, closeCh)
+	go c.processSyncReplies(syncReplyCh, closeCh)
+	go c.processAsyncReplies(asyncReplyCh, closeCh)
 
 	var res protocol.ConnectResult
 

@@ -22,15 +22,12 @@ func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.Disconnec
 
 func (h *eventHandler) OnMessage(c *centrifuge.Client, e centrifuge.MessageEvent) {
 	log.Println("Message received", string(e.Data))
-	// Need separate goroutine or WebSocket read loop will be blocked.
-	go func() {
-		res, err := c.RPC([]byte("{}"))
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		log.Printf("RPC result: %s", string(res))
-	}()
+	res, err := c.RPC([]byte("{}"))
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	log.Printf("RPC result: %s", string(res))
 }
 
 func newConnection() *centrifuge.Client {
