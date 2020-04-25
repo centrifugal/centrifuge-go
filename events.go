@@ -22,6 +22,8 @@ type DisconnectEvent struct {
 
 // ErrorEvent is an error event context passed to OnError callback.
 type ErrorEvent struct {
+	// TODO: return error type here instead of string
+	// so user code could distinguish various types of possible errors?
 	Message string
 }
 

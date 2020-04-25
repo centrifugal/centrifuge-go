@@ -250,7 +250,7 @@ func (c *Client) close() {
 	c.requestsMutex.Unlock()
 
 	if c.transport != nil {
-		c.transport.Close()
+		_ = c.transport.Close()
 		c.transport = nil
 	}
 }
@@ -281,7 +281,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	c.requestsMutex.Unlock()
 
 	if c.transport != nil {
-		c.transport.Close()
+		_ = c.transport.Close()
 		c.transport = nil
 	}
 
@@ -392,7 +392,7 @@ func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) (time.Duration, er
 }
 
 func (c *Client) pinger(closeCh chan struct{}) {
-	timeout := time.Duration(c.config.PingInterval)
+	timeout := c.config.PingInterval
 	for {
 		select {
 		case <-c.delayPing:
@@ -408,7 +408,7 @@ func (c *Client) pinger(closeCh chan struct{}) {
 	}
 }
 
-func (c *Client) reader(t transport, closeCh chan struct{}) {
+func (c *Client) reader(t transport, syncReplyCh, asyncReplyCh chan *protocol.Reply, closeCh chan struct{}) {
 	for {
 		reply, disconnect, err := t.Read()
 		if err != nil {
@@ -423,7 +423,7 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 			case c.delayPing <- struct{}{}:
 			default:
 			}
-			err := c.handle(reply)
+			err := c.handle(reply, syncReplyCh, asyncReplyCh, closeCh)
 			if err != nil {
 				c.handleError(err)
 			}
@@ -431,25 +431,52 @@ func (c *Client) reader(t transport, closeCh chan struct{}) {
 	}
 }
 
-func (c *Client) handle(reply *protocol.Reply) error {
-	if reply.ID > 0 {
-		c.requestsMutex.RLock()
-		if waiter, ok := c.requests[reply.ID]; ok {
-			waiter <- *reply
-		}
-		c.requestsMutex.RUnlock()
-	} else {
-		push, err := c.pushDecoder.Decode(reply.Result)
-		if err != nil {
-			c.handleError(err)
-			return err
-		}
-		err = c.handlePush(*push)
-		if err != nil {
-			c.handleError(err)
+func (c *Client) processSyncReplies(syncReplyCh chan *protocol.Reply, closeCh chan struct{}) {
+	for {
+		select {
+		case reply := <-syncReplyCh:
+			c.requestsMutex.RLock()
+			if waiter, ok := c.requests[reply.ID]; ok {
+				waiter <- *reply
+			}
+			c.requestsMutex.RUnlock()
+		case <-closeCh:
+			close(syncReplyCh)
+			return
 		}
 	}
+}
 
+func (c *Client) processAsyncReplies(asyncReplyCh chan *protocol.Reply, closeCh chan struct{}) {
+	for {
+		select {
+		case reply := <-asyncReplyCh:
+			push, err := c.pushDecoder.Decode(reply.Result)
+			if err != nil {
+				c.handleError(err)
+				continue
+			}
+			err = c.handlePush(*push)
+			if err != nil {
+				c.handleError(err)
+			}
+		case <-closeCh:
+			close(asyncReplyCh)
+			return
+		}
+	}
+}
+
+func (c *Client) handle(reply *protocol.Reply, syncReplyCh, asyncReplyCh chan *protocol.Reply, closeCh chan struct{}) error {
+	if reply.ID > 0 {
+		syncReplyCh <- reply
+	} else {
+		select {
+		case asyncReplyCh <- reply:
+		case <-closeCh:
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -475,7 +502,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		if err != nil {
 			return err
 		}
-		c.handleMessage(*m)
+		_ = c.handleMessage(*m)
 	case protocol.PushTypeUnsub:
 		m, err := c.pushDecoder.DecodeUnsub(msg.Data)
 		if err != nil {
@@ -483,7 +510,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		}
 		channel := msg.Channel
 		c.subsMutex.RLock()
-		sub, ok := c.subs[string(channel)]
+		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
 			return nil
@@ -496,7 +523,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		}
 		channel := msg.Channel
 		c.subsMutex.RLock()
-		sub, ok := c.subs[string(channel)]
+		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
 			return nil
@@ -509,7 +536,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		}
 		channel := msg.Channel
 		c.subsMutex.RLock()
-		sub, ok := c.subs[string(channel)]
+		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
 			return nil
@@ -522,7 +549,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		}
 		channel := msg.Channel
 		c.subsMutex.RLock()
-		sub, ok := c.subs[string(channel)]
+		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
 			return nil
@@ -620,7 +647,12 @@ func (c *Client) connect(isReconnect bool) error {
 	c.receive = make(chan []byte, 64)
 	c.mutex.Unlock()
 
-	go c.reader(t, closeCh)
+	syncReplyCh := make(chan *protocol.Reply)
+	asyncReplyCh := make(chan *protocol.Reply, 128)
+
+	go c.reader(t, syncReplyCh, asyncReplyCh, closeCh)
+	go c.processSyncReplies(syncReplyCh, closeCh)
+	go c.processAsyncReplies(asyncReplyCh, closeCh)
 
 	var res protocol.ConnectResult
 
@@ -632,12 +664,12 @@ func (c *Client) connect(isReconnect bool) error {
 				// Try to refresh token and repeat connection attempt.
 				err = c.refreshToken()
 				if err != nil {
-					c.Close()
+					_ = c.Close()
 					return err
 				}
 				res, err = c.sendConnect()
 				if err != nil {
-					c.Close()
+					_ = c.Close()
 					return err
 				}
 				refreshed = true
@@ -705,8 +737,7 @@ func (c *Client) disconnect(reconnect bool) error {
 
 // Disconnect client from server.
 func (c *Client) Disconnect() error {
-	c.disconnect(false)
-	return nil
+	return c.disconnect(false)
 }
 
 func (c *Client) refreshToken() error {
@@ -769,7 +800,7 @@ func (c *Client) sendRefresh(closeCh chan struct{}) error {
 			case <-closeCh:
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
-				c.sendRefresh(closeCh)
+				_ = c.sendRefresh(closeCh)
 			}
 		}(res.TTL)
 	}
@@ -838,7 +869,7 @@ func (c *Client) sendSubRefresh(channel string) error {
 			case <-c.closeCh:
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
-				c.sendSubRefresh(channel)
+				_ = c.sendSubRefresh(channel)
 			}
 		}(res.TTL)
 	}
@@ -847,7 +878,7 @@ func (c *Client) sendSubRefresh(channel string) error {
 
 func (c *Client) sendConnect() (protocol.ConnectResult, error) {
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeConnect,
 	}
 
@@ -941,7 +972,7 @@ func (c *Client) sendSubscribe(channel string, recover bool, seq uint32, gen uin
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeSubscribe,
 		Params: paramsData,
 	}
@@ -986,7 +1017,7 @@ func (c *Client) sendPublish(channel string, data []byte) (protocol.PublishResul
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePublish,
 		Params: paramsData,
 	}
@@ -1024,7 +1055,7 @@ func (c *Client) sendHistory(channel string) (protocol.HistoryResult, error) {
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeHistory,
 		Params: paramsData,
 	}
@@ -1066,7 +1097,7 @@ func (c *Client) sendPresence(channel string) (protocol.PresenceResult, error) {
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePresence,
 		Params: paramsData,
 	}
@@ -1112,7 +1143,7 @@ func (c *Client) sendPresenceStats(channel string) (protocol.PresenceStatsResult
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePresenceStats,
 		Params: paramsData,
 	}
@@ -1153,7 +1184,7 @@ func (c *Client) sendUnsubscribe(channel string) (protocol.UnsubscribeResult, er
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeUnsubscribe,
 		Params: paramsData,
 	}
@@ -1174,7 +1205,7 @@ func (c *Client) sendUnsubscribe(channel string) (protocol.UnsubscribeResult, er
 
 func (c *Client) sendPing() error {
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePing,
 	}
 	r, err := c.sendSync(cmd)
