@@ -8,7 +8,27 @@ import (
 	"os"
 
 	"github.com/centrifugal/centrifuge-go"
+	"github.com/dgrijalva/jwt-go"
 )
+
+// Actually in real life clients should never know secret key.
+// This is only for example purposes to quickly generate JWT for
+// connection.
+const exampleTokenHmacSecret = "secret"
+
+func connToken(user string, exp int64) string {
+	// NOTE that JWT must be generated on backend side of your application!
+	// Here we are generating it on client side only for example simplicity.
+	claims := jwt.MapClaims{"sub": user}
+	if exp > 0 {
+		claims["exp"] = exp
+	}
+	t, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(exampleTokenHmacSecret))
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
 
 // ChatMessage is chat app specific message struct.
 type ChatMessage struct {
@@ -68,6 +88,8 @@ func main() {
 	log.Printf("Print something and press ENTER to send\n")
 
 	c := centrifuge.New(url, centrifuge.DefaultConfig())
+	// Uncomment to make it work with Centrifugo and JWT auth.
+	//c.SetToken(connToken("49", 0))
 	defer c.Close()
 	handler := &eventHandler{}
 	c.OnConnect(handler)
@@ -105,7 +127,10 @@ func main() {
 				Input: text,
 			}
 			data, _ := json.Marshal(msg)
-			sub.Publish(data)
+			err := sub.Publish(data)
+			if err != nil {
+				log.Printf("publish error: %v", err)
+			}
 		}
 	}(sub)
 
