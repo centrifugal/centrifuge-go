@@ -285,7 +285,7 @@ func (s *Subscription) presenceStats() (PresenceStats, error) {
 
 // Unsubscribe allows to unsubscribe from channel.
 func (s *Subscription) Unsubscribe() error {
-	s.centrifuge.unsubscribe(s.channel)
+	_ = s.centrifuge.unsubscribe(s.channel)
 	s.setSubscribedAt(0)
 	s.triggerOnUnsubscribe(false)
 	return nil
@@ -385,9 +385,9 @@ func (s *Subscription) handleLeave(info protocol.ClientInfo) {
 }
 
 func (s *Subscription) handleUnsub(m protocol.Unsub) {
-	s.Unsubscribe()
+	_ = s.Unsubscribe()
 	if m.Resubscribe {
-		s.Subscribe()
+		_ = s.Subscribe()
 	}
 }
 
@@ -428,19 +428,19 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 	}
 
 	s.mu.Lock()
-	var recover bool
+	var isRecover bool
 	var seq uint32
 	var gen uint32
 	var epoch string
 	if s.subscribedAt != 0 && s.recover {
-		recover = true
+		isRecover = true
 		seq = s.lastSeq
 		gen = s.lastGen
 		epoch = s.lastEpoch
 	}
 	s.mu.Unlock()
 
-	res, err := s.centrifuge.sendSubscribe(s.channel, recover, seq, gen, epoch, token)
+	res, err := s.centrifuge.sendSubscribe(s.channel, isRecover, seq, gen, epoch, token)
 	if err != nil {
 		if err == ErrTimeout {
 			s.mu.Lock()
@@ -458,7 +458,7 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 			case <-s.centrifuge.closeCh:
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
-				s.centrifuge.sendSubRefresh(s.channel)
+				_ = s.centrifuge.sendSubRefresh(s.channel)
 			}
 		}(res.TTL)
 	}

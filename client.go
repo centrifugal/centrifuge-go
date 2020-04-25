@@ -250,7 +250,7 @@ func (c *Client) close() {
 	c.requestsMutex.Unlock()
 
 	if c.transport != nil {
-		c.transport.Close()
+		_ = c.transport.Close()
 		c.transport = nil
 	}
 }
@@ -281,7 +281,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	c.requestsMutex.Unlock()
 
 	if c.transport != nil {
-		c.transport.Close()
+		_ = c.transport.Close()
 		c.transport = nil
 	}
 
@@ -392,7 +392,7 @@ func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) (time.Duration, er
 }
 
 func (c *Client) pinger(closeCh chan struct{}) {
-	timeout := time.Duration(c.config.PingInterval)
+	timeout := c.config.PingInterval
 	for {
 		select {
 		case <-c.delayPing:
@@ -502,7 +502,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		if err != nil {
 			return err
 		}
-		c.handleMessage(*m)
+		_ = c.handleMessage(*m)
 	case protocol.PushTypeUnsub:
 		m, err := c.pushDecoder.DecodeUnsub(msg.Data)
 		if err != nil {
@@ -510,7 +510,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		}
 		channel := msg.Channel
 		c.subsMutex.RLock()
-		sub, ok := c.subs[string(channel)]
+		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
 			return nil
@@ -523,7 +523,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		}
 		channel := msg.Channel
 		c.subsMutex.RLock()
-		sub, ok := c.subs[string(channel)]
+		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
 			return nil
@@ -536,7 +536,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		}
 		channel := msg.Channel
 		c.subsMutex.RLock()
-		sub, ok := c.subs[string(channel)]
+		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
 			return nil
@@ -549,7 +549,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		}
 		channel := msg.Channel
 		c.subsMutex.RLock()
-		sub, ok := c.subs[string(channel)]
+		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
 			return nil
@@ -664,12 +664,12 @@ func (c *Client) connect(isReconnect bool) error {
 				// Try to refresh token and repeat connection attempt.
 				err = c.refreshToken()
 				if err != nil {
-					c.Close()
+					_ = c.Close()
 					return err
 				}
 				res, err = c.sendConnect()
 				if err != nil {
-					c.Close()
+					_ = c.Close()
 					return err
 				}
 				refreshed = true
@@ -737,8 +737,7 @@ func (c *Client) disconnect(reconnect bool) error {
 
 // Disconnect client from server.
 func (c *Client) Disconnect() error {
-	c.disconnect(false)
-	return nil
+	return c.disconnect(false)
 }
 
 func (c *Client) refreshToken() error {
@@ -801,7 +800,7 @@ func (c *Client) sendRefresh(closeCh chan struct{}) error {
 			case <-closeCh:
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
-				c.sendRefresh(closeCh)
+				_ = c.sendRefresh(closeCh)
 			}
 		}(res.TTL)
 	}
@@ -870,7 +869,7 @@ func (c *Client) sendSubRefresh(channel string) error {
 			case <-c.closeCh:
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
-				c.sendSubRefresh(channel)
+				_ = c.sendSubRefresh(channel)
 			}
 		}(res.TTL)
 	}
@@ -879,7 +878,7 @@ func (c *Client) sendSubRefresh(channel string) error {
 
 func (c *Client) sendConnect() (protocol.ConnectResult, error) {
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeConnect,
 	}
 
@@ -973,7 +972,7 @@ func (c *Client) sendSubscribe(channel string, recover bool, seq uint32, gen uin
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeSubscribe,
 		Params: paramsData,
 	}
@@ -1018,7 +1017,7 @@ func (c *Client) sendPublish(channel string, data []byte) (protocol.PublishResul
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePublish,
 		Params: paramsData,
 	}
@@ -1056,7 +1055,7 @@ func (c *Client) sendHistory(channel string) (protocol.HistoryResult, error) {
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeHistory,
 		Params: paramsData,
 	}
@@ -1098,7 +1097,7 @@ func (c *Client) sendPresence(channel string) (protocol.PresenceResult, error) {
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePresence,
 		Params: paramsData,
 	}
@@ -1144,7 +1143,7 @@ func (c *Client) sendPresenceStats(channel string) (protocol.PresenceStatsResult
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePresenceStats,
 		Params: paramsData,
 	}
@@ -1185,7 +1184,7 @@ func (c *Client) sendUnsubscribe(channel string) (protocol.UnsubscribeResult, er
 	}
 
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeUnsubscribe,
 		Params: paramsData,
 	}
@@ -1206,7 +1205,7 @@ func (c *Client) sendUnsubscribe(channel string) (protocol.UnsubscribeResult, er
 
 func (c *Client) sendPing() error {
 	cmd := &protocol.Command{
-		ID:     uint32(c.nextMsgID()),
+		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePing,
 	}
 	r, err := c.sendSync(cmd)
