@@ -609,6 +609,13 @@ func (c *Client) Connect() error {
 	return c.connectFromScratch(false)
 }
 
+func isTokenExpiredError(err error) bool {
+	if e, ok := err.(*Error); ok && e.Code == 109 {
+		return true
+	}
+	return false
+}
+
 func (c *Client) connect(isReconnect bool) error {
 	c.mutex.Lock()
 	if c.status == CONNECTED {
@@ -659,21 +666,19 @@ func (c *Client) connect(isReconnect bool) error {
 	res, err = c.sendConnect()
 	if err != nil {
 		refreshed := false
-		if e, ok := err.(*Error); ok {
-			if e.Code == 109 {
-				// Try to refresh token and repeat connection attempt.
-				err = c.refreshToken()
-				if err != nil {
-					_ = c.Close()
-					return err
-				}
-				res, err = c.sendConnect()
-				if err != nil {
-					_ = c.Close()
-					return err
-				}
-				refreshed = true
+		if isTokenExpiredError(err) {
+			// Try to refresh token and repeat connection attempt.
+			err = c.refreshToken()
+			if err != nil {
+				_ = c.Close()
+				return err
 			}
+			res, err = c.sendConnect()
+			if err != nil {
+				_ = c.Close()
+				return err
+			}
+			refreshed = true
 		}
 		if !refreshed {
 			return err
@@ -692,7 +697,7 @@ func (c *Client) connect(isReconnect bool) error {
 			case <-closeCh:
 				return
 			case <-time.After(time.Duration(interval) * time.Second):
-				c.sendRefresh(closeCh)
+				_ = c.sendRefresh(closeCh)
 			}
 		}(res.TTL)
 	}
