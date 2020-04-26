@@ -135,6 +135,7 @@ type Subscription struct {
 	events          *SubscriptionEventHub
 	lastSeq         uint32
 	lastGen         uint32
+	lastOffset      uint64
 	lastEpoch       string
 	resubscribed    bool
 	recovered       bool
@@ -356,8 +357,12 @@ func (s *Subscription) handlePublication(pub Publication) {
 		handler = s.events.onPublish
 	}
 	s.mu.Lock()
-	s.lastSeq = pub.Seq
-	s.lastGen = pub.Gen
+	if pub.Seq > 0 || pub.Gen > 0 {
+		s.lastSeq = pub.Seq
+		s.lastGen = pub.Gen
+	} else {
+		s.lastOffset = pub.Offset
+	}
 	s.mu.Unlock()
 	if handler != nil {
 		handler.OnPublish(s, PublishEvent{Publication: pub})
@@ -429,18 +434,20 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 
 	s.mu.Lock()
 	var isRecover bool
-	var seq uint32
-	var gen uint32
-	var epoch string
+	var sp streamPosition
 	if s.subscribedAt != 0 && s.recover {
 		isRecover = true
-		seq = s.lastSeq
-		gen = s.lastGen
-		epoch = s.lastEpoch
+		if s.lastSeq > 0 || s.lastGen > 0 {
+			sp.Seq = s.lastSeq
+			sp.Gen = s.lastGen
+		} else {
+			sp.Offset = s.lastOffset
+		}
+		sp.Epoch = s.lastEpoch
 	}
 	s.mu.Unlock()
 
-	res, err := s.centrifuge.sendSubscribe(s.channel, isRecover, seq, gen, epoch, token)
+	res, err := s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token)
 	if err != nil {
 		if err == ErrTimeout {
 			s.mu.Lock()
@@ -478,13 +485,29 @@ func (s *Subscription) processRecover(res protocol.SubscribeResult) {
 	s.lastEpoch = res.Epoch
 	s.mu.Unlock()
 	if len(res.Publications) > 0 {
-		for i := len(res.Publications) - 1; i >= 0; i-- {
+		pubs := res.Publications
+
+		// Reverse pubs to handle legacy order.
+		// TODO: remove after Centrifuge v1 released.
+		// Reverse in case of Offset not set or legacy order inside slice.
+		if len(pubs) > 1 && (pubs[0].Offset == 0 || pubs[0].Offset > pubs[1].Offset) {
+			for i := len(pubs)/2 - 1; i >= 0; i-- {
+				opp := len(pubs) - 1 - i
+				pubs[i], pubs[opp] = pubs[opp], pubs[i]
+			}
+		}
+
+		for i := 0; i < len(pubs); i++ {
 			s.handlePublication(*res.Publications[i])
 		}
 	} else {
 		s.mu.Lock()
-		s.lastSeq = res.Seq
-		s.lastGen = res.Gen
+		if res.Seq > 0 || res.Gen > 0 {
+			s.lastSeq = res.Seq
+			s.lastGen = res.Gen
+		} else {
+			s.lastOffset = res.Offset
+		}
 		s.mu.Unlock()
 	}
 }
