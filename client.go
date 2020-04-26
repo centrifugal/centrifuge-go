@@ -372,7 +372,7 @@ type backoffReconnect struct {
 
 var defaultBackoffReconnect = &backoffReconnect{
 	NumReconnect:    0,
-	MinMilliseconds: 1000,
+	MinMilliseconds: 100,
 	MaxMilliseconds: 20 * 1000,
 	Factor:          2,
 	Jitter:          true,

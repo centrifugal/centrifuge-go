@@ -74,10 +74,10 @@ func newWebsocketTransport(url string, encoding protocol.Type, config websocketC
 
 	conn, resp, err := dialer.Dial(url, wsHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("Error dial: %v", err)
+		return nil, fmt.Errorf("error dial: %v", err)
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		return nil, fmt.Errorf("Wrong status code while connecting to server: %d", resp.StatusCode)
+		return nil, fmt.Errorf("wrong status code while connecting to server: %d", resp.StatusCode)
 	}
 
 	t := &websocketTransport{
@@ -100,12 +100,12 @@ func (t *websocketTransport) Close() error {
 	}
 	t.closed = true
 	close(t.closeCh)
-	t.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
+	_ = t.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
 	return t.conn.Close()
 }
 
 func (t *websocketTransport) reader() {
-	defer t.Close()
+	defer func() { _ = t.Close() }()
 	defer close(t.replyCh)
 
 	for {
@@ -115,7 +115,6 @@ func (t *websocketTransport) reader() {
 			t.disconnect = disconnect
 			return
 		}
-		println("<<<", string(data))
 	loop:
 		for {
 			decoder := newReplyDecoder(t.encoding, data)
@@ -150,16 +149,15 @@ func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if timeout > 0 {
-		t.conn.SetWriteDeadline(time.Now().Add(timeout))
+		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
-	println(">>>", string(data))
 	if t.encoding == protocol.TypeJSON {
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
 	} else {
 		err = t.conn.WriteMessage(websocket.BinaryMessage, data)
 	}
 	if timeout > 0 {
-		t.conn.SetWriteDeadline(time.Time{})
+		_ = t.conn.SetWriteDeadline(time.Time{})
 	}
 	return err
 }

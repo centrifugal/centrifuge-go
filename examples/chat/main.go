@@ -82,7 +82,7 @@ func (h *eventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifuge.
 }
 
 func main() {
-	url := "ws://localhost:8000/connection/websocket"
+	url := "ws://localhost:8000/connection/websocket?format=protobuf"
 
 	log.Printf("Connect to %s\n", url)
 	log.Printf("Print something and press ENTER to send\n")
