@@ -115,6 +115,7 @@ func (t *websocketTransport) reader() {
 			t.disconnect = disconnect
 			return
 		}
+		println("<<<", string(data))
 	loop:
 		for {
 			decoder := newReplyDecoder(t.encoding, data)
@@ -151,6 +152,7 @@ func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration)
 	if timeout > 0 {
 		t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
+	println(">>>", string(data))
 	if t.encoding == protocol.TypeJSON {
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
 	} else {

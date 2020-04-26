@@ -372,7 +372,7 @@ type backoffReconnect struct {
 
 var defaultBackoffReconnect = &backoffReconnect{
 	NumReconnect:    0,
-	MinMilliseconds: 100,
+	MinMilliseconds: 1000,
 	MaxMilliseconds: 20 * 1000,
 	Factor:          2,
 	Jitter:          true,
@@ -956,16 +956,27 @@ func (c *Client) NewSubscription(channel string) (*Subscription, error) {
 	return sub, nil
 }
 
-func (c *Client) sendSubscribe(channel string, recover bool, seq uint32, gen uint32, epoch string, token string) (protocol.SubscribeResult, error) {
+type streamPosition struct {
+	Seq    uint32
+	Gen    uint32
+	Offset uint64
+	Epoch  string
+}
+
+func (c *Client) sendSubscribe(channel string, recover bool, streamPos streamPosition, token string) (protocol.SubscribeResult, error) {
 	params := &protocol.SubscribeRequest{
 		Channel: channel,
 	}
 
 	if recover {
 		params.Recover = true
-		params.Seq = seq
-		params.Gen = gen
-		params.Epoch = epoch
+		if streamPos.Seq > 0 || streamPos.Gen > 0 {
+			params.Seq = streamPos.Seq
+			params.Gen = streamPos.Gen
+		} else if streamPos.Offset > 0 {
+			params.Offset = streamPos.Offset
+		}
+		params.Epoch = streamPos.Epoch
 	}
 	if token != "" {
 		params.Token = token
