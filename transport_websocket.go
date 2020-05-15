@@ -19,6 +19,7 @@ func extractDisconnectWebsocket(err error) *disconnect {
 			var disconnect disconnect
 			err := json.Unmarshal([]byte(closeErr.Text), &disconnect)
 			if err == nil {
+				disconnect.Code = uint32(closeErr.Code)
 				return &disconnect
 			}
 		}

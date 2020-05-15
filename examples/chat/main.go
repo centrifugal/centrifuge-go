@@ -48,7 +48,7 @@ func (h *eventHandler) OnError(c *centrifuge.Client, e centrifuge.ErrorEvent) {
 }
 
 func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
-	log.Printf("Disconnected from chat: %s", e.Reason)
+	log.Printf("Disconnected from chat: %s, code: %d", e.Reason, e.Code)
 	return
 }
 
@@ -89,7 +89,7 @@ func main() {
 
 	c := centrifuge.New(url, centrifuge.DefaultConfig())
 	// Uncomment to make it work with Centrifugo and JWT auth.
-	//c.SetToken(connToken("49", 0))
+	c.SetToken(connToken("49", 0))
 	defer c.Close()
 	handler := &eventHandler{}
 	c.OnConnect(handler)

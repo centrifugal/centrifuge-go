@@ -14,6 +14,7 @@ import (
 )
 
 type disconnect struct {
+	Code      uint32
 	Reason    string
 	Reconnect bool
 }
@@ -321,7 +322,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 	}
 
 	if handler != nil && !isReconnecting {
-		handler.OnDisconnect(c, DisconnectEvent{Reason: d.Reason, Reconnect: reconnect})
+		handler.OnDisconnect(c, DisconnectEvent{Code: d.Code, Reason: d.Reason, Reconnect: reconnect})
 	}
 
 	if !reconnect {
