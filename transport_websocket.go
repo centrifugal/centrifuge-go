@@ -1,7 +1,7 @@
 package centrifuge
 
 import (
-        "context"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -43,13 +43,13 @@ type websocketTransport struct {
 
 // websocketConfig configures Websocket transport.
 type websocketConfig struct {
-        // NetDial specifies the dial function for creating TCP connections. If
-        // NetDial is nil, net.Dial is used.
-        NetDial func(network, addr string) (net.Conn, error)
+	// NetDial specifies the dial function for creating TCP connections. If
+	// NetDial is nil, net.Dial is used.
+	NetDial func(network, addr string) (net.Conn, error)
 
-        // NetDialContext specifies the dial function for creating TCP connections. If
-        // NetDialContext is nil, net.DialContext is used.
-        NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	// NetDialContext specifies the dial function for creating TCP connections. If
+	// NetDialContext is nil, net.DialContext is used.
+	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// TLSConfig specifies the TLS configuration to use with tls.Client.
 	// If nil, the default configuration is used.
@@ -75,7 +75,7 @@ type websocketConfig struct {
 
 func newWebsocketTransport(url string, encoding protocol.Type, config websocketConfig) (transport, error) {
 	wsHeaders := config.Header
-	//dialer := websocket.DefaultDialer
+
 	dialer := &websocket.Dialer{}
 	dialer.Proxy = http.ProxyFromEnvironment
 	dialer.NetDial = config.NetDial
