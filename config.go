@@ -1,7 +1,9 @@
 package centrifuge
 
 import (
+        "context"
 	"crypto/tls"
+	"net"
 	"net/http"
 	"time"
 )
@@ -21,6 +23,14 @@ const (
 
 // Config contains various client options.
 type Config struct {
+        // NetDial specifies the dial function for creating TCP connections. If
+        // NetDial is nil, net.Dial is used.
+        NetDial func(network, addr string) (net.Conn, error)
+
+        // NetDialContext specifies the dial function for creating TCP connections. If
+        // NetDialContext is nil, net.DialContext is used.
+        NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
 	// PrivateChannelPrefix is private channel prefix.
 	PrivateChannelPrefix string
 	// ReadTimeout is how long to wait read operations to complete.
