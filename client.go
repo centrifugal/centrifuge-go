@@ -630,7 +630,6 @@ func (c *Client) connect(isReconnect bool) error {
 	c.closeCh = make(chan struct{})
 	c.mutex.Unlock()
 	wsConfig := websocketConfig{
-		NetDial:           c.config.NetDial,
 		NetDialContext:    c.config.NetDialContext,
 		TLSConfig:         c.config.TLSConfig,
 		HandshakeTimeout:  c.config.HandshakeTimeout,
