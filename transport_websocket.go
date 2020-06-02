@@ -33,7 +33,6 @@ type websocketTransport struct {
 	conn           *websocket.Conn
 	encoding       protocol.Type
 	commandEncoder protocol.CommandEncoder
-	replyDecoder   protocol.ReplyDecoder
 	replyCh        chan *protocol.Reply
 	config         websocketConfig
 	disconnect     *disconnect

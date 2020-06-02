@@ -138,8 +138,6 @@ type Subscription struct {
 	lastOffset      uint64
 	lastEpoch       string
 	resubscribed    bool
-	recovered       bool
-	recoverable     bool
 	recover         bool
 	err             error
 	needResubscribe bool

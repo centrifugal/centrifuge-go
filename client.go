@@ -336,19 +336,17 @@ func (c *Client) handleDisconnect(d *disconnect) {
 			c.handleError(err)
 			return
 		}
-		select {
-		case <-time.After(duration):
-			c.mutex.Lock()
-			c.reconnectAttempts++
-			if !c.reconnect {
-				c.mutex.Unlock()
-				return
-			}
+		time.Sleep(duration)
+		c.mutex.Lock()
+		c.reconnectAttempts++
+		if !c.reconnect {
 			c.mutex.Unlock()
-			err := c.connectFromScratch(true)
-			if err != nil {
-				c.handleError(err)
-			}
+			return
+		}
+		c.mutex.Unlock()
+		err = c.connectFromScratch(true)
+		if err != nil {
+			c.handleError(err)
 		}
 	}()
 }
