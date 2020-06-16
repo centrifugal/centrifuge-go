@@ -203,31 +203,7 @@ func (c *Client) Send(data []byte) error {
 // RPC allows to make RPC – send data to server ant wait for response.
 // RPC handler must be registered on server.
 func (c *Client) RPC(data []byte) ([]byte, error) {
-	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypeRPC,
-	}
-	params := &protocol.RPCRequest{
-		Data: data,
-	}
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		return nil, fmt.Errorf("encode error: %v", err)
-	}
-	cmd.Params = paramsData
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return nil, err
-	}
-	if r.Error != nil {
-		return nil, r.Error
-	}
-	var res protocol.RPCResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return nil, err
-	}
-	return res.Data, nil
+	return c.NamedRPC("", data)
 }
 
 // NamedRPC allows to make RPC – send data to server ant wait for response.
