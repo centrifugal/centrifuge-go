@@ -7,6 +7,12 @@ type PrivateSubEvent struct {
 	Channel  string
 }
 
+// ServerPublishEvent has info about received channel Publication.
+type ServerPublishEvent struct {
+	Channel string
+	Publication
+}
+
 // ConnectEvent is a connect event context passed to OnConnect callback.
 type ConnectEvent struct {
 	ClientID string
@@ -47,6 +53,11 @@ type MessageHandler interface {
 	OnMessage(*Client, MessageEvent)
 }
 
+// ServerPublishHandler ...
+type ServerPublishHandler interface {
+	OnServerPublish(*Client, ServerPublishEvent)
+}
+
 // PrivateSubHandler is an interface describing how to handle private subscription request.
 type PrivateSubHandler interface {
 	OnPrivateSub(*Client, PrivateSubEvent) (string, error)
@@ -64,12 +75,13 @@ type ErrorHandler interface {
 
 // EventHub has all event handlers for client.
 type EventHub struct {
-	onConnect    ConnectHandler
-	onDisconnect DisconnectHandler
-	onPrivateSub PrivateSubHandler
-	onRefresh    RefreshHandler
-	onError      ErrorHandler
-	onMessage    MessageHandler
+	onConnect       ConnectHandler
+	onDisconnect    DisconnectHandler
+	onPrivateSub    PrivateSubHandler
+	onRefresh       RefreshHandler
+	onError         ErrorHandler
+	onMessage       MessageHandler
+	onServerPublish ServerPublishHandler
 }
 
 // newEventHub initializes new EventHub.
@@ -80,6 +92,11 @@ func newEventHub() *EventHub {
 // OnConnect is a function to handle connect event.
 func (c *Client) OnConnect(handler ConnectHandler) {
 	c.events.onConnect = handler
+}
+
+// OnServerPublish ...
+func (c *Client) OnServerPublish(handler ServerPublishHandler) {
+	c.events.onServerPublish = handler
 }
 
 // OnDisconnect is a function to handle disconnect event.

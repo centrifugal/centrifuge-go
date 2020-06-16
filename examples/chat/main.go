@@ -39,17 +39,18 @@ type eventHandler struct{}
 
 func (h *eventHandler) OnConnect(c *centrifuge.Client, e centrifuge.ConnectEvent) {
 	log.Printf("Connected to chat with ID %s", e.ClientID)
-	return
 }
 
 func (h *eventHandler) OnError(c *centrifuge.Client, e centrifuge.ErrorEvent) {
 	log.Printf("Error: %s", e.Message)
-	return
 }
 
 func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
 	log.Printf("Disconnected from chat: %s", e.Reason)
-	return
+}
+
+func (h *eventHandler) OnServerPublish(c *centrifuge.Client, e centrifuge.ServerPublishEvent) {
+	log.Printf("Publication from server-side channel %s: %s", e.Channel, e.Data)
 }
 
 func (h *eventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
@@ -93,6 +94,7 @@ func main() {
 	defer c.Close()
 	handler := &eventHandler{}
 	c.OnConnect(handler)
+	c.OnServerPublish(handler)
 	c.OnError(handler)
 	c.OnDisconnect(handler)
 

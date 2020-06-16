@@ -27,6 +27,12 @@ const (
 	CLOSED
 )
 
+type serverSub struct {
+	Offset      uint64
+	Epoch       string
+	Recoverable bool
+}
+
 // Client describes client connection to Centrifugo server.
 type Client struct {
 	mutex             sync.RWMutex
@@ -41,6 +47,7 @@ type Client struct {
 	id                string
 	subsMutex         sync.RWMutex
 	subs              map[string]*Subscription
+	serverSubs        map[string]serverSub
 	requestsMutex     sync.RWMutex
 	requests          map[uint32]chan protocol.Reply
 	receive           chan []byte
@@ -121,6 +128,7 @@ func New(u string, config Config) *Client {
 		url:               u,
 		encoding:          encoding,
 		subs:              make(map[string]*Subscription),
+		serverSubs:        make(map[string]serverSub),
 		config:            config,
 		requests:          make(map[uint32]chan protocol.Reply),
 		reconnect:         true,
@@ -389,7 +397,7 @@ func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) (time.Duration, er
 	return b.ForAttempt(float64(attempt)), nil
 }
 
-func (c *Client) pinger(closeCh chan struct{}) {
+func (c *Client) periodicPing(closeCh chan struct{}) {
 	timeout := c.config.PingInterval
 	for {
 		select {
@@ -524,7 +532,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		sub, ok := c.subs[channel]
 		c.subsMutex.RUnlock()
 		if !ok {
-			return nil
+			return c.handleServerPublication(channel, *m)
 		}
 		sub.handlePublication(*m)
 	case protocol.PushTypeJoin:
@@ -556,6 +564,32 @@ func (c *Client) handlePush(msg protocol.Push) error {
 	default:
 		return nil
 	}
+	return nil
+}
+
+func (c *Client) handleServerPublication(channel string, pub Publication) error {
+	c.subsMutex.Lock()
+	_, ok := c.serverSubs[channel]
+	c.subsMutex.Unlock()
+	if !ok {
+		return nil
+	}
+
+	var handler ServerPublishHandler
+	if c.events != nil && c.events.onServerPublish != nil {
+		handler = c.events.onServerPublish
+	}
+	if handler != nil {
+		handler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: pub})
+	}
+	c.subsMutex.Lock()
+	serverSub, ok := c.serverSubs[channel]
+	if !ok {
+		c.subsMutex.Unlock()
+		return nil
+	}
+	serverSub.Offset = pub.Offset
+	c.subsMutex.Unlock()
 	return nil
 }
 
@@ -701,7 +735,7 @@ func (c *Client) connect(isReconnect bool) error {
 		}(res.TTL)
 	}
 
-	go c.pinger(closeCh)
+	go c.periodicPing(closeCh)
 
 	if c.events != nil && c.events.onConnect != nil && prevStatus != CONNECTED {
 		handler := c.events.onConnect
@@ -713,7 +747,23 @@ func (c *Client) connect(isReconnect bool) error {
 		handler.OnConnect(c, ev)
 	}
 
+	c.processServerSubs(res.Subs)
+
 	return nil
+}
+
+func (c *Client) processServerSubs(subs map[string]*protocol.SubscribeResult) {
+	// TODO: call ServerSubscribeHandler.
+
+	for channel, subRes := range subs {
+		c.mutex.Lock()
+		c.serverSubs[channel] = serverSub{
+			Offset:      subRes.Offset,
+			Epoch:       subRes.Epoch,
+			Recoverable: subRes.Recoverable,
+		}
+		c.mutex.Unlock()
+	}
 }
 
 func (c *Client) resubscribe() error {
