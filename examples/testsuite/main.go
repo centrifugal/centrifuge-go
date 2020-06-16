@@ -127,12 +127,42 @@ func testReceiveRPCReceiveMessage(protobuf bool) {
 	}
 }
 
+func testReceiveNamedRPCReceiveMessage(protobuf bool) {
+	url := "ws://localhost:10005/connection/websocket"
+	if protobuf {
+		url = "ws://localhost:10006/connection/websocket?format=protobuf"
+	}
+	config := centrifuge.DefaultConfig()
+
+	c := centrifuge.New(url, config)
+	defer c.Close()
+
+	eventHandler := &eventHandler{}
+	c.OnConnect(eventHandler)
+	c.OnDisconnect(eventHandler)
+
+	err := c.Connect()
+	if err != nil {
+		panic(err)
+	}
+	data, err := c.NamedRPC("test", []byte("{}"))
+	if err != nil {
+		panic(err)
+	}
+	err = c.Send(data)
+	if err != nil {
+		panic(err)
+	}
+}
+
 func main() {
 	go testCustomHeader()
 	go testJWTAuth()
 	go testSimpleSubscribe()
 	go testReceiveRPCReceiveMessage(false)
 	go testReceiveRPCReceiveMessage(true)
+	go testReceiveNamedRPCReceiveMessage(false)
+	go testReceiveNamedRPCReceiveMessage(true)
 
 	select {}
 }

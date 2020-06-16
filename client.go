@@ -230,6 +230,38 @@ func (c *Client) RPC(data []byte) ([]byte, error) {
 	return res.Data, nil
 }
 
+// NamedRPC allows to make RPC – send data to server ant wait for response.
+// RPC handler must be registered on server.
+// In contrast to RPC method it allows to pass method name.
+func (c *Client) NamedRPC(method string, data []byte) ([]byte, error) {
+	cmd := &protocol.Command{
+		ID:     c.nextMsgID(),
+		Method: protocol.MethodTypeRPC,
+	}
+	params := &protocol.RPCRequest{
+		Data:   data,
+		Method: method,
+	}
+	paramsData, err := c.paramsEncoder.Encode(params)
+	if err != nil {
+		return nil, fmt.Errorf("encode error: %v", err)
+	}
+	cmd.Params = paramsData
+	r, err := c.sendSync(cmd)
+	if err != nil {
+		return nil, err
+	}
+	if r.Error != nil {
+		return nil, r.Error
+	}
+	var res protocol.RPCResult
+	err = c.resultDecoder.Decode(r.Result, &res)
+	if err != nil {
+		return nil, err
+	}
+	return res.Data, nil
+}
+
 // Close closes Client connection and cleans up state.
 func (c *Client) Close() error {
 	err := c.Disconnect()
