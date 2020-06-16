@@ -203,12 +203,20 @@ func (c *Client) Send(data []byte) error {
 // RPC allows to make RPC – send data to server ant wait for response.
 // RPC handler must be registered on server.
 func (c *Client) RPC(data []byte) ([]byte, error) {
+	return c.NamedRPC("", data)
+}
+
+// NamedRPC allows to make RPC – send data to server ant wait for response.
+// RPC handler must be registered on server.
+// In contrast to RPC method it allows to pass method name.
+func (c *Client) NamedRPC(method string, data []byte) ([]byte, error) {
 	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeRPC,
 	}
 	params := &protocol.RPCRequest{
-		Data: data,
+		Data:   data,
+		Method: method,
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
