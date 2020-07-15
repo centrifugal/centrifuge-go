@@ -49,6 +49,10 @@ func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.Disconnec
 	log.Printf("Disconnected from chat: %s", e.Reason)
 }
 
+func (h *eventHandler) OnServerSubscribe(c *centrifuge.Client, e centrifuge.ServerSubscribeEvent) {
+	log.Printf("Subscribe to server-side channel %s: (resubscribe: %t, recovered: %t)", e.Channel, e.Resubscribed, e.Recovered)
+}
+
 func (h *eventHandler) OnServerPublish(c *centrifuge.Client, e centrifuge.ServerPublishEvent) {
 	log.Printf("Publication from server-side channel %s: %s", e.Channel, e.Data)
 }
@@ -94,6 +98,7 @@ func main() {
 	defer c.Close()
 	handler := &eventHandler{}
 	c.OnConnect(handler)
+	c.OnServerSubscribe(handler)
 	c.OnServerPublish(handler)
 	c.OnError(handler)
 	c.OnDisconnect(handler)

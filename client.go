@@ -576,9 +576,9 @@ func (c *Client) handlePush(msg protocol.Push) error {
 }
 
 func (c *Client) handleServerPublication(channel string, pub Publication) error {
-	c.subsMutex.Lock()
+	c.mutex.RLock()
 	_, ok := c.serverSubs[channel]
-	c.subsMutex.Unlock()
+	c.mutex.RUnlock()
 	if !ok {
 		return nil
 	}
@@ -590,14 +590,14 @@ func (c *Client) handleServerPublication(channel string, pub Publication) error 
 	if handler != nil {
 		handler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: pub})
 	}
-	c.subsMutex.Lock()
+	c.mutex.Lock()
 	serverSub, ok := c.serverSubs[channel]
 	if !ok {
-		c.subsMutex.Unlock()
+		c.mutex.Unlock()
 		return nil
 	}
 	serverSub.Offset = pub.Offset
-	c.subsMutex.Unlock()
+	c.mutex.Unlock()
 	return nil
 }
 
@@ -704,7 +704,7 @@ func (c *Client) connect(isReconnect bool) error {
 
 	var res protocol.ConnectResult
 
-	res, err = c.sendConnect()
+	res, err = c.sendConnect(isReconnect)
 	if err != nil {
 		refreshed := false
 		if isTokenExpiredError(err) {
@@ -714,7 +714,7 @@ func (c *Client) connect(isReconnect bool) error {
 				_ = c.Close()
 				return err
 			}
-			res, err = c.sendConnect()
+			res, err = c.sendConnect(isReconnect)
 			if err != nil {
 				_ = c.Close()
 				return err
@@ -755,23 +755,48 @@ func (c *Client) connect(isReconnect bool) error {
 		handler.OnConnect(c, ev)
 	}
 
-	c.processServerSubs(res.Subs)
+	c.processServerSubs(res.Subs, isReconnect)
 
 	return nil
 }
 
-func (c *Client) processServerSubs(subs map[string]*protocol.SubscribeResult) {
-	// TODO: call ServerSubscribeHandler.
+func (c *Client) processServerSubs(subs map[string]*protocol.SubscribeResult, isReconnect bool) {
+	var handler ServerSubscribeHandler
+	if c.events != nil && c.events.onServerSubscribe != nil {
+		handler = c.events.onServerSubscribe
+	}
+
+	var publishHandler ServerPublishHandler
+	if c.events != nil && c.events.onServerPublish != nil {
+		publishHandler = c.events.onServerPublish
+	}
 
 	for channel, subRes := range subs {
-		c.mutex.Lock()
-		c.serverSubs[channel] = serverSub{
+		if handler != nil {
+			handler.OnServerSubscribe(c, ServerSubscribeEvent{
+				Channel:      channel,
+				Resubscribed: isReconnect, // TODO: check request map.
+				Recovered:    subRes.Recovered,
+			})
+		}
+		if publishHandler != nil {
+			for _, pub := range subRes.Publications {
+				publishHandler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: *pub})
+			}
+		}
+	}
+
+	newServerSubs := make(map[string]serverSub)
+	for channel, subRes := range subs {
+		newServerSubs[channel] = serverSub{
 			Offset:      subRes.Offset,
 			Epoch:       subRes.Epoch,
 			Recoverable: subRes.Recoverable,
 		}
-		c.mutex.Unlock()
 	}
+	c.mutex.Lock()
+	c.serverSubs = newServerSubs
+	c.mutex.Unlock()
 }
 
 func (c *Client) resubscribe() error {
@@ -938,7 +963,7 @@ func (c *Client) sendSubRefresh(channel string) error {
 	return nil
 }
 
-func (c *Client) sendConnect() (protocol.ConnectResult, error) {
+func (c *Client) sendConnect(isReconnect bool) (protocol.ConnectResult, error) {
 	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeConnect,
@@ -952,6 +977,20 @@ func (c *Client) sendConnect() (protocol.ConnectResult, error) {
 		}
 		if c.connectData != nil {
 			params.Data = c.connectData
+		}
+		if isReconnect && len(c.serverSubs) > 0 {
+			subs := make(map[string]*protocol.SubscribeRequest)
+			for channel, serverSub := range c.serverSubs {
+				if !serverSub.Recoverable {
+					continue
+				}
+				subs[channel] = &protocol.SubscribeRequest{
+					Recover: true,
+					Epoch:   serverSub.Epoch,
+					Offset:  serverSub.Offset,
+				}
+			}
+			params.Subs = subs
 		}
 		paramsData, err := c.paramsEncoder.Encode(params)
 		if err != nil {
