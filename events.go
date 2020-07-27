@@ -81,7 +81,7 @@ type ServerPublishHandler interface {
 	OnServerPublish(*Client, ServerPublishEvent)
 }
 
-// ServerPublishHandler ...
+// ServerSubscribeHandler ...
 type ServerSubscribeHandler interface {
 	OnServerSubscribe(*Client, ServerSubscribeEvent)
 }
@@ -149,6 +149,21 @@ func (c *Client) OnServerPublish(handler ServerPublishHandler) {
 // OnServerPublish ...
 func (c *Client) OnServerSubscribe(handler ServerSubscribeHandler) {
 	c.events.onServerSubscribe = handler
+}
+
+// OnServerUnsubscribe ...
+func (c *Client) OnServerUnsubscribe(handler ServerSubscribeHandler) {
+	c.events.onServerSubscribe = handler
+}
+
+// OnServerJoin ...
+func (c *Client) OnServerJoin(handler ServerJoinHandler) {
+	c.events.onServerJoin = handler
+}
+
+// OnServerLeave ...
+func (c *Client) OnServerLeave(handler ServerLeaveHandler) {
+	c.events.onServerLeave = handler
 }
 
 // OnDisconnect is a function to handle disconnect event.

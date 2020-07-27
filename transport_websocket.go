@@ -123,6 +123,7 @@ func (t *websocketTransport) reader() {
 			t.disconnect = disconnect
 			return
 		}
+		println("<----", string(data))
 	loop:
 		for {
 			decoder := newReplyDecoder(t.encoding, data)
@@ -160,6 +161,7 @@ func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration)
 		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
 	if t.encoding == protocol.TypeJSON {
+		println("---->", string(data))
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
 	} else {
 		err = t.conn.WriteMessage(websocket.BinaryMessage, data)

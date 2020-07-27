@@ -295,6 +295,9 @@ func (s *Subscription) Subscribe() error {
 	s.mu.Lock()
 	s.needResubscribe = true
 	s.mu.Unlock()
+	if !s.centrifuge.connected() {
+		return nil
+	}
 	return s.resubscribe(false)
 }
 
@@ -310,7 +313,9 @@ func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool) {
 	s.mu.Unlock()
 	if s.events != nil && s.events.onUnsubscribe != nil {
 		handler := s.events.onUnsubscribe
-		handler.OnUnsubscribe(s, UnsubscribeEvent{})
+		s.centrifuge.runHandler(func() {
+			handler.OnUnsubscribe(s, UnsubscribeEvent{})
+		})
 	}
 }
 
@@ -326,7 +331,9 @@ func (s *Subscription) subscribeSuccess(recovered bool, isResubscribe bool) {
 	if s.events != nil && s.events.onSubscribeSuccess != nil {
 		handler := s.events.onSubscribeSuccess
 		ev := SubscribeSuccessEvent{Resubscribed: isResubscribe, Recovered: recovered}
-		handler.OnSubscribeSuccess(s, ev)
+		s.centrifuge.runHandler(func() {
+			handler.OnSubscribeSuccess(s, ev)
+		})
 	}
 	s.mu.Lock()
 	s.resubscribed = true
@@ -345,7 +352,9 @@ func (s *Subscription) subscribeError(err error) {
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeError != nil {
 		handler := s.events.onSubscribeError
-		handler.OnSubscribeError(s, SubscribeErrorEvent{Error: err.Error()})
+		s.centrifuge.runHandler(func() {
+			handler.OnSubscribeError(s, SubscribeErrorEvent{Error: err.Error()})
+		})
 	}
 }
 
@@ -363,7 +372,9 @@ func (s *Subscription) handlePublication(pub Publication) {
 	}
 	s.mu.Unlock()
 	if handler != nil {
-		handler.OnPublish(s, PublishEvent{Publication: pub})
+		s.centrifuge.runHandler(func() {
+			handler.OnPublish(s, PublishEvent{Publication: pub})
+		})
 	}
 }
 
@@ -383,7 +394,9 @@ func (s *Subscription) handleLeave(info protocol.ClientInfo) {
 		handler = s.events.onLeave
 	}
 	if handler != nil {
-		handler.OnLeave(s, LeaveEvent{ClientInfo: info})
+		s.centrifuge.runHandler(func() {
+			handler.OnLeave(s, LeaveEvent{ClientInfo: info})
+		})
 	}
 }
 
@@ -406,13 +419,6 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 	if !needResubscribe {
 		return nil
 	}
-
-	s.centrifuge.mutex.Lock()
-	if s.centrifuge.status != CONNECTED {
-		s.centrifuge.mutex.Unlock()
-		return nil
-	}
-	s.centrifuge.mutex.Unlock()
 
 	s.mu.Lock()
 	s.status = SUBSCRIBING
@@ -445,36 +451,38 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 	}
 	s.mu.Unlock()
 
-	res, err := s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token)
-	if err != nil {
-		if err == ErrTimeout {
-			s.mu.Lock()
-			s.status = NEW
-			s.mu.Unlock()
-			return err
-		}
-		s.subscribeError(err)
-		return nil
-	}
-
-	if res.Expires {
-		go func(interval uint32) {
-			select {
-			case <-s.centrifuge.closeCh:
+	s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token, func(res protocol.SubscribeResult, err error) {
+		if err != nil {
+			if err == ErrTimeout {
+				s.mu.Lock()
+				s.status = NEW
+				s.mu.Unlock()
+				go s.centrifuge.handleDisconnect(&disconnect{"subscribe timeout", true})
 				return
-			case <-time.After(time.Duration(interval) * time.Second):
-				_ = s.centrifuge.sendSubRefresh(s.channel)
 			}
-		}(res.TTL)
-	}
+			s.subscribeError(err)
+			return
+		}
 
-	s.mu.Lock()
-	previousSubscribedAt := s.subscribedAt
-	s.mu.Unlock()
+		if res.Expires {
+			go func(interval uint32) {
+				select {
+				case <-s.centrifuge.closeCh:
+					return
+				case <-time.After(time.Duration(interval) * time.Second):
+					_ = s.centrifuge.sendSubRefresh(s.channel)
+				}
+			}(res.TTL)
+		}
 
-	s.subscribeSuccess(res.Recovered, isResubscribe && previousSubscribedAt != 0)
-	s.setSubscribedAt(time.Now().Unix())
-	s.processRecover(res)
+		s.mu.Lock()
+		previousSubscribedAt := s.subscribedAt
+		s.mu.Unlock()
+
+		s.subscribeSuccess(res.Recovered, isResubscribe && previousSubscribedAt != 0)
+		s.setSubscribedAt(time.Now().Unix())
+		s.processRecover(res)
+	})
 	return nil
 }
 

@@ -2,10 +2,12 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"log"
-	"os"
+	"net/http"
+	"strconv"
+
+	_ "net/http/pprof"
 
 	"github.com/centrifugal/centrifuge-go"
 	"github.com/dgrijalva/jwt-go"
@@ -53,6 +55,18 @@ func (h *eventHandler) OnServerSubscribe(c *centrifuge.Client, e centrifuge.Serv
 	log.Printf("Subscribe to server-side channel %s: (resubscribe: %t, recovered: %t)", e.Channel, e.Resubscribed, e.Recovered)
 }
 
+func (h *eventHandler) OnServerUnsubscribe(c *centrifuge.Client, e centrifuge.ServerUnsubscribeEvent) {
+	log.Printf("Unsubscribe from server-side channel %s", e.Channel)
+}
+
+func (h *eventHandler) OnServerJoin(c *centrifuge.Client, e centrifuge.ServerJoinEvent) {
+	log.Printf("Server-side join to channel %s: %s (%s)", e.Channel, e.User, e.Client)
+}
+
+func (h *eventHandler) OnServerLeave(c *centrifuge.Client, e centrifuge.ServerLeaveEvent) {
+	log.Printf("Server-side leave from channel %s: %s (%s)", e.Channel, e.User, e.Client)
+}
+
 func (h *eventHandler) OnServerPublish(c *centrifuge.Client, e centrifuge.ServerPublishEvent) {
 	log.Printf("Publication from server-side channel %s: %s", e.Channel, e.Data)
 }
@@ -67,11 +81,11 @@ func (h *eventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.Publ
 }
 
 func (h *eventHandler) OnJoin(sub *centrifuge.Subscription, e centrifuge.JoinEvent) {
-	log.Printf("Someone joined: user id %s, client id %s", e.User, e.Client)
+	log.Printf("Someone joined %s: user id %s, client id %s", sub.Channel(), e.User, e.Client)
 }
 
 func (h *eventHandler) OnLeave(sub *centrifuge.Subscription, e centrifuge.LeaveEvent) {
-	log.Printf("Someone left: user id %s, client id %s", e.User, e.Client)
+	log.Printf("Someone left %s: user id %s, client id %s", sub.Channel(), e.User, e.Client)
 }
 
 func (h *eventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
@@ -87,7 +101,7 @@ func (h *eventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifuge.
 }
 
 func main() {
-	url := "ws://localhost:8000/connection/websocket?format=protobuf"
+	url := "ws://localhost:8000/connection/websocket"
 
 	log.Printf("Connect to %s\n", url)
 	log.Printf("Print something and press ENTER to send\n")
@@ -99,47 +113,53 @@ func main() {
 	handler := &eventHandler{}
 	c.OnConnect(handler)
 	c.OnServerSubscribe(handler)
+	c.OnServerUnsubscribe(handler)
+	c.OnServerJoin(handler)
+	c.OnServerLeave(handler)
 	c.OnServerPublish(handler)
 	c.OnError(handler)
 	c.OnDisconnect(handler)
 
-	sub, err := c.NewSubscription("chat:index")
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	sub.OnPublish(handler)
-	sub.OnJoin(handler)
-	sub.OnLeave(handler)
-	sub.OnSubscribeSuccess(handler)
-	sub.OnSubscribeError(handler)
-	sub.OnUnsubscribe(handler)
-
-	err = sub.Subscribe()
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	err = c.Connect()
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	// Read input from stdin.
-	go func(sub *centrifuge.Subscription) {
-		reader := bufio.NewReader(os.Stdin)
-		for {
-			text, _ := reader.ReadString('\n')
-			msg := &ChatMessage{
-				Input: text,
-			}
-			data, _ := json.Marshal(msg)
-			err := sub.Publish(data)
-			if err != nil {
-				log.Printf("publish error: %v", err)
-			}
+	for i := 0; i < 10; i++ {
+		sub, err := c.NewSubscription("chat:index" + strconv.Itoa(i))
+		if err != nil {
+			log.Fatalln(err)
 		}
-	}(sub)
+
+		sub.OnPublish(handler)
+		sub.OnJoin(handler)
+		sub.OnLeave(handler)
+		sub.OnSubscribeSuccess(handler)
+		sub.OnSubscribeError(handler)
+		sub.OnUnsubscribe(handler)
+
+		err = sub.Subscribe()
+		if err != nil {
+			log.Fatalln(err)
+		}
+	}
+
+	go func() {
+		log.Println(http.ListenAndServe(":5000", nil))
+	}()
+
+	_ = c.Connect()
+
+	//// Read input from stdin.
+	//go func(sub *centrifuge.Subscription) {
+	//	reader := bufio.NewReader(os.Stdin)
+	//	for {
+	//		text, _ := reader.ReadString('\n')
+	//		msg := &ChatMessage{
+	//			Input: text,
+	//		}
+	//		data, _ := json.Marshal(msg)
+	//		err := sub.Publish(data)
+	//		if err != nil {
+	//			log.Printf("publish error: %v", err)
+	//		}
+	//	}
+	//}(sub)
 
 	// Run until CTRL+C.
 	select {}

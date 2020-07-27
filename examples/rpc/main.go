@@ -27,7 +27,7 @@ func (h *eventHandler) OnMessage(c *centrifuge.Client, e centrifuge.MessageEvent
 		log.Println(err)
 		return
 	}
-	log.Printf("RPC result: %s", string(res))
+	log.Printf("RPC result 2: %s", string(res))
 }
 
 func newConnection() *centrifuge.Client {
