@@ -47,9 +47,9 @@ type Client struct {
 	id                string
 	subs              map[string]*Subscription
 	serverSubs        map[string]*serverSub
+	requestsMu        sync.RWMutex
 	requests          map[uint32]request
 	receive           chan []byte
-	closeCh           chan struct{}
 	reconnect         bool
 	reconnectAttempts int
 	reconnectStrategy reconnectStrategy
@@ -137,8 +137,8 @@ func (c *Client) subscribed(channel string) bool {
 	return ok
 }
 
-// clientID returns client ID of this connection. It only available after
-// connection was established and authorized.
+// clientID returns unique ID of this connection which is set by server after connect.
+// It only available after connection was established and authorized.
 func (c *Client) clientID() string {
 	c.mutex.RLock()
 	defer c.mutex.RUnlock()
@@ -174,16 +174,20 @@ func (c *Client) Send(data []byte) error {
 	return c.send(cmd)
 }
 
+type RPCResult struct {
+	Data []byte
+}
+
 // RPC allows to make RPC – send data to server and wait for response.
 // RPC handler must be registered on server.
-func (c *Client) RPC(data []byte) ([]byte, error) {
-	return c.NamedRPC("", data)
+func (c *Client) RPC(data []byte, fn func(RPCResult, error)) {
+	c.NamedRPC("", data, fn)
 }
 
 // NamedRPC allows to make RPC – send data to server ant wait for response.
 // RPC handler must be registered on server.
 // In contrast to RPC method it allows to pass method name.
-func (c *Client) NamedRPC(method string, data []byte) ([]byte, error) {
+func (c *Client) NamedRPC(method string, data []byte, fn func(RPCResult, error)) {
 	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypeRPC,
@@ -194,22 +198,27 @@ func (c *Client) NamedRPC(method string, data []byte) ([]byte, error) {
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return nil, fmt.Errorf("encode error: %v", err)
+		fn(RPCResult{}, fmt.Errorf("encode error: %v", err))
+		return
 	}
 	cmd.Params = paramsData
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return nil, err
-	}
-	if r.Error != nil {
-		return nil, r.Error
-	}
-	var res protocol.RPCResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return nil, err
-	}
-	return res.Data, nil
+	c.sendAsync(cmd, func(r protocol.Reply, err error) {
+		if err != nil {
+			fn(RPCResult{}, err)
+			return
+		}
+		if r.Error != nil {
+			fn(RPCResult{}, r.Error)
+			return
+		}
+		var res protocol.RPCResult
+		err = c.resultDecoder.Decode(r.Result, &res)
+		if err != nil {
+			fn(RPCResult{}, err)
+			return
+		}
+		fn(RPCResult{res.Data}, nil)
+	})
 }
 
 // Close closes Client connection and cleans up state.
@@ -219,24 +228,6 @@ func (c *Client) Close() error {
 	c.status = CLOSED
 	c.mutex.Unlock()
 	return err
-}
-
-// close clean ups ws connection and all outgoing requests.
-// Instance Lock must be held outside.
-func (c *Client) close() {
-	for uid, req := range c.requests {
-		if req.ch != nil {
-			close(req.ch)
-		}
-		if req.cb != nil {
-			req.cb(protocol.Reply{}, ErrClientDisconnected)
-		}
-		delete(c.requests, uid)
-	}
-	if c.transport != nil {
-		_ = c.transport.Close()
-		c.transport = nil
-	}
 }
 
 func (c *Client) handleDisconnect(d *disconnect) {
@@ -253,32 +244,17 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		return
 	}
 
+	c.requestsMu.Lock()
 	reqs := make(map[uint32]request, len(c.requests))
 	for uid, req := range c.requests {
 		reqs[uid] = req
 	}
-	c.requests = nil
-	c.mutex.Unlock()
+	c.requests = make(map[uint32]request)
+	c.requestsMu.Unlock()
 
-	for _, req := range reqs {
-		if req.ch != nil {
-			close(req.ch)
-		}
-		if req.cb != nil {
-			req.cb(protocol.Reply{}, ErrClientDisconnected)
-		}
-	}
-
-	c.mutex.Lock()
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.transport = nil
-	}
-
-	select {
-	case <-c.closeCh:
-	default:
-		close(c.closeCh)
 	}
 
 	unsubs := make([]*Subscription, 0, len(c.subs))
@@ -294,6 +270,15 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		c.status = DISCONNECTED
 	}
 	c.mutex.Unlock()
+
+	for _, req := range reqs {
+		if req.ch != nil {
+			close(req.ch)
+		}
+		if req.cb != nil {
+			req.cb(protocol.Reply{}, ErrClientDisconnected)
+		}
+	}
 
 	for _, s := range unsubs {
 		s.triggerOnUnsubscribe(true)
@@ -352,42 +337,39 @@ func (c *Client) periodicPing(closeCh chan struct{}) {
 		select {
 		case <-c.delayPing:
 		case <-time.After(timeout):
-			err := c.sendPing()
-			if err != nil {
-				go c.handleDisconnect(&disconnect{Reason: "no ping", Reconnect: true})
-				return
-			}
+			c.sendPing(func(err error) {
+				if err != nil {
+					go c.handleDisconnect(&disconnect{Reason: "no ping", Reconnect: true})
+					return
+				}
+			})
 		case <-closeCh:
 			return
 		}
 	}
 }
 
-func (c *Client) readOnce(t transport, closeCh chan struct{}) error {
+func (c *Client) readOnce(t transport) error {
 	reply, disconnect, err := t.Read()
 	if err != nil {
 		go c.handleDisconnect(disconnect)
 		return err
 	}
 	select {
-	case <-closeCh:
-		return ErrClientDisconnected
+	case c.delayPing <- struct{}{}:
 	default:
-		select {
-		case c.delayPing <- struct{}{}:
-		default:
-		}
-		err := c.handle(reply)
-		if err != nil {
-			c.handleError(err)
-		}
+	}
+	err = c.handle(reply)
+	if err != nil {
+		c.handleError(err)
 	}
 	return nil
 }
 
 func (c *Client) reader(t transport, closeCh chan struct{}) {
+	defer close(closeCh)
 	for {
-		err := c.readOnce(t, closeCh)
+		err := c.readOnce(t)
 		if err != nil {
 			return
 		}
@@ -400,9 +382,9 @@ func (c *Client) runHandler(fn func()) {
 
 func (c *Client) handle(reply *protocol.Reply) error {
 	if reply.ID > 0 {
-		c.mutex.RLock()
+		c.requestsMu.RLock()
 		req, ok := c.requests[reply.ID]
-		c.mutex.RUnlock()
+		c.requestsMu.RUnlock()
 		if ok {
 			if req.ch != nil {
 				req.ch <- *reply
@@ -597,6 +579,13 @@ func (c *Client) handleServerUnsub(channel string, _ protocol.Unsub) error {
 	return nil
 }
 
+// Connect dials to server and sends connect message. Will return an error if dialing
+// with server failed. In case of failure client will try to reconnect with exponential
+// backoff.
+func (c *Client) Connect() error {
+	return c.connectFromScratch(false)
+}
+
 func (c *Client) connectFromScratch(isReconnect bool) error {
 	c.mutex.Lock()
 	if isReconnect && c.status == DISCONNECTED {
@@ -615,41 +604,6 @@ func (c *Client) connectFromScratch(isReconnect bool) error {
 	c.reconnect = true
 	c.mutex.Unlock()
 
-	err := c.connect(isReconnect)
-	if err != nil {
-		if c.transport == nil {
-			c.handleError(err)
-			go c.handleDisconnect(nil)
-		}
-		if !isReconnect {
-			return err
-		}
-	}
-	return nil
-}
-
-// Connect dials to server and sends connect message. Will return an error if dialing
-// with server failed. In case of failure client will try to reconnect with exponential
-// backoff.
-func (c *Client) Connect() error {
-	return c.connectFromScratch(false)
-}
-
-func isTokenExpiredError(err error) bool {
-	if e, ok := err.(*Error); ok && e.Code == 109 {
-		return true
-	}
-	return false
-}
-
-func (c *Client) connect(isReconnect bool) error {
-	c.mutex.Lock()
-	if c.status == CONNECTED || c.status == DISCONNECTED || c.status == CLOSED {
-		c.mutex.Unlock()
-		return nil
-	}
-	c.closeCh = make(chan struct{})
-	c.mutex.Unlock()
 	wsConfig := websocketConfig{
 		NetDialContext:    c.config.NetDialContext,
 		TLSConfig:         c.config.TLSConfig,
@@ -661,135 +615,137 @@ func (c *Client) connect(isReconnect bool) error {
 
 	t, err := newWebsocketTransport(c.url, c.encoding, wsConfig)
 	if err != nil {
+		go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
 		return err
 	}
 
 	c.mutex.Lock()
 	if c.status == CONNECTED || c.status == DISCONNECTED || c.status == CLOSED {
+		_ = t.Close()
 		c.mutex.Unlock()
 		return nil
 	}
 
-	c.transport = t
 	closeCh := make(chan struct{})
-	c.closeCh = closeCh
 	c.receive = make(chan []byte, 64)
+	c.transport = t
 	go c.reader(t, closeCh)
-	c.mutex.Unlock()
-
 	c.sendConnect(isReconnect, func(res protocol.ConnectResult, err error) {
-		if err != nil {
-			if isTokenExpiredError(err) {
-				// Try to refresh token before next connection attempt.
-				_ = c.refreshToken()
+		go func() {
+			c.mutex.Lock()
+			if c.status == CONNECTED || c.status == DISCONNECTED || c.status == CLOSED {
+				c.mutex.Unlock()
+				return
 			}
-			c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
-			return
-		}
-		c.handleConnectResult(t, isReconnect, closeCh, res)
+			if err != nil {
+				if isTokenExpiredError(err) {
+					c.mutex.Unlock()
+					// Try to refresh token before next connection attempt.
+					_ = c.refreshToken()
+					c.mutex.Lock()
+					if c.status == CONNECTED || c.status == DISCONNECTED || c.status == CLOSED {
+						c.mutex.Unlock()
+						return
+					}
+				}
+				go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
+				c.mutex.Unlock()
+				return
+			}
+
+			c.id = res.Client
+			prevStatus := c.status
+			c.status = CONNECTED
+
+			if res.Expires {
+				go func(interval uint32, closeCh chan struct{}) {
+					select {
+					case <-closeCh:
+						return
+					case <-time.After(time.Duration(interval) * time.Second):
+						c.sendRefresh(closeCh)
+					}
+				}(res.TTL, closeCh)
+			}
+			c.mutex.Unlock()
+
+			if c.events != nil && c.events.onConnect != nil && prevStatus != CONNECTED {
+				handler := c.events.onConnect
+				ev := ConnectEvent{
+					ClientID: c.clientID(),
+					Version:  res.Version,
+					Data:     res.Data,
+				}
+				c.runHandler(func() {
+					handler.OnConnect(c, ev)
+				})
+			}
+
+			var handler ServerSubscribeHandler
+			if c.events != nil && c.events.onServerSubscribe != nil {
+				handler = c.events.onServerSubscribe
+			}
+
+			var publishHandler ServerPublishHandler
+			if c.events != nil && c.events.onServerPublish != nil {
+				publishHandler = c.events.onServerPublish
+			}
+
+			for channel, subRes := range res.Subs {
+				if handler != nil {
+					c.runHandler(func() {
+						handler.OnServerSubscribe(c, ServerSubscribeEvent{
+							Channel:      channel,
+							Resubscribed: isReconnect, // TODO: check request map.
+							Recovered:    subRes.Recovered,
+						})
+					})
+				}
+				if publishHandler != nil {
+					for _, pub := range subRes.Publications {
+						c.runHandler(func() {
+							publishHandler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: *pub})
+						})
+					}
+				}
+			}
+
+			newServerSubs := make(map[string]*serverSub)
+			for channel, subRes := range res.Subs {
+				newServerSubs[channel] = &serverSub{
+					Offset:      subRes.Offset,
+					Epoch:       subRes.Epoch,
+					Recoverable: subRes.Recoverable,
+				}
+			}
+
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+
+			c.serverSubs = newServerSubs
+			if c.status != CONNECTED {
+				return
+			}
+
+			err = c.resubscribe()
+			if err != nil {
+				// we need just to close the connection and outgoing requests here
+				// but preserve all subscriptions.
+				go c.handleDisconnect(&disconnect{Reason: "subscribe error", Reconnect: true})
+				return
+			}
+
+			// Successfully connected – can reset reconnect attempts.
+			c.reconnectAttempts = 0
+
+			go c.periodicPing(closeCh)
+		}()
 	})
+	c.mutex.Unlock()
 	return nil
 }
 
-func (c *Client) handleConnectResult(t transport, isReconnect bool, closeCh chan struct{}, res protocol.ConnectResult) {
-	c.mutex.Lock()
-	if c.status == CONNECTED || c.status == DISCONNECTED || c.status == CLOSED {
-		c.mutex.Unlock()
-		return
-	}
-	c.id = res.Client
-	prevStatus := c.status
-	c.status = CONNECTED
-	c.mutex.Unlock()
-
-	if res.Expires {
-		go func(interval uint32) {
-			select {
-			case <-closeCh:
-				return
-			case <-time.After(time.Duration(interval) * time.Second):
-				_ = c.sendRefresh(closeCh)
-			}
-		}(res.TTL)
-	}
-
-	if c.events != nil && c.events.onConnect != nil && prevStatus != CONNECTED {
-		handler := c.events.onConnect
-		ev := ConnectEvent{
-			ClientID: c.clientID(),
-			Version:  res.Version,
-			Data:     res.Data,
-		}
-		c.runHandler(func() {
-			handler.OnConnect(c, ev)
-		})
-	}
-
-	c.processServerSubs(res.Subs, isReconnect)
-
-	err := c.resubscribe()
-	if err != nil {
-		// we need just to close the connection and outgoing requests here
-		// but preserve all subscriptions.
-		c.handleError(err)
-		go c.handleDisconnect(&disconnect{Reason: "subscribe error", Reconnect: true})
-		return
-	}
-
-	// Looks like we successfully connected so can reset reconnect attempts.
-	c.mutex.Lock()
-	c.reconnectAttempts = 0
-	c.mutex.Unlock()
-
-	go c.periodicPing(closeCh)
-}
-
-func (c *Client) processServerSubs(subs map[string]*protocol.SubscribeResult, isReconnect bool) {
-	var handler ServerSubscribeHandler
-	if c.events != nil && c.events.onServerSubscribe != nil {
-		handler = c.events.onServerSubscribe
-	}
-
-	var publishHandler ServerPublishHandler
-	if c.events != nil && c.events.onServerPublish != nil {
-		publishHandler = c.events.onServerPublish
-	}
-
-	for channel, subRes := range subs {
-		if handler != nil {
-			c.runHandler(func() {
-				handler.OnServerSubscribe(c, ServerSubscribeEvent{
-					Channel:      channel,
-					Resubscribed: isReconnect, // TODO: check request map.
-					Recovered:    subRes.Recovered,
-				})
-			})
-		}
-		if publishHandler != nil {
-			for _, pub := range subRes.Publications {
-				c.runHandler(func() {
-					publishHandler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: *pub})
-				})
-			}
-		}
-	}
-
-	newServerSubs := make(map[string]*serverSub)
-	for channel, subRes := range subs {
-		newServerSubs[channel] = &serverSub{
-			Offset:      subRes.Offset,
-			Epoch:       subRes.Epoch,
-			Recoverable: subRes.Recoverable,
-		}
-	}
-	c.mutex.Lock()
-	c.serverSubs = newServerSubs
-	c.mutex.Unlock()
-}
-
 func (c *Client) resubscribe() error {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
 	for _, sub := range c.subs {
 		err := sub.resubscribe(true)
 		if err != nil {
@@ -797,6 +753,13 @@ func (c *Client) resubscribe() error {
 		}
 	}
 	return nil
+}
+
+func isTokenExpiredError(err error) bool {
+	if e, ok := err.(*Error); ok && e.Code == 109 {
+		return true
+	}
+	return false
 }
 
 func (c *Client) disconnect(reconnect bool) error {
@@ -834,11 +797,11 @@ func (c *Client) refreshToken() error {
 	return nil
 }
 
-func (c *Client) sendRefresh(closeCh chan struct{}) error {
+func (c *Client) sendRefresh(closeCh chan struct{}) {
 
 	err := c.refreshToken()
 	if err != nil {
-		return err
+		return
 	}
 
 	c.mutex.RLock()
@@ -852,45 +815,44 @@ func (c *Client) sendRefresh(closeCh chan struct{}) error {
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
 		c.mutex.RUnlock()
-		return err
+		return
 	}
 	cmd.Params = paramsData
 	c.mutex.RUnlock()
 
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return err
-	}
-	if r.Error != nil {
-		return r.Error
-	}
-	var res protocol.RefreshResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return err
-	}
-	if res.Expires {
-		go func(interval uint32) {
-			select {
-			case <-closeCh:
-				return
-			case <-time.After(time.Duration(interval) * time.Second):
-				_ = c.sendRefresh(closeCh)
-			}
-		}(res.TTL)
-	}
-	return nil
+	c.sendAsync(cmd, func(r protocol.Reply, err error) {
+		if err != nil {
+			return
+		}
+		if r.Error != nil {
+			return
+		}
+		var res protocol.RefreshResult
+		err = c.resultDecoder.Decode(r.Result, &res)
+		if err != nil {
+			return
+		}
+		if res.Expires {
+			go func(interval uint32) {
+				select {
+				case <-closeCh:
+					return
+				case <-time.After(time.Duration(interval) * time.Second):
+					c.sendRefresh(closeCh)
+				}
+			}(res.TTL)
+		}
+	})
 }
 
-func (c *Client) sendSubRefresh(channel string) error {
-
+func (c *Client) sendSubRefresh(channel string, fn func(protocol.SubRefreshResult, error)) {
 	sub, ok := c.subs[channel]
 	if !ok {
-		return nil
+		return
 	}
 
 	if sub.Status() != SUBSCRIBED {
-		return nil
+		return
 	}
 
 	c.mutex.RLock()
@@ -899,13 +861,13 @@ func (c *Client) sendSubRefresh(channel string) error {
 
 	token, err := c.privateSign(channel)
 	if err != nil {
-		return err
+		return
 	}
 
 	c.mutex.RLock()
 	if c.id != clientID {
 		c.mutex.RUnlock()
-		return nil
+		return
 	}
 	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
@@ -918,37 +880,29 @@ func (c *Client) sendSubRefresh(channel string) error {
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
 		c.mutex.RUnlock()
-		return err
+		fn(protocol.SubRefreshResult{}, err)
+		return
 	}
 	cmd.Params = paramsData
 	c.mutex.RUnlock()
 
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return err
-	}
-	if r.Error != nil {
-		return r.Error
-	}
-	var res protocol.SubRefreshResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return err
-	}
-	if res.Expires {
-		if sub.Status() != SUBSCRIBED {
-			return nil
+	c.sendAsync(cmd, func(r protocol.Reply, err error) {
+		if err != nil {
+			fn(protocol.SubRefreshResult{}, err)
+			return
 		}
-		go func(interval uint32) {
-			select {
-			case <-c.closeCh:
-				return
-			case <-time.After(time.Duration(interval) * time.Second):
-				_ = c.sendSubRefresh(channel)
-			}
-		}(res.TTL)
-	}
-	return nil
+		if r.Error != nil {
+			fn(protocol.SubRefreshResult{}, r.Error)
+			return
+		}
+		var res protocol.SubRefreshResult
+		err = c.resultDecoder.Decode(r.Result, &res)
+		if err != nil {
+			fn(protocol.SubRefreshResult{}, err)
+			return
+		}
+		fn(res, nil)
+	})
 }
 
 func (c *Client) sendConnect(isReconnect bool, fn func(protocol.ConnectResult, error)) {
@@ -957,7 +911,6 @@ func (c *Client) sendConnect(isReconnect bool, fn func(protocol.ConnectResult, e
 		Method: protocol.MethodTypeConnect,
 	}
 
-	c.mutex.RLock()
 	if c.token != "" || c.connectData != nil {
 		params := &protocol.ConnectRequest{}
 		if c.token != "" {
@@ -982,13 +935,11 @@ func (c *Client) sendConnect(isReconnect bool, fn func(protocol.ConnectResult, e
 		}
 		paramsData, err := c.paramsEncoder.Encode(params)
 		if err != nil {
-			c.mutex.RUnlock()
 			fn(protocol.ConnectResult{}, err)
 			return
 		}
 		cmd.Params = paramsData
 	}
-	c.mutex.RUnlock()
 
 	c.sendAsync(cmd, func(reply protocol.Reply, err error) {
 		if err != nil {
@@ -1090,7 +1041,6 @@ func (c *Client) sendSubscribe(channel string, recover bool, streamPos streamPos
 			fn(protocol.SubscribeResult{}, reply.Error)
 			return
 		}
-
 		var res protocol.SubscribeResult
 		err = c.resultDecoder.Decode(reply.Result, &res)
 		if err != nil {
@@ -1101,66 +1051,62 @@ func (c *Client) sendSubscribe(channel string, recover bool, streamPos streamPos
 	})
 }
 
-func (c *Client) publish(channel string, data []byte) error {
-	_, err := c.sendPublish(channel, data)
-	if err != nil {
-		return err
-	}
-	return nil
-}
+type PublishResult struct{}
 
 // Publish data into channel.
-func (c *Client) Publish(channel string, data []byte) error {
-	return c.publish(channel, data)
+func (c *Client) Publish(channel string, data []byte, fn func(PublishResult, error)) {
+	c.publish(channel, data, fn)
 }
 
-func (c *Client) sendPublish(channel string, data []byte) (protocol.PublishResult, error) {
+func (c *Client) publish(channel string, data []byte, fn func(PublishResult, error)) {
+	c.sendPublish(channel, data, fn)
+}
+
+func (c *Client) sendPublish(channel string, data []byte, fn func(PublishResult, error)) {
 	params := &protocol.PublishRequest{
 		Channel: channel,
 		Data:    protocol.Raw(data),
 	}
-
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return protocol.PublishResult{}, err
+		fn(PublishResult{}, err)
+		return
 	}
-
 	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePublish,
 		Params: paramsData,
 	}
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return protocol.PublishResult{}, err
-	}
-	if r.Error != nil {
-		return protocol.PublishResult{}, r.Error
-	}
-	var res protocol.PublishResult
-	return res, nil
+	c.sendAsync(cmd, func(r protocol.Reply, err error) {
+		if err != nil {
+			fn(PublishResult{}, err)
+			return
+		}
+		if r.Error != nil {
+			fn(PublishResult{}, r.Error)
+			return
+		}
+		fn(PublishResult{}, nil)
+	})
 }
 
-func (c *Client) history(channel string) ([]protocol.Publication, error) {
-	res, err := c.sendHistory(channel)
-	if err != nil {
-		return []protocol.Publication{}, err
-	}
-	pubs := make([]protocol.Publication, len(res.Publications))
-	for i, m := range res.Publications {
-		pubs[i] = *m
-	}
-	return pubs, nil
+type HistoryResult struct {
+	Publications []protocol.Publication
 }
 
-func (c *Client) sendHistory(channel string) (protocol.HistoryResult, error) {
+func (c *Client) history(channel string, fn func(HistoryResult, error)) {
+	c.sendHistory(channel, fn)
+}
+
+func (c *Client) sendHistory(channel string, fn func(HistoryResult, error)) {
 	params := &protocol.HistoryRequest{
 		Channel: channel,
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return protocol.HistoryResult{}, err
+		fn(HistoryResult{}, err)
+		return
 	}
 
 	cmd := &protocol.Command{
@@ -1168,41 +1114,46 @@ func (c *Client) sendHistory(channel string) (protocol.HistoryResult, error) {
 		Method: protocol.MethodTypeHistory,
 		Params: paramsData,
 	}
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return protocol.HistoryResult{}, err
-	}
-	if r.Error != nil {
-		return protocol.HistoryResult{}, r.Error
-	}
-	var res protocol.HistoryResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return protocol.HistoryResult{}, err
-	}
-	return res, nil
+	c.sendAsync(cmd, func(r protocol.Reply, err error) {
+		if err != nil {
+			fn(HistoryResult{}, err)
+			return
+		}
+		if r.Error != nil {
+			fn(HistoryResult{}, r.Error)
+			return
+		}
+		var res protocol.HistoryResult
+		err = c.resultDecoder.Decode(r.Result, &res)
+		if err != nil {
+			fn(HistoryResult{}, err)
+			return
+		}
+		pubs := make([]protocol.Publication, len(res.Publications))
+		for i, m := range res.Publications {
+			pubs[i] = *m
+		}
+		fn(HistoryResult{Publications: pubs}, nil)
+	})
 }
 
-func (c *Client) presence(channel string) (map[string]protocol.ClientInfo, error) {
-	res, err := c.sendPresence(channel)
-	if err != nil {
-		return map[string]protocol.ClientInfo{}, err
-	}
-	p := make(map[string]protocol.ClientInfo)
-	for uid, info := range res.Presence {
-		p[uid] = *info
-	}
-	return p, nil
+type PresenceResult struct {
+	Presence map[string]protocol.ClientInfo
 }
 
-func (c *Client) sendPresence(channel string) (protocol.PresenceResult, error) {
+func (c *Client) presence(channel string, fn func(PresenceResult, error)) {
+	c.sendPresence(channel, fn)
+}
+
+func (c *Client) sendPresence(channel string, fn func(PresenceResult, error)) {
 	params := &protocol.PresenceRequest{
 		Channel: channel,
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return protocol.PresenceResult{}, err
+		fn(PresenceResult{}, err)
+		return
 	}
 
 	cmd := &protocol.Command{
@@ -1210,19 +1161,27 @@ func (c *Client) sendPresence(channel string) (protocol.PresenceResult, error) {
 		Method: protocol.MethodTypePresence,
 		Params: paramsData,
 	}
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return protocol.PresenceResult{}, err
-	}
-	if r.Error != nil {
-		return protocol.PresenceResult{}, r.Error
-	}
-	var res protocol.PresenceResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return protocol.PresenceResult{}, err
-	}
-	return res, nil
+	c.sendAsync(cmd, func(r protocol.Reply, err error) {
+		if err != nil {
+			fn(PresenceResult{}, err)
+			return
+		}
+		if r.Error != nil {
+			fn(PresenceResult{}, r.Error)
+			return
+		}
+		var res protocol.PresenceResult
+		err = c.resultDecoder.Decode(r.Result, &res)
+		if err != nil {
+			fn(PresenceResult{}, err)
+			return
+		}
+		p := make(map[string]protocol.ClientInfo)
+		for uid, info := range res.Presence {
+			p[uid] = *info
+		}
+		fn(PresenceResult{Presence: p}, nil)
+	})
 }
 
 // PresenceStats represents short presence information.
@@ -1231,24 +1190,23 @@ type PresenceStats struct {
 	NumUsers   int
 }
 
-func (c *Client) presenceStats(channel string) (PresenceStats, error) {
-	res, err := c.sendPresenceStats(channel)
-	if err != nil {
-		return PresenceStats{}, err
-	}
-	return PresenceStats{
-		NumClients: int(res.NumClients),
-		NumUsers:   int(res.NumUsers),
-	}, nil
+// PresenceStatsResult wraps presence stats.
+type PresenceStatsResult struct {
+	PresenceStats
 }
 
-func (c *Client) sendPresenceStats(channel string) (protocol.PresenceStatsResult, error) {
+func (c *Client) presenceStats(channel string, fn func(PresenceStatsResult, error)) {
+	c.sendPresenceStats(channel, fn)
+}
+
+func (c *Client) sendPresenceStats(channel string, fn func(PresenceStatsResult, error)) {
 	params := &protocol.PresenceStatsRequest{
 		Channel: channel,
 	}
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return protocol.PresenceStatsResult{}, err
+		fn(PresenceStatsResult{}, err)
+		return
 	}
 
 	cmd := &protocol.Command{
@@ -1256,40 +1214,46 @@ func (c *Client) sendPresenceStats(channel string) (protocol.PresenceStatsResult
 		Method: protocol.MethodTypePresenceStats,
 		Params: paramsData,
 	}
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return protocol.PresenceStatsResult{}, err
-	}
-	if r.Error != nil {
-		return protocol.PresenceStatsResult{}, r.Error
-	}
-	var res protocol.PresenceStatsResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return protocol.PresenceStatsResult{}, err
-	}
-	return res, nil
+	c.sendAsync(cmd, func(r protocol.Reply, err error) {
+		if err != nil {
+			fn(PresenceStatsResult{}, err)
+			return
+		}
+		if r.Error != nil {
+			fn(PresenceStatsResult{}, r.Error)
+			return
+		}
+		var res protocol.PresenceStatsResult
+		err = c.resultDecoder.Decode(r.Result, &res)
+		if err != nil {
+			fn(PresenceStatsResult{}, err)
+			return
+		}
+		fn(PresenceStatsResult{PresenceStats{
+			NumClients: int(res.NumClients),
+			NumUsers:   int(res.NumUsers),
+		}}, nil)
+	})
 }
 
-func (c *Client) unsubscribe(channel string) error {
+type UnsubscribeResult struct{}
+
+func (c *Client) unsubscribe(channel string, fn func(UnsubscribeResult, error)) {
 	if !c.subscribed(channel) {
-		return nil
+		return
 	}
-	_, err := c.sendUnsubscribe(channel)
-	if err != nil {
-		return err
-	}
-	return nil
+	c.sendUnsubscribe(channel, fn)
 }
 
-func (c *Client) sendUnsubscribe(channel string) (protocol.UnsubscribeResult, error) {
+func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, error)) {
 	params := &protocol.UnsubscribeRequest{
 		Channel: channel,
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)
 	if err != nil {
-		return protocol.UnsubscribeResult{}, err
+		fn(UnsubscribeResult{}, err)
+		return
 	}
 
 	cmd := &protocol.Command{
@@ -1297,46 +1261,33 @@ func (c *Client) sendUnsubscribe(channel string) (protocol.UnsubscribeResult, er
 		Method: protocol.MethodTypeUnsubscribe,
 		Params: paramsData,
 	}
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return protocol.UnsubscribeResult{}, err
-	}
-	if r.Error != nil {
-		return protocol.UnsubscribeResult{}, r.Error
-	}
-	var res protocol.UnsubscribeResult
-	err = c.resultDecoder.Decode(r.Result, &res)
-	if err != nil {
-		return protocol.UnsubscribeResult{}, err
-	}
-	return res, nil
+	c.sendAsync(cmd, func(r protocol.Reply, err error) {
+		if err != nil {
+			fn(UnsubscribeResult{}, err)
+			return
+		}
+		if r.Error != nil {
+			fn(UnsubscribeResult{}, r.Error)
+			return
+		}
+		var res protocol.UnsubscribeResult
+		err = c.resultDecoder.Decode(r.Result, &res)
+		if err != nil {
+			fn(UnsubscribeResult{}, err)
+			return
+		}
+		fn(UnsubscribeResult{}, nil)
+	})
 }
 
-func (c *Client) sendPing() error {
+func (c *Client) sendPing(fn func(error)) {
 	cmd := &protocol.Command{
 		ID:     c.nextMsgID(),
 		Method: protocol.MethodTypePing,
 	}
-	r, err := c.sendSync(cmd)
-	if err != nil {
-		return err
-	}
-	if r.Error != nil {
-		return r.Error
-	}
-	return nil
-}
-
-func (c *Client) sendSync(cmd *protocol.Command) (protocol.Reply, error) {
-	waitCh := make(chan protocol.Reply, 1)
-
-	c.addRequest(cmd.ID, waitCh, nil)
-	defer c.removeRequest(cmd.ID)
-	err := c.send(cmd)
-	if err != nil {
-		return protocol.Reply{}, err
-	}
-	return c.wait(waitCh, c.config.ReadTimeout)
+	c.sendAsync(cmd, func(_ protocol.Reply, err error) {
+		fn(err)
+	})
 }
 
 func (c *Client) sendAsync(cmd *protocol.Command, cb func(protocol.Reply, error)) {
@@ -1350,41 +1301,26 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(protocol.Reply, error)
 		defer c.removeRequest(cmd.ID)
 		select {
 		case <-time.After(c.config.ReadTimeout):
-			c.mutex.Lock()
+			c.requestsMu.RLock()
 			req, ok := c.requests[cmd.ID]
-			c.mutex.Unlock()
+			c.requestsMu.RUnlock()
 			if !ok {
 				return
 			}
 			req.cb(protocol.Reply{}, ErrTimeout)
-		case <-c.closeCh:
-			c.mutex.Lock()
-			req, ok := c.requests[cmd.ID]
-			c.mutex.Unlock()
-			if !ok {
-				return
-			}
-			req.cb(protocol.Reply{}, ErrClientClosed)
 		}
 	}()
 }
 
 func (c *Client) send(cmd *protocol.Command) error {
-	select {
-	case <-c.closeCh:
+	transport := c.transport
+	if transport == nil {
 		return ErrClientDisconnected
-	default:
-		c.mutex.Lock()
-		transport := c.transport
-		c.mutex.Unlock()
-		if transport == nil {
-			return ErrClientDisconnected
-		}
-		err := transport.Write(cmd, c.config.WriteTimeout)
-		if err != nil {
-			go c.handleDisconnect(&disconnect{Reason: "write error", Reconnect: true})
-			return io.EOF
-		}
+	}
+	err := transport.Write(cmd, c.config.WriteTimeout)
+	if err != nil {
+		go c.handleDisconnect(&disconnect{Reason: "write error", Reconnect: true})
+		return io.EOF
 	}
 	return nil
 }
@@ -1395,27 +1331,13 @@ type request struct {
 }
 
 func (c *Client) addRequest(id uint32, ch chan protocol.Reply, cb func(protocol.Reply, error)) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.requestsMu.Lock()
+	defer c.requestsMu.Unlock()
 	c.requests[id] = request{ch, cb}
 }
 
 func (c *Client) removeRequest(id uint32) {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
+	c.requestsMu.Lock()
+	defer c.requestsMu.Unlock()
 	delete(c.requests, id)
-}
-
-func (c *Client) wait(ch chan protocol.Reply, timeout time.Duration) (protocol.Reply, error) {
-	select {
-	case data, ok := <-ch:
-		if !ok {
-			return protocol.Reply{}, ErrClientDisconnected
-		}
-		return data, nil
-	case <-time.After(timeout):
-		return protocol.Reply{}, ErrTimeout
-	case <-c.closeCh:
-		return protocol.Reply{}, ErrClientClosed
-	}
 }

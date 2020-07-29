@@ -3,6 +3,9 @@ package main
 import (
 	"log"
 
+	"net/http"
+	_ "net/http/pprof"
+
 	"github.com/centrifugal/centrifuge-go"
 )
 
@@ -22,43 +25,46 @@ func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.Disconnec
 
 func (h *eventHandler) OnMessage(c *centrifuge.Client, e centrifuge.MessageEvent) {
 	log.Println("Message received", string(e.Data))
-	res, err := c.RPC([]byte("{}"))
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	log.Printf("RPC result 2: %s", string(res))
+	c.RPC([]byte("{}"), func(result centrifuge.RPCResult, err error) {
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		log.Printf("RPC result 2: %s", string(result.Data))
+	})
 }
 
 func newConnection() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
-
 	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
-
 	handler := &eventHandler{}
 	c.OnDisconnect(handler)
 	c.OnConnect(handler)
 	c.OnError(handler)
 	c.OnMessage(handler)
-
-	err := c.Connect()
-	if err != nil {
-		log.Fatalln(err)
-	}
 	return c
 }
 
 func main() {
 	log.Println("Start program")
 	c := newConnection()
+	err := c.Connect()
+	if err != nil {
+		log.Fatalln(err)
+	}
 	defer func() { _ = c.Close() }()
 
-	res, err := c.RPC([]byte("{}"))
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	log.Printf("RPC result: %s", string(res))
+	go func() {
+		log.Println(http.ListenAndServe(":5000", nil))
+	}()
+
+	c.RPC([]byte("{}"), func(result centrifuge.RPCResult, err error) {
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		log.Printf("RPC result: %s", string(result.Data))
+	})
 
 	select {}
 }
