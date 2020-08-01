@@ -60,13 +60,16 @@ type Client struct {
 	pushEncoder       protocol.PushEncoder
 	pushDecoder       protocol.PushDecoder
 	delayPing         chan struct{}
+	reconnectCh       chan struct{}
+	closeCh           chan struct{}
 }
 
 func (c *Client) nextMsgID() uint32 {
 	return atomic.AddUint32(&c.msgID, 1)
 }
 
-// New initializes Client.
+// New initializes Client. After client initialized call its Connect method
+// to trigger connection establishment with server.
 func New(u string, config Config) *Client {
 	var encoding protocol.Type
 
@@ -82,13 +85,12 @@ func New(u string, config Config) *Client {
 
 	c := &Client{
 		url:               u,
+		config:            config,
 		status:            DISCONNECTED,
 		encoding:          encoding,
 		subs:              make(map[string]*Subscription),
 		serverSubs:        make(map[string]*serverSub),
-		config:            config,
 		requests:          make(map[uint32]request),
-		reconnect:         true,
 		reconnectStrategy: defaultBackoffReconnect,
 		paramsEncoder:     newParamsEncoder(encoding),
 		resultDecoder:     newResultDecoder(encoding),
@@ -96,8 +98,12 @@ func New(u string, config Config) *Client {
 		pushEncoder:       newPushEncoder(encoding),
 		pushDecoder:       newPushDecoder(encoding),
 		delayPing:         make(chan struct{}, 32),
+		reconnectCh:       make(chan struct{}, 1),
+		closeCh:           make(chan struct{}),
 		events:            newEventHub(),
+		reconnect:         true,
 	}
+	go c.reconnectRoutine()
 	return c
 }
 
@@ -221,13 +227,69 @@ func (c *Client) NamedRPC(method string, data []byte, fn func(RPCResult, error))
 	})
 }
 
-// Close closes Client connection and cleans up state.
+// Close closes Client forever and cleans up state.
 func (c *Client) Close() error {
 	err := c.Disconnect()
 	c.mutex.Lock()
+	if c.status == CLOSED {
+		c.mutex.Unlock()
+		return nil
+	}
+	close(c.closeCh)
 	c.status = CLOSED
 	c.mutex.Unlock()
 	return err
+}
+
+// reconnectRoutine manages re-connections to a server. It ensures that no more than
+// one connection attempt happen concurrently. It does this using reconnectStrategy
+// which is exponential back-off by default.
+func (c *Client) reconnectRoutine() {
+	var semaphore chan struct{}
+	for {
+		select {
+		case <-c.closeCh:
+			return
+		case _, ok := <-c.reconnectCh:
+			if !ok {
+				return
+			}
+			if semaphore != nil {
+				<-semaphore
+			}
+			semaphore = make(chan struct{}, 1)
+			c.mutex.RLock()
+			duration, err := c.reconnectStrategy.timeBeforeNextAttempt(c.reconnectAttempts)
+			c.mutex.RUnlock()
+			if err != nil {
+				c.handleError(err)
+				return
+			}
+			select {
+			case <-c.closeCh:
+			case <-time.After(duration):
+			}
+			c.mutex.Lock()
+			if c.status != RECONNECTING {
+				c.mutex.Unlock()
+				semaphore <- struct{}{}
+				continue
+			}
+			c.reconnectAttempts++
+			if !c.reconnect {
+				c.mutex.Unlock()
+				semaphore <- struct{}{}
+				continue
+			}
+			c.mutex.Unlock()
+			err = c.connectFromScratch(true, func() {
+				semaphore <- struct{}{}
+			})
+			if err != nil {
+				c.handleError(err)
+			}
+		}
+	}
 }
 
 func (c *Client) handleDisconnect(d *disconnect) {
@@ -308,27 +370,10 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		return
 	}
 
-	go func() {
-		c.mutex.Lock()
-		duration, err := c.reconnectStrategy.timeBeforeNextAttempt(c.reconnectAttempts)
-		c.mutex.Unlock()
-		if err != nil {
-			c.handleError(err)
-			return
-		}
-		time.Sleep(duration)
-		c.mutex.Lock()
-		c.reconnectAttempts++
-		if !c.reconnect {
-			c.mutex.Unlock()
-			return
-		}
-		c.mutex.Unlock()
-		err = c.connectFromScratch(true)
-		if err != nil {
-			c.handleError(err)
-		}
-	}()
+	select {
+	case c.reconnectCh <- struct{}{}:
+	default:
+	}
 }
 
 func (c *Client) periodicPing(closeCh chan struct{}) {
@@ -583,17 +628,19 @@ func (c *Client) handleServerUnsub(channel string, _ protocol.Unsub) error {
 // with server failed. In case of failure client will try to reconnect with exponential
 // backoff.
 func (c *Client) Connect() error {
-	return c.connectFromScratch(false)
+	return c.connectFromScratch(false, func() {})
 }
 
-func (c *Client) connectFromScratch(isReconnect bool) error {
+func (c *Client) connectFromScratch(isReconnect bool, fn func()) error {
 	c.mutex.Lock()
 	if isReconnect && c.status == DISCONNECTED {
 		c.mutex.Unlock()
+		fn()
 		return nil
 	}
 	if c.status == CLOSED {
 		c.mutex.Unlock()
+		fn()
 		return ErrClientClosed
 	}
 	if isReconnect {
@@ -616,6 +663,7 @@ func (c *Client) connectFromScratch(isReconnect bool) error {
 	t, err := newWebsocketTransport(c.url, c.encoding, wsConfig)
 	if err != nil {
 		go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
+		fn()
 		return err
 	}
 
@@ -623,6 +671,7 @@ func (c *Client) connectFromScratch(isReconnect bool) error {
 	if c.status == CONNECTED || c.status == DISCONNECTED || c.status == CLOSED {
 		_ = t.Close()
 		c.mutex.Unlock()
+		fn()
 		return nil
 	}
 
@@ -632,27 +681,33 @@ func (c *Client) connectFromScratch(isReconnect bool) error {
 	go c.reader(t, closeCh)
 	c.sendConnect(isReconnect, func(res protocol.ConnectResult, err error) {
 		go func() {
+			defer fn()
 			c.mutex.Lock()
-			if c.status == CONNECTED || c.status == DISCONNECTED || c.status == CLOSED {
+			if c.status != CONNECTING && c.status != RECONNECTING {
 				c.mutex.Unlock()
 				return
 			}
+			c.mutex.Unlock()
 			if err != nil {
 				if isTokenExpiredError(err) {
-					c.mutex.Unlock()
 					// Try to refresh token before next connection attempt.
 					_ = c.refreshToken()
 					c.mutex.Lock()
-					if c.status == CONNECTED || c.status == DISCONNECTED || c.status == CLOSED {
+					if c.status != CONNECTING && c.status != RECONNECTING {
 						c.mutex.Unlock()
 						return
 					}
+					c.mutex.Unlock()
 				}
 				go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
-				c.mutex.Unlock()
 				return
 			}
 
+			c.mutex.Lock()
+			if c.status != CONNECTING && c.status != RECONNECTING {
+				c.mutex.Unlock()
+				return
+			}
 			c.id = res.Client
 			prevStatus := c.status
 			c.status = CONNECTED
@@ -798,7 +853,6 @@ func (c *Client) refreshToken() error {
 }
 
 func (c *Client) sendRefresh(closeCh chan struct{}) {
-
 	err := c.refreshToken()
 	if err != nil {
 		return
@@ -846,15 +900,6 @@ func (c *Client) sendRefresh(closeCh chan struct{}) {
 }
 
 func (c *Client) sendSubRefresh(channel string, fn func(protocol.SubRefreshResult, error)) {
-	sub, ok := c.subs[channel]
-	if !ok {
-		return
-	}
-
-	if sub.Status() != SUBSCRIBED {
-		return
-	}
-
 	c.mutex.RLock()
 	clientID := c.id
 	c.mutex.RUnlock()
