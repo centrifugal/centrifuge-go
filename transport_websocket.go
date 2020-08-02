@@ -160,8 +160,8 @@ func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration)
 	if timeout > 0 {
 		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
+	println("---->", string(data))
 	if t.encoding == protocol.TypeJSON {
-		println("---->", string(data))
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
 	} else {
 		err = t.conn.WriteMessage(websocket.BinaryMessage, data)

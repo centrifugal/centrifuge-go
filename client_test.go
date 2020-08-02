@@ -3,6 +3,8 @@ package centrifuge
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -141,19 +143,35 @@ func TestPublishProtobuf(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
-	err := client.Publish("test", []byte("boom"))
-	if err != nil {
-		t.Errorf("error publish: %v", err)
+	done := make(chan struct{})
+	client.Publish("test", []byte("boom"), func(result PublishResult, err error) {
+		defer close(done)
+		if err != nil {
+			t.Errorf("error publish: %v", err)
+		}
+	})
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for job done")
 	}
 }
 
 func TestPublishJSON(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
+	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
-	err := client.Publish("test", []byte("{}"))
-	if err != nil {
-		t.Errorf("error publish: %v", err)
+	done := make(chan struct{})
+	client.Publish("test", []byte("{}"), func(result PublishResult, err error) {
+		defer close(done)
+		if err != nil {
+			t.Errorf("error publish: %v", err)
+		}
+	})
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for job done")
 	}
 }
 
@@ -161,9 +179,17 @@ func TestPublishInvalidJSON(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
-	err := client.Publish("test", []byte("boom"))
-	if err == nil {
-		t.Errorf("error expected on publish invalid JSON")
+	done := make(chan struct{})
+	client.Publish("test", []byte("boom"), func(result PublishResult, err error) {
+		defer close(done)
+		if err == nil {
+			t.Errorf("error expected on publish invalid JSON")
+		}
+	})
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for job done")
 	}
 }
 
@@ -218,22 +244,33 @@ func TestSubscribeError(t *testing.T) {
 	}
 }
 
+var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func randString(n int) string {
+	random := rand.New(rand.NewSource(time.Now().UnixNano()))
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letterRunes[random.Intn(len(letterRunes))]
+	}
+	return string(b)
+}
+
 func TestHandlePublish(t *testing.T) {
 	doneCh := make(chan error, 1)
 	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
-	sub, err := client.NewSubscription("test")
+	sub, err := client.NewSubscription("test_handle_publish")
 	if err != nil {
 		t.Errorf("error on new subscription: %v", err)
 	}
+	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
 	handler := &testSubscriptionHandler{
 		onSubscribeSuccess: func(c *Subscription, e SubscribeSuccessEvent) {
-			_ = client.Publish("test", []byte(`{}`))
+			client.Publish("test_handle_publish", msg, func(result PublishResult, err error) {})
 		},
 		onPublish: func(c *Subscription, e PublishEvent) {
-			if !bytes.Equal(e.Data, []byte(`{}`)) {
-				doneCh <- fmt.Errorf("wrong publication data")
+			if !bytes.Equal(e.Data, msg) {
 				return
 			}
 			if e.Info == nil {

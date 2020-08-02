@@ -179,20 +179,6 @@ func (s *Subscription) setSubscribedAt(val int64) {
 	s.subscribedAt = val
 }
 
-//func (s *Subscription) newSubFuture() chan error {
-//	fut := make(chan error, 1)
-//	s.mu.Lock()
-//	if s.status == SUBSCRIBED {
-//		fut <- nil
-//	} else if s.status == SUBERROR {
-//		fut <- s.err
-//	} else {
-//		s.subFutures = append(s.subFutures, fut)
-//	}
-//	s.mu.Unlock()
-//	return fut
-//}
-
 // Sub.mu lock must be held outside.
 func (s *Subscription) resolveSubFutures(err error) {
 	for _, fut := range s.subFutures {
@@ -472,17 +458,15 @@ func (s *Subscription) resubscribe(isResubscribe bool) error {
 		sp.Epoch = s.lastEpoch
 	}
 
-	s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token, func(res protocol.SubscribeResult, err error) {
-		go func() {
-			if err != nil {
-				s.subscribeError(err)
-				return
-			}
-			s.subscribeSuccess(isResubscribe, res)
-		}()
+	err = s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token, func(res protocol.SubscribeResult, err error) {
+		if err != nil {
+			s.subscribeError(err)
+			return
+		}
+		s.subscribeSuccess(isResubscribe, res)
 	})
 	s.mu.Unlock()
-	return nil
+	return err
 }
 
 func (s *Subscription) runSubRefresh(ttl uint32, closeCh chan struct{}) {

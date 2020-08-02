@@ -6,11 +6,9 @@ package main
 
 import (
 	"bytes"
-	"encoding/csv"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math"
 	"strconv"
@@ -20,24 +18,23 @@ import (
 	"github.com/centrifugal/centrifuge-go"
 )
 
-// Some sane defaults
+// Some sane defaults.
 const (
-	DefaultNumMsgs     = 100000
+	DefaultNumMsg      = 100000
 	DefaultNumPubs     = 1
 	DefaultNumSubs     = 0
 	DefaultMessageSize = 128
 )
 
 func usage() {
-	log.Fatalf("Usage: benchmark [-s uri] [--tls] [-np NUM_PUBLISHERS] [-ns NUM_SUBSCRIBERS] [-n NUM_MSGS] [-ms MESSAGE_SIZE] [-csv csvfile] <subject>\n")
+	log.Fatalf("Usage: benchmark [-s uri] [-np NUM_PUBLISHERS] [-ns NUM_SUBSCRIBERS] [-n NUM_MSGS] [-ms MESSAGE_SIZE] <channel>\n")
 }
 
 var url = flag.String("s", "ws://localhost:8000/connection/websocket", "Connection URI")
 var numPubs = flag.Int("np", DefaultNumPubs, "Number of Concurrent Publishers")
 var numSubs = flag.Int("ns", DefaultNumSubs, "Number of Concurrent Subscribers")
-var numMsgs = flag.Int("n", DefaultNumMsgs, "Number of Messages to Publish")
-var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message.")
-var csvFile = flag.String("csv", "", "Save bench data to csv file")
+var numMsg = flag.Int("n", DefaultNumMsg, "Number of Messages to Publish")
+var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message")
 
 var benchmark *Benchmark
 
@@ -52,45 +49,39 @@ func main() {
 		usage()
 	}
 
-	if *numMsgs <= 0 {
+	if *numMsg <= 0 {
 		log.Fatal("Number of messages should be greater than zero.")
 	}
 
 	benchmark = NewBenchmark("Centrifuge", *numSubs, *numPubs)
 
-	var startwg sync.WaitGroup
-	var donewg sync.WaitGroup
+	var startWg sync.WaitGroup
+	var doneWg sync.WaitGroup
 
-	donewg.Add(*numPubs + *numSubs)
+	doneWg.Add(*numPubs + *numSubs)
 
 	// Run Subscribers first
-	startwg.Add(*numSubs)
+	startWg.Add(*numSubs)
 	for i := 0; i < *numSubs; i++ {
-		go runSubscriber(&startwg, &donewg, *numMsgs, *msgSize)
+		go runSubscriber(&startWg, &doneWg, *numMsg, *msgSize)
 	}
-	startwg.Wait()
+	startWg.Wait()
 
 	// Now Publishers
-	startwg.Add(*numPubs)
-	pubCounts := MsgsPerClient(*numMsgs, *numPubs)
+	startWg.Add(*numPubs)
+	pubCounts := MsgPerClient(*numMsg, *numPubs)
 	for i := 0; i < *numPubs; i++ {
-		go runPublisher(&startwg, &donewg, pubCounts[i], *msgSize)
+		go runPublisher(&startWg, &doneWg, pubCounts[i], *msgSize)
 	}
 
-	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d]\n", *numMsgs, *msgSize, *numPubs, *numSubs)
+	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d]\n", *numMsg, *msgSize, *numPubs, *numSubs)
 
-	startwg.Wait()
-	donewg.Wait()
+	startWg.Wait()
+	doneWg.Wait()
 
 	benchmark.Close()
 
 	fmt.Print(benchmark.Report())
-
-	if len(*csvFile) > 0 {
-		csv := benchmark.CSV()
-		ioutil.WriteFile(*csvFile, []byte(csv), 0644)
-		fmt.Printf("Saved metric data in csv file %s\n", *csvFile)
-	}
 }
 
 func newConnection() *centrifuge.Client {
@@ -99,33 +90,30 @@ func newConnection() *centrifuge.Client {
 	events := &eventHandler{}
 	c.OnError(events)
 	c.OnDisconnect(events)
-	c.OnMessage(events)
-
-	err := c.Connect()
-	if err != nil {
-		log.Fatalf("Can't connect: %v\n", err)
-	}
 	return c
 }
 
 type eventHandler struct{}
 
-func (h *eventHandler) OnError(c *centrifuge.Client, e centrifuge.ErrorEvent) {
-}
+func (h *eventHandler) OnError(_ *centrifuge.Client, _ centrifuge.ErrorEvent) {}
 
-func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
+func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
 	if e.Reason != "clean disconnect" {
-		log.Fatalf("Disconnect: %s", e.Reason)
+		log.Printf("disconnect: %s", e.Reason)
 	}
 }
 
-func (h *eventHandler) OnMessage(c *centrifuge.Client, e centrifuge.MessageEvent) {
+type connectWait struct {
+	ch chan struct{}
 }
 
-func runPublisher(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
+func (w *connectWait) OnConnect(_ *centrifuge.Client, _ centrifuge.ConnectEvent) {
+	close(w.ch)
+}
+
+func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	c := newConnection()
-	defer c.Close()
-	startwg.Done()
+	defer func() { _ = c.Close() }()
 
 	args := flag.Args()
 	subj := args[0]
@@ -138,55 +126,80 @@ func runPublisher(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
 
 	start := time.Now()
 
-	for i := 0; i < numMsgs; i++ {
-		err := c.Publish(subj, payload)
-		if err != nil {
-			log.Fatalf("Error publish: %v", err)
-		}
-	}
-	benchmark.AddPubSample(NewSample(numMsgs, msgSize, start, time.Now()))
+	waitCh := make(chan struct{})
+	connectWaiter := &connectWait{waitCh}
+	c.OnConnect(connectWaiter)
 
-	donewg.Done()
+	err := c.Connect()
+	if err != nil {
+		log.Fatalf("Can't connect: %v\n", err)
+	}
+
+	select {
+	case <-waitCh:
+	case <-time.After(time.Second):
+		log.Fatal("connection timeout")
+	}
+
+	startWg.Done()
+
+	semaphore := make(chan struct{}, 1)
+	semaphore <- struct{}{}
+
+	for i := 0; i < numMsg; i++ {
+		<-semaphore
+		c.Publish(subj, payload, func(_ centrifuge.PublishResult, err error) {
+			if err != nil {
+				log.Fatalf("error publish: %v", err)
+			}
+			semaphore <- struct{}{}
+		})
+	}
+	// wait final publish.
+	<-semaphore
+
+	benchmark.AddPubSample(NewSample(numMsg, msgSize, start, time.Now()))
+	doneWg.Done()
 }
 
 type subEventHandler struct {
-	numMsgs  int
+	numMsg   int
 	msgSize  int
 	received int
-	donewg   *sync.WaitGroup
-	startwg  *sync.WaitGroup
+	doneWg   *sync.WaitGroup
+	startWg  *sync.WaitGroup
 	client   *centrifuge.Client
 	start    time.Time
 }
 
-func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
+func (h *subEventHandler) OnPublish(_ *centrifuge.Subscription, _ centrifuge.PublishEvent) {
 	h.received++
-	if h.received >= h.numMsgs {
-		benchmark.AddSubSample(NewSample(h.numMsgs, h.msgSize, h.start, time.Now()))
-		h.donewg.Done()
-		h.client.Close()
+	if h.received >= h.numMsg {
+		benchmark.AddSubSample(NewSample(h.numMsg, h.msgSize, h.start, time.Now()))
+		h.doneWg.Done()
+		_ = h.client.Close()
 	}
 }
 
-func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
-	h.startwg.Done()
+func (h *subEventHandler) OnSubscribeSuccess(_ *centrifuge.Subscription, _ centrifuge.SubscribeSuccessEvent) {
+	h.startWg.Done()
 }
 
-func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
-	log.Fatalf("Subscribe error: %v", e.Error)
+func (h *subEventHandler) OnSubscribeError(_ *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
+	log.Fatalf("subscribe error: %v", e.Error)
 }
 
-func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
+func runSubscriber(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	c := newConnection()
 
 	args := flag.Args()
 	subj := args[0]
 
 	subEvents := &subEventHandler{
-		numMsgs: numMsgs,
+		numMsg:  numMsg,
 		msgSize: msgSize,
-		donewg:  donewg,
-		startwg: startwg,
+		doneWg:  doneWg,
+		startWg: startWg,
 		client:  c,
 		start:   time.Now(),
 	}
@@ -200,7 +213,12 @@ func runSubscriber(startwg, donewg *sync.WaitGroup, numMsgs int, msgSize int) {
 	sub.OnSubscribeSuccess(subEvents)
 	sub.OnSubscribeError(subEvents)
 
-	sub.Subscribe()
+	err = c.Connect()
+	if err != nil {
+		log.Fatalf("Can't connect: %v\n", err)
+	}
+
+	_ = sub.Subscribe()
 }
 
 // A Sample for a particular client
@@ -293,32 +311,6 @@ func (bm *Benchmark) AddPubSample(s *Sample) {
 	bm.pubChannel <- s
 }
 
-// CSV generates a csv report of all the samples collected
-func (bm *Benchmark) CSV() string {
-	var buffer bytes.Buffer
-	writer := csv.NewWriter(&buffer)
-	headers := []string{"#RunID", "ClientID", "MsgCount", "MsgBytes", "MsgsPerSec", "BytesPerSec", "DurationSecs"}
-	if err := writer.Write(headers); err != nil {
-		log.Fatalf("Error while serializing headers %q: %v", headers, err)
-	}
-	groups := []*SampleGroup{bm.Subs, bm.Pubs}
-	pre := "S"
-	for i, g := range groups {
-		if i == 1 {
-			pre = "P"
-		}
-		for j, c := range g.Samples {
-			r := []string{bm.RunID, fmt.Sprintf("%s%d", pre, j), fmt.Sprintf("%d", c.MsgCnt), fmt.Sprintf("%d", c.MsgBytes), fmt.Sprintf("%d", c.Rate()), fmt.Sprintf("%f", c.Throughput()), fmt.Sprintf("%f", c.Duration().Seconds())}
-			if err := writer.Write(r); err != nil {
-				log.Fatalf("Error while serializing %v: %v", c, err)
-			}
-		}
-	}
-
-	writer.Flush()
-	return buffer.String()
-}
-
 // NewSample creates a new Sample initialized to the provided values.
 func NewSample(jobCount int, msgSize int, start, end time.Time) *Sample {
 	s := Sample{JobMsgCnt: jobCount, Start: start, End: end}
@@ -326,12 +318,12 @@ func NewSample(jobCount int, msgSize int, start, end time.Time) *Sample {
 	return &s
 }
 
-// Throughput of bytes per second
+// Throughput of bytes per second.
 func (s *Sample) Throughput() float64 {
 	return float64(s.MsgBytes) / s.Duration().Seconds()
 }
 
-// Rate of meessages in the job per second
+// Rate of messages in the job per second.
 func (s *Sample) Rate() int64 {
 	return int64(float64(s.JobMsgCnt) / s.Duration().Seconds())
 }
@@ -342,29 +334,29 @@ func (s *Sample) String() string {
 	return fmt.Sprintf("%s msgs/sec ~ %s/sec", rate, throughput)
 }
 
-// Duration that the sample was active
+// Duration that the sample was active.
 func (s *Sample) Duration() time.Duration {
 	return s.End.Sub(s.Start)
 }
 
-// Seconds that the sample or samples were active
+// Seconds that the sample or samples were active.
 func (s *Sample) Seconds() float64 {
 	return s.Duration().Seconds()
 }
 
-// NewSampleGroup initializer
+// NewSampleGroup initializer.
 func NewSampleGroup() *SampleGroup {
 	s := new(SampleGroup)
 	s.Samples = make([]*Sample, 0)
 	return s
 }
 
-// Statistics information of the sample group (min, average, max and standard deviation)
+// Statistics information of the sample group (min, average, max and standard deviation).
 func (sg *SampleGroup) Statistics() string {
 	return fmt.Sprintf("min %s | avg %s | max %s | stddev %s msgs", commaFormat(sg.MinRate()), commaFormat(sg.AvgRate()), commaFormat(sg.MaxRate()), commaFormat(int64(sg.StdDev())))
 }
 
-// MinRate returns the smallest message rate in the SampleGroup
+// MinRate returns the smallest message rate in the SampleGroup.
 func (sg *SampleGroup) MinRate() int64 {
 	m := int64(0)
 	for i, s := range sg.Samples {
@@ -376,7 +368,7 @@ func (sg *SampleGroup) MinRate() int64 {
 	return m
 }
 
-// MaxRate returns the largest message rate in the SampleGroup
+// MaxRate returns the largest message rate in the SampleGroup.
 func (sg *SampleGroup) MaxRate() int64 {
 	m := int64(0)
 	for i, s := range sg.Samples {
@@ -388,7 +380,7 @@ func (sg *SampleGroup) MaxRate() int64 {
 	return m
 }
 
-// AvgRate returns the average of all the message rates in the SampleGroup
+// AvgRate returns the average of all the message rates in the SampleGroup.
 func (sg *SampleGroup) AvgRate() int64 {
 	sum := uint64(0)
 	for _, s := range sg.Samples {
@@ -397,7 +389,7 @@ func (sg *SampleGroup) AvgRate() int64 {
 	return int64(sum / uint64(len(sg.Samples)))
 }
 
-// StdDev returns the standard deviation the message rates in the SampleGroup
+// StdDev returns the standard deviation the message rates in the SampleGroup.
 func (sg *SampleGroup) StdDev() float64 {
 	avg := float64(sg.AvgRate())
 	sum := float64(0)
@@ -430,12 +422,12 @@ func (sg *SampleGroup) AddSample(e *Sample) {
 	}
 }
 
-// HasSamples returns true if the group has samples
+// HasSamples returns true if the group has samples.
 func (sg *SampleGroup) HasSamples() bool {
 	return len(sg.Samples) > 0
 }
 
-// Report returns a human readable report of the samples taken in the Benchmark
+// Report returns a human readable report of the samples taken in the Benchmark.
 func (bm *Benchmark) Report() string {
 	var buffer bytes.Buffer
 
@@ -521,18 +513,19 @@ func max(x, y int64) int64 {
 	return y
 }
 
-// MsgsPerClient divides the number of messages by the number of clients and tries to distribute them as evenly as possible
-func MsgsPerClient(numMsgs, numClients int) []int {
+// MsgPerClient divides the number of messages by the number of clients and tries
+// to distribute them as evenly as possible
+func MsgPerClient(numMsg, numClients int) []int {
 	var counts []int
-	if numClients == 0 || numMsgs == 0 {
+	if numClients == 0 || numMsg == 0 {
 		return counts
 	}
 	counts = make([]int, numClients)
-	mc := numMsgs / numClients
+	mc := numMsg / numClients
 	for i := 0; i < numClients; i++ {
 		counts[i] = mc
 	}
-	extra := numMsgs % numClients
+	extra := numMsg % numClients
 	for i := 0; i < extra; i++ {
 		counts[i]++
 	}

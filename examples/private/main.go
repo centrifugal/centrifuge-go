@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
-	jwt "github.com/dgrijalva/jwt-go"
+	"github.com/dgrijalva/jwt-go"
 )
 
 func connToken(user string, exp int64) string {
@@ -40,26 +40,26 @@ func subscribeToken(channel string, client string, exp int64) string {
 
 type eventHandler struct{}
 
-func (h *eventHandler) OnPrivateSub(c *centrifuge.Client, e centrifuge.PrivateSubEvent) (string, error) {
+func (h *eventHandler) OnPrivateSub(_ *centrifuge.Client, e centrifuge.PrivateSubEvent) (string, error) {
 	token := subscribeToken(e.Channel, e.ClientID, time.Now().Unix()+10)
 	return token, nil
 }
 
-func (h *eventHandler) OnConnect(c *centrifuge.Client, e centrifuge.ConnectEvent) {
+func (h *eventHandler) OnConnect(_ *centrifuge.Client, _ centrifuge.ConnectEvent) {
 	log.Println("Connected")
 }
 
-func (h *eventHandler) OnError(c *centrifuge.Client, e centrifuge.ErrorEvent) {
+func (h *eventHandler) OnError(_ *centrifuge.Client, e centrifuge.ErrorEvent) {
 	log.Println("Error", e.Message)
 }
 
-func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
+func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
 	log.Println("Disconnected", e.Reason)
 }
 
 type subEventHandler struct{}
 
-func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
+func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, _ centrifuge.SubscribeSuccessEvent) {
 	log.Println(fmt.Sprintf("Successfully subscribed to private channel %s", sub.Channel()))
 }
 
@@ -67,7 +67,7 @@ func (h *subEventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centr
 	log.Println(fmt.Sprintf("Error subscribing to private channel %s: %v", sub.Channel(), e.Error))
 }
 
-func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifuge.UnsubscribeEvent) {
+func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, _ centrifuge.UnsubscribeEvent) {
 	log.Println(fmt.Sprintf("Unsubscribed from private channel %s", sub.Channel()))
 }
 
@@ -75,10 +75,10 @@ func (h *subEventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.P
 	log.Println(fmt.Sprintf("New message received from channel %s: %s", sub.Channel(), string(e.Data)))
 }
 
-func newConnection() *centrifuge.Client {
+func newClient() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
-
 	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
+
 	c.SetToken(connToken("112", 0))
 
 	handler := &eventHandler{}
@@ -86,18 +86,18 @@ func newConnection() *centrifuge.Client {
 	c.OnDisconnect(handler)
 	c.OnConnect(handler)
 	c.OnError(handler)
-
-	err := c.Connect()
-	if err != nil {
-		log.Fatalln(err)
-	}
 	return c
 }
 
 func main() {
 	log.Println("Start program")
-	c := newConnection()
-	defer c.Close()
+	c := newClient()
+	defer func() { _ = c.Close() }()
+
+	err := c.Connect()
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	sub, err := c.NewSubscription("$chat:index")
 	if err != nil {
