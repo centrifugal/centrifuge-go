@@ -171,7 +171,7 @@ func (s *Subscription) Channel() string {
 	return s.channel
 }
 
-func (s *Subscription) nextMsgID() uint64 {
+func (s *Subscription) nextFutureID() uint64 {
 	return atomic.AddUint64(&s.futureID, 1)
 }
 
@@ -222,7 +222,7 @@ func (s *Subscription) onSubscribe(fn func(err error)) {
 	} else if s.status == SUBERROR {
 		go fn(s.err)
 	} else {
-		id := s.nextMsgID()
+		id := s.nextFutureID()
 		fut := newSubFuture(fn)
 		s.subFutures[id] = fut
 		go func() {
@@ -393,7 +393,9 @@ func (s *Subscription) handleJoin(info protocol.ClientInfo) {
 		handler = s.events.onJoin
 	}
 	if handler != nil {
-		handler.OnJoin(s, JoinEvent{ClientInfo: info})
+		s.centrifuge.runHandler(func() {
+			handler.OnJoin(s, JoinEvent{ClientInfo: info})
+		})
 	}
 }
 

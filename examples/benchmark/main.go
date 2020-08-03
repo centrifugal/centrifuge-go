@@ -126,19 +126,9 @@ func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 
 	start := time.Now()
 
-	waitCh := make(chan struct{})
-	connectWaiter := &connectWait{waitCh}
-	c.OnConnect(connectWaiter)
-
 	err := c.Connect()
 	if err != nil {
 		log.Fatalf("Can't connect: %v\n", err)
-	}
-
-	select {
-	case <-waitCh:
-	case <-time.After(time.Second):
-		log.Fatal("connection timeout")
 	}
 
 	startWg.Done()

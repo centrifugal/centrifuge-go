@@ -25,13 +25,12 @@ func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.Disconnec
 
 func (h *eventHandler) OnMessage(c *centrifuge.Client, e centrifuge.MessageEvent) {
 	log.Println("Message received", string(e.Data))
-	c.RPC([]byte("{}"), func(result centrifuge.RPCResult, err error) {
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		log.Printf("RPC result 2: %s", string(result.Data))
-	})
+	result, err := c.RPC([]byte("{}"))
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	log.Printf("RPC result 2: %s", string(result.Data))
 }
 
 func newClient() *centrifuge.Client {
@@ -60,13 +59,12 @@ func main() {
 		log.Println(http.ListenAndServe(":5000", nil))
 	}()
 
-	c.RPC([]byte("{}"), func(result centrifuge.RPCResult, err error) {
-		if err != nil {
-			log.Println(err)
-			return
-		}
-		log.Printf("RPC result: %s", string(result.Data))
-	})
+	result, err := c.RPC([]byte("{}"))
+	if err != nil {
+		log.Fatalln(err)
+		return
+	}
+	log.Printf("RPC result: %s", string(result.Data))
 
 	select {}
 }

@@ -1,22 +1,20 @@
-// Simple Go chat client for https://github.com/centrifugal/centrifuge/tree/master/examples/events example.
 package main
 
 import (
 	"bufio"
 	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 
-	"net/http"
 	_ "net/http/pprof"
 
 	"github.com/centrifugal/centrifuge-go"
 	"github.com/dgrijalva/jwt-go"
 )
 
-// Actually in real life clients should never know secret key.
-// This is only for example purposes to quickly generate JWT for
-// connection.
+// In real life clients should never know secret key. This is only for example
+// purposes to quickly generate JWT for connection.
 const exampleTokenHmacSecret = "secret"
 
 func connToken(user string, exp int64) string {
@@ -109,25 +107,24 @@ func newClient(handler *eventHandler) *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
 	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
 
-	// Uncomment to make it work with Centrifugo and JWT auth.
+	// Uncomment to make it work with Centrifugo and its JWT auth.
 	//c.SetToken(connToken("49", 0))
 
 	c.OnConnect(handler)
-	c.OnError(handler)
 	c.OnDisconnect(handler)
 	c.OnMessage(handler)
+	c.OnError(handler)
 
+	c.OnServerPublish(handler)
 	c.OnServerSubscribe(handler)
 	c.OnServerUnsubscribe(handler)
 	c.OnServerJoin(handler)
 	c.OnServerLeave(handler)
-	c.OnServerPublish(handler)
 
 	return c
 }
 
 func main() {
-	// For pprof.
 	go func() {
 		log.Println(http.ListenAndServe(":5000", nil))
 	}()
@@ -154,6 +151,22 @@ func main() {
 		log.Fatalln(err)
 	}
 
+	pubText := func(text string, fn func(error)) {
+		msg := &ChatMessage{
+			Input: text,
+		}
+		data, _ := json.Marshal(msg)
+		sub.Publish(data, func(_ centrifuge.PublishResult, err error) {
+			fn(err)
+		})
+	}
+
+	pubText("hello", func(err error) {
+		if err != nil {
+			log.Printf("Error publish: %s", err)
+		}
+	})
+
 	err = c.Connect()
 	if err != nil {
 		log.Fatalln(err)
@@ -166,13 +179,9 @@ func main() {
 		reader := bufio.NewReader(os.Stdin)
 		for {
 			text, _ := reader.ReadString('\n')
-			msg := &ChatMessage{
-				Input: text,
-			}
-			data, _ := json.Marshal(msg)
-			sub.Publish(data, func(_ centrifuge.PublishResult, err error) {
+			pubText(text, func(err error) {
 				if err != nil {
-					log.Printf("publish error: %v", err)
+					log.Printf("error publish: %s", err)
 				}
 			})
 		}
