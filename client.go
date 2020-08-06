@@ -200,13 +200,7 @@ type RPCResult struct {
 // RPC allows to make RPC – send data to server and wait for response.
 // RPC handler must be registered on server.
 func (c *Client) RPC(data []byte) (RPCResult, error) {
-	resCh := make(chan RPCResult, 1)
-	errCh := make(chan error, 1)
-	c.rpc("", data, func(result RPCResult, err error) {
-		resCh <- result
-		errCh <- err
-	})
-	return <-resCh, <-errCh
+	return c.NamedRPC("", data)
 }
 
 // NamedRPC allows to make RPC – send data to server ant wait for response.
