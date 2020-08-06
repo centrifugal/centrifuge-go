@@ -143,17 +143,9 @@ func TestPublishProtobuf(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
-	done := make(chan struct{})
-	client.Publish("test", []byte("boom"), func(result PublishResult, err error) {
-		defer close(done)
-		if err != nil {
-			t.Errorf("error publish: %v", err)
-		}
-	})
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for job done")
+	_, err := client.Publish("test", []byte("boom"))
+	if err != nil {
+		t.Errorf("error publish: %v", err)
 	}
 }
 
@@ -161,17 +153,9 @@ func TestPublishJSON(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
-	done := make(chan struct{})
-	client.Publish("test", []byte("{}"), func(result PublishResult, err error) {
-		defer close(done)
-		if err != nil {
-			t.Errorf("error publish: %v", err)
-		}
-	})
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for job done")
+	_, err := client.Publish("test", []byte("{}"))
+	if err != nil {
+		t.Errorf("error publish: %v", err)
 	}
 }
 
@@ -179,17 +163,9 @@ func TestPublishInvalidJSON(t *testing.T) {
 	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
-	done := make(chan struct{})
-	client.Publish("test", []byte("boom"), func(result PublishResult, err error) {
-		defer close(done)
-		if err == nil {
-			t.Errorf("error expected on publish invalid JSON")
-		}
-	})
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for job done")
+	_, err := client.Publish("test", []byte("boom"))
+	if err == nil {
+		t.Errorf("error expected on publish invalid JSON")
 	}
 }
 
@@ -267,7 +243,10 @@ func TestHandlePublish(t *testing.T) {
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
 	handler := &testSubscriptionHandler{
 		onSubscribeSuccess: func(c *Subscription, e SubscribeSuccessEvent) {
-			client.Publish("test_handle_publish", msg, func(result PublishResult, err error) {})
+			_, err := client.Publish("test_handle_publish", msg)
+			if err != nil {
+				t.Fail()
+			}
 		},
 		onPublish: func(c *Subscription, e PublishEvent) {
 			if !bytes.Equal(e.Data, msg) {
