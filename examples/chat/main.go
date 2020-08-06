@@ -74,13 +74,13 @@ func (h *eventHandler) OnServerPublish(_ *centrifuge.Client, e centrifuge.Server
 	log.Printf("Publication from server-side channel %s: %s", e.Channel, e.Data)
 }
 
-func (h *eventHandler) OnPublish(_ *centrifuge.Subscription, e centrifuge.PublishEvent) {
+func (h *eventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
 	var chatMessage *ChatMessage
 	err := json.Unmarshal(e.Data, &chatMessage)
 	if err != nil {
 		return
 	}
-	log.Printf("Someone says: %s", chatMessage.Input)
+	log.Printf("Someone says via channel %s: %s", sub.Channel(), chatMessage.Input)
 }
 
 func (h *eventHandler) OnJoin(sub *centrifuge.Subscription, e centrifuge.JoinEvent) {
@@ -151,25 +151,23 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	pubText := func(text string, fn func(error)) {
+	pubText := func(text string) error {
 		msg := &ChatMessage{
 			Input: text,
 		}
 		data, _ := json.Marshal(msg)
-		sub.Publish(data, func(_ centrifuge.PublishResult, err error) {
-			fn(err)
-		})
+		_, err := sub.Publish(data)
+		return err
 	}
-
-	pubText("hello", func(err error) {
-		if err != nil {
-			log.Printf("Error publish: %s", err)
-		}
-	})
 
 	err = c.Connect()
 	if err != nil {
 		log.Fatalln(err)
+	}
+
+	err = pubText("hello")
+	if err != nil {
+		log.Printf("Error publish: %s", err)
 	}
 
 	log.Printf("Print something and press ENTER to send\n")
@@ -179,11 +177,10 @@ func main() {
 		reader := bufio.NewReader(os.Stdin)
 		for {
 			text, _ := reader.ReadString('\n')
-			pubText(text, func(err error) {
-				if err != nil {
-					log.Printf("error publish: %s", err)
-				}
-			})
+			err = pubText(text)
+			if err != nil {
+				log.Printf("Error publish: %s", err)
+			}
 		}
 	}(sub)
 

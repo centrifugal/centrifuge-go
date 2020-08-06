@@ -116,8 +116,8 @@ type ErrorHandler interface {
 	OnError(*Client, ErrorEvent)
 }
 
-// EventHub has all event handlers for client.
-type EventHub struct {
+// eventHub has all event handlers for client.
+type eventHub struct {
 	onConnect           ConnectHandler
 	onDisconnect        DisconnectHandler
 	onPrivateSub        PrivateSubHandler
@@ -131,9 +131,9 @@ type EventHub struct {
 	onServerUnsubscribe ServerUnsubscribeHandler
 }
 
-// newEventHub initializes new EventHub.
-func newEventHub() *EventHub {
-	return &EventHub{}
+// newEventHub initializes new eventHub.
+func newEventHub() *eventHub {
+	return &eventHub{}
 }
 
 // OnConnect is a function to handle connect event.

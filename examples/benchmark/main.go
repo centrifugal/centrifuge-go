@@ -133,20 +133,12 @@ func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 
 	startWg.Done()
 
-	semaphore := make(chan struct{}, 1)
-	semaphore <- struct{}{}
-
 	for i := 0; i < numMsg; i++ {
-		<-semaphore
-		c.Publish(subj, payload, func(_ centrifuge.PublishResult, err error) {
-			if err != nil {
-				log.Fatalf("error publish: %v", err)
-			}
-			semaphore <- struct{}{}
-		})
+		_, err := c.Publish(subj, payload)
+		if err != nil {
+			log.Fatalf("error publish: %v", err)
+		}
 	}
-	// wait final publish.
-	<-semaphore
 
 	benchmark.AddPubSample(NewSample(numMsg, msgSize, start, time.Now()))
 	doneWg.Done()
