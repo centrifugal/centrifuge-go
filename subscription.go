@@ -384,14 +384,14 @@ func (s *Subscription) subscribeError(err error) {
 	}
 }
 
-func (s *Subscription) handlePublication(pub Publication) {
+func (s *Subscription) handlePublication(pub protocol.Publication) {
 	var handler PublishHandler
 	if s.events != nil && s.events.onPublish != nil {
 		handler = s.events.onPublish
 	}
 	if handler != nil {
 		s.centrifuge.runHandler(func() {
-			handler.OnPublish(s, PublishEvent{Publication: pub})
+			handler.OnPublish(s, PublishEvent{Publication: pubFromProto(pub)})
 			s.mu.Lock()
 			if pub.Seq > 0 || pub.Gen > 0 {
 				s.lastSeq = pub.Seq
@@ -411,7 +411,7 @@ func (s *Subscription) handleJoin(info protocol.ClientInfo) {
 	}
 	if handler != nil {
 		s.centrifuge.runHandler(func() {
-			handler.OnJoin(s, JoinEvent{ClientInfo: info})
+			handler.OnJoin(s, JoinEvent{ClientInfo: infoFromProto(info)})
 		})
 	}
 }
@@ -423,7 +423,7 @@ func (s *Subscription) handleLeave(info protocol.ClientInfo) {
 	}
 	if handler != nil {
 		s.centrifuge.runHandler(func() {
-			handler.OnLeave(s, LeaveEvent{ClientInfo: info})
+			handler.OnLeave(s, LeaveEvent{ClientInfo: infoFromProto(info)})
 		})
 	}
 }

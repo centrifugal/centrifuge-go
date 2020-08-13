@@ -564,7 +564,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 	return nil
 }
 
-func (c *Client) handleServerPublication(channel string, pub Publication) error {
+func (c *Client) handleServerPublication(channel string, pub protocol.Publication) error {
 	c.mu.RLock()
 	_, ok := c.serverSubs[channel]
 	c.mu.RUnlock()
@@ -578,7 +578,7 @@ func (c *Client) handleServerPublication(channel string, pub Publication) error 
 	}
 	if handler != nil {
 		c.runHandler(func() {
-			handler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: pub})
+			handler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: pubFromProto(pub)})
 			c.mu.Lock()
 			serverSub, ok := c.serverSubs[channel]
 			if !ok {
@@ -605,7 +605,7 @@ func (c *Client) handleServerJoin(channel string, join protocol.Join) error {
 	}
 	if handler != nil {
 		c.runHandler(func() {
-			handler.OnServerJoin(c, ServerJoinEvent{Channel: channel, ClientInfo: join.Info})
+			handler.OnServerJoin(c, ServerJoinEvent{Channel: channel, ClientInfo: infoFromProto(join.Info)})
 		})
 	}
 	return nil
@@ -625,7 +625,7 @@ func (c *Client) handleServerLeave(channel string, leave protocol.Leave) error {
 	}
 	if handler != nil {
 		c.runHandler(func() {
-			handler.OnServerLeave(c, ServerLeaveEvent{Channel: channel, ClientInfo: leave.Info})
+			handler.OnServerLeave(c, ServerLeaveEvent{Channel: channel, ClientInfo: infoFromProto(leave.Info)})
 		})
 	}
 	return nil
@@ -831,7 +831,7 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 			if publishHandler != nil {
 				c.runHandler(func() {
 					for _, pub := range subRes.Publications {
-						publishHandler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: *pub})
+						publishHandler.OnServerPublish(c, ServerPublishEvent{Channel: channel, Publication: pubFromProto(*pub)})
 						c.mu.Lock()
 						if sub, ok := c.serverSubs[channel]; ok {
 							sub.Offset = pub.Offset
@@ -882,7 +882,7 @@ func (c *Client) resubscribe() error {
 }
 
 func isTokenExpiredError(err error) bool {
-	if e, ok := err.(*Error); ok && e.Code == 109 {
+	if e, ok := err.(*protocol.Error); ok && e.Code == 109 {
 		return true
 	}
 	return false
@@ -1277,7 +1277,7 @@ func (c *Client) sendPublish(channel string, data []byte, fn func(PublishResult,
 
 // HistoryResult contains the result of history op.
 type HistoryResult struct {
-	Publications []protocol.Publication
+	Publications []Publication
 }
 
 func (c *Client) history(channel string, fn func(HistoryResult, error)) {
@@ -1321,9 +1321,9 @@ func (c *Client) sendHistory(channel string, fn func(HistoryResult, error)) {
 			fn(HistoryResult{}, err)
 			return
 		}
-		pubs := make([]protocol.Publication, len(res.Publications))
+		pubs := make([]Publication, len(res.Publications))
 		for i, m := range res.Publications {
-			pubs[i] = *m
+			pubs[i] = pubFromProto(*m)
 		}
 		fn(HistoryResult{Publications: pubs}, nil)
 	})
@@ -1335,7 +1335,7 @@ func (c *Client) sendHistory(channel string, fn func(HistoryResult, error)) {
 
 // HistoryResult contains the result of presence op.
 type PresenceResult struct {
-	Presence map[string]protocol.ClientInfo
+	Presence map[string]ClientInfo
 }
 
 func (c *Client) presence(channel string, fn func(PresenceResult, error)) {
@@ -1379,9 +1379,9 @@ func (c *Client) sendPresence(channel string, fn func(PresenceResult, error)) {
 			fn(PresenceResult{}, err)
 			return
 		}
-		p := make(map[string]protocol.ClientInfo)
+		p := make(map[string]ClientInfo)
 		for uid, info := range res.Presence {
-			p[uid] = *info
+			p[uid] = infoFromProto(*info)
 		}
 		fn(PresenceResult{Presence: p}, nil)
 	})
