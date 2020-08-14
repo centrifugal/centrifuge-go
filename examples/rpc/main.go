@@ -2,8 +2,8 @@ package main
 
 import (
 	"log"
-
 	"net/http"
+
 	_ "net/http/pprof"
 
 	"github.com/centrifugal/centrifuge-go"

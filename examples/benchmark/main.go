@@ -103,14 +103,6 @@ func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.Disconnec
 	}
 }
 
-type connectWait struct {
-	ch chan struct{}
-}
-
-func (w *connectWait) OnConnect(_ *centrifuge.Client, _ centrifuge.ConnectEvent) {
-	close(w.ch)
-}
-
 func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	c := newConnection()
 	defer func() { _ = c.Close() }()

@@ -31,7 +31,7 @@ func connToken(user string, exp int64) string {
 	return t
 }
 
-// ChatMessage is chat app specific message struct.
+// ChatMessage is chat example specific message struct.
 type ChatMessage struct {
 	Input string `json:"input"`
 }

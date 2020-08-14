@@ -26,19 +26,28 @@ const (
 	CLOSED
 )
 
+const defaultClientName = "go"
+
 type serverSub struct {
 	Offset      uint64
 	Epoch       string
 	Recoverable bool
 }
 
-// Client describes client connection to Centrifugo or Centrifuge-based server.
+// Client represents client connection to Centrifugo or Centrifuge
+// library based server. It provides methods to set various event
+// handlers, subscribe to channels, call RPC commands etc. Call client
+// Connect method to trigger actual connection with server. Call client
+// Close method to clean up state when you don't need client instance
+// anymore.
 type Client struct {
 	mu                  sync.RWMutex
 	url                 string
 	encoding            protocol.Type
 	config              Config
 	token               string
+	name                string
+	version             string
 	connectData         protocol.Raw
 	transport           transport
 	msgID               uint32
@@ -88,6 +97,7 @@ func New(u string, config Config) *Client {
 
 	c := &Client{
 		url:               u,
+		name:              defaultClientName,
 		config:            config,
 		status:            DISCONNECTED,
 		encoding:          encoding,
@@ -127,8 +137,26 @@ func (c *Client) SetToken(token string) {
 	c.token = token
 }
 
+// SetName allows to set client name. You should only use a limited
+// amount of client names throughout your applications – i.e. don't
+// make it unique per user for example, this name describes environment
+// from which client connects.
+func (c *Client) SetName(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.name = name
+}
+
+// SetVersion allows to set client version. This is an application
+// specific information.
+func (c *Client) SetVersion(version string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.version = version
+}
+
 // SetConnectData allows to set data to send in connect command.
-func (c *Client) SetConnectData(data protocol.Raw) {
+func (c *Client) SetConnectData(data []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.connectData = data
@@ -1027,10 +1055,16 @@ func (c *Client) sendConnect(isReconnect bool, fn func(protocol.ConnectResult, e
 		Method: protocol.MethodTypeConnect,
 	}
 
-	if c.token != "" || c.connectData != nil || len(c.serverSubs) > 0 {
+	if c.token != "" || c.connectData != nil || len(c.serverSubs) > 0 || c.name != "" || c.version != "" {
 		params := &protocol.ConnectRequest{}
 		if c.token != "" {
 			params.Token = c.token
+		}
+		if c.name != "" {
+			params.Name = c.name
+		}
+		if c.version != "" {
+			params.Version = c.version
 		}
 		if c.connectData != nil {
 			params.Data = c.connectData

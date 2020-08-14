@@ -9,16 +9,17 @@ type Publication struct {
 	Offset uint64
 	// Data published to channel.
 	Data []byte
-	// Info is an optional information about client connection published this data.
+	// Info is an optional information about client connection published
+	// this data to channel.
 	Info *ClientInfo
 }
 
 // ClientInfo contains information about client connection.
 type ClientInfo struct {
-	// ClientID is a client unique id.
-	ClientID string
-	// UserID is an ID of authenticated user. Zero value means anonymous user.
-	UserID string
+	// Client is a client unique id.
+	Client string
+	// User is an ID of authenticated user. Zero value means anonymous user.
+	User string
 	// ConnInfo is an additional information about connection.
 	ConnInfo []byte
 	// ChanInfo is an additional information about connection in context of
@@ -70,8 +71,8 @@ func newCommandEncoder(enc protocol.Type) protocol.CommandEncoder {
 
 func infoFromProto(v protocol.ClientInfo) ClientInfo {
 	info := ClientInfo{
-		ClientID: v.GetClient(),
-		UserID:   v.GetUser(),
+		Client: v.GetClient(),
+		User:   v.GetUser(),
 	}
 	if len(v.ConnInfo) > 0 {
 		info.ConnInfo = v.ConnInfo
