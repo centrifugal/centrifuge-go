@@ -71,9 +71,9 @@ type SubscribeErrorHandler interface {
 	OnSubscribeError(*Subscription, SubscribeErrorEvent)
 }
 
-// SubscriptionEventHub contains callback functions that will be called when
+// subscriptionEventHub contains callback functions that will be called when
 // corresponding event happens with subscription to channel.
-type SubscriptionEventHub struct {
+type subscriptionEventHub struct {
 	onPublish          PublishHandler
 	onJoin             JoinHandler
 	onLeave            LeaveHandler
@@ -82,9 +82,9 @@ type SubscriptionEventHub struct {
 	onSubscribeError   SubscribeErrorHandler
 }
 
-// newSubscriptionEventHub initializes new SubscriptionEventHub.
-func newSubscriptionEventHub() *SubscriptionEventHub {
-	return &SubscriptionEventHub{}
+// newSubscriptionEventHub initializes new subscriptionEventHub.
+func newSubscriptionEventHub() *subscriptionEventHub {
+	return &subscriptionEventHub{}
 }
 
 // OnPublish allows to set PublishHandler to SubEventHandler.
@@ -132,7 +132,7 @@ type Subscription struct {
 	centrifuge      *Client
 	subCloseCh      chan struct{}
 	status          int
-	events          *SubscriptionEventHub
+	events          *subscriptionEventHub
 	lastSeq         uint32
 	lastGen         uint32
 	lastOffset      uint64
