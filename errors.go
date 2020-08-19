@@ -3,16 +3,19 @@ package centrifuge
 import "errors"
 
 var (
-	// ErrTimeout ...
+	// ErrTimeout returned if operation timed out.
 	ErrTimeout = errors.New("timeout")
-	// ErrClientClosed ...
+	// ErrClientClosed can be returned if client already closed.
 	ErrClientClosed = errors.New("client closed")
-	// ErrClientDisconnected ...
+	// ErrClientDisconnected can be returned if client goes to
+	// disconnected state while operation in progress.
 	ErrClientDisconnected = errors.New("client disconnected")
-	// ErrClientExpired ...
-	ErrClientExpired = errors.New("client connection expired")
-	// ErrReconnectFailed ...
+	// ErrReconnectFailed returned when reconnect to server failed (never
+	// happen by default since client keeps reconnecting forever).
 	ErrReconnectFailed = errors.New("reconnect failed")
-	// ErrDuplicateSubscription ...
+	// ErrDuplicateSubscription returned if subscription to the same channel
+	// already registered in current client instance. This is due to the fact
+	// that server does not allow subscribing to the same channel twice for
+	// the same connection.
 	ErrDuplicateSubscription = errors.New("duplicate subscription")
 )

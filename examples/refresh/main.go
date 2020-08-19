@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
-	jwt "github.com/dgrijalva/jwt-go"
+	"github.com/dgrijalva/jwt-go"
 )
 
 func connToken(user string, exp int64) string {
@@ -27,19 +27,19 @@ func connToken(user string, exp int64) string {
 
 type eventHandler struct{}
 
-func (h *eventHandler) OnConnect(c *centrifuge.Client, e centrifuge.ConnectEvent) {
+func (h *eventHandler) OnConnect(_ *centrifuge.Client, _ centrifuge.ConnectEvent) {
 	log.Println("Connected")
 }
 
-func (h *eventHandler) OnError(c *centrifuge.Client, e centrifuge.ErrorEvent) {
+func (h *eventHandler) OnError(_ *centrifuge.Client, e centrifuge.ErrorEvent) {
 	log.Println("Error", e.Message)
 }
 
-func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
+func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
 	log.Printf("Disconnected, reason: %s, reconnect: %v", e.Reason, e.Reconnect)
 }
 
-func (h *eventHandler) OnRefresh(c *centrifuge.Client) (string, error) {
+func (h *eventHandler) OnRefresh(_ *centrifuge.Client) (string, error) {
 	log.Println("Refresh")
 	// TODO: receive connection token.
 	token := connToken("113", time.Now().Unix()+10)
@@ -56,11 +56,11 @@ func (h *subEventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e cen
 	log.Println(fmt.Sprintf("Subscribed to channel channel %s: %#v", sub.Channel(), e))
 }
 
-func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, e centrifuge.UnsubscribeEvent) {
+func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, _ centrifuge.UnsubscribeEvent) {
 	log.Println(fmt.Sprintf("Unsubscribed from channel channel %s", sub.Channel()))
 }
 
-func newConnection() *centrifuge.Client {
+func newClient() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
 
 	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
@@ -72,17 +72,18 @@ func newConnection() *centrifuge.Client {
 	c.OnConnect(handler)
 	c.OnError(handler)
 
-	err := c.Connect()
-	if err != nil {
-		log.Fatalln(err)
-	}
 	return c
 }
 
 func main() {
 	log.Println("Start program")
-	c := newConnection()
-	defer c.Close()
+	c := newClient()
+	defer func() { _ = c.Close() }()
+
+	err := c.Connect()
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	sub, err := c.NewSubscription("chat:index")
 	if err != nil {

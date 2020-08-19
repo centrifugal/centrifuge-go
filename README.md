@@ -15,10 +15,10 @@ Feature matrix
 - [x] connect with JWT
 - [x] connect with custom header
 - [x] automatic reconnect in case of errors, network problems etc
-- [x] exponential backoff for reconnect
+- [x] an exponential backoff for reconnect
 - [x] connect and disconnect events
 - [x] handle disconnect reason
-- [x] subscribe on channel and handle asynchronous Publications
+- [x] subscribe on a channel and handle asynchronous Publications
 - [x] handle Join and Leave messages
 - [x] handle Unsubscribe notifications
 - [x] reconnect on subscribe timeout
@@ -32,13 +32,14 @@ Feature matrix
 - [x] send RPC commands
 - [x] publish to channel without being subscribed
 - [x] subscribe to private channels with JWT
-- [x] connection JWT refresh
-- [ ] private channel subscription JWT refresh
+- [x] connection token (JWT) refresh
+- [ ] private channel subscription token (JWT) refresh
 - [x] handle connection expired error
 - [ ] handle subscription expired error
 - [x] ping/pong to find broken connection
-- [ ] server-side subscriptions
-- [x] message recovery mechanism
+- [x] server-side subscriptions
+- [x] message recovery mechanism for client-side subscriptions
+- [x] message recovery mechanism for server-side subscriptions
 
 License
 -------

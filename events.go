@@ -7,6 +7,35 @@ type PrivateSubEvent struct {
 	Channel  string
 }
 
+// ServerPublishEvent has info about received channel Publication.
+type ServerPublishEvent struct {
+	Channel string
+	Publication
+}
+
+type ServerSubscribeEvent struct {
+	Channel      string
+	Resubscribed bool
+	Recovered    bool
+}
+
+// ServerJoinEvent has info about user who left channel.
+type ServerJoinEvent struct {
+	Channel string
+	ClientInfo
+}
+
+// ServerLeaveEvent has info about user who joined channel.
+type ServerLeaveEvent struct {
+	Channel string
+	ClientInfo
+}
+
+// ServerUnsubscribeEvent is an event passed to unsubscribe event handler.
+type ServerUnsubscribeEvent struct {
+	Channel string
+}
+
 // ConnectEvent is a connect event context passed to OnConnect callback.
 type ConnectEvent struct {
 	ClientID string
@@ -47,6 +76,31 @@ type MessageHandler interface {
 	OnMessage(*Client, MessageEvent)
 }
 
+// ServerPublishHandler ...
+type ServerPublishHandler interface {
+	OnServerPublish(*Client, ServerPublishEvent)
+}
+
+// ServerSubscribeHandler ...
+type ServerSubscribeHandler interface {
+	OnServerSubscribe(*Client, ServerSubscribeEvent)
+}
+
+// ServerUnsubscribeHandler ...
+type ServerUnsubscribeHandler interface {
+	OnServerUnsubscribe(*Client, ServerUnsubscribeEvent)
+}
+
+// ServerJoinHandler ...
+type ServerJoinHandler interface {
+	OnServerJoin(*Client, ServerJoinEvent)
+}
+
+// ServerLeaveHandler ...
+type ServerLeaveHandler interface {
+	OnServerLeave(*Client, ServerLeaveEvent)
+}
+
 // PrivateSubHandler is an interface describing how to handle private subscription request.
 type PrivateSubHandler interface {
 	OnPrivateSub(*Client, PrivateSubEvent) (string, error)
@@ -62,24 +116,54 @@ type ErrorHandler interface {
 	OnError(*Client, ErrorEvent)
 }
 
-// EventHub has all event handlers for client.
-type EventHub struct {
-	onConnect    ConnectHandler
-	onDisconnect DisconnectHandler
-	onPrivateSub PrivateSubHandler
-	onRefresh    RefreshHandler
-	onError      ErrorHandler
-	onMessage    MessageHandler
+// eventHub has all event handlers for client.
+type eventHub struct {
+	onConnect           ConnectHandler
+	onDisconnect        DisconnectHandler
+	onPrivateSub        PrivateSubHandler
+	onRefresh           RefreshHandler
+	onError             ErrorHandler
+	onMessage           MessageHandler
+	onServerSubscribe   ServerSubscribeHandler
+	onServerPublish     ServerPublishHandler
+	onServerJoin        ServerJoinHandler
+	onServerLeave       ServerLeaveHandler
+	onServerUnsubscribe ServerUnsubscribeHandler
 }
 
-// newEventHub initializes new EventHub.
-func newEventHub() *EventHub {
-	return &EventHub{}
+// newEventHub initializes new eventHub.
+func newEventHub() *eventHub {
+	return &eventHub{}
 }
 
 // OnConnect is a function to handle connect event.
 func (c *Client) OnConnect(handler ConnectHandler) {
 	c.events.onConnect = handler
+}
+
+// OnServerPublish ...
+func (c *Client) OnServerPublish(handler ServerPublishHandler) {
+	c.events.onServerPublish = handler
+}
+
+// OnServerPublish ...
+func (c *Client) OnServerSubscribe(handler ServerSubscribeHandler) {
+	c.events.onServerSubscribe = handler
+}
+
+// OnServerUnsubscribe ...
+func (c *Client) OnServerUnsubscribe(handler ServerSubscribeHandler) {
+	c.events.onServerSubscribe = handler
+}
+
+// OnServerJoin ...
+func (c *Client) OnServerJoin(handler ServerJoinHandler) {
+	c.events.onServerJoin = handler
+}
+
+// OnServerLeave ...
+func (c *Client) OnServerLeave(handler ServerLeaveHandler) {
+	c.events.onServerLeave = handler
 }
 
 // OnDisconnect is a function to handle disconnect event.

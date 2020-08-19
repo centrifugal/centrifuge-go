@@ -2,63 +2,69 @@ package main
 
 import (
 	"log"
+	"net/http"
+
+	_ "net/http/pprof"
 
 	"github.com/centrifugal/centrifuge-go"
 )
 
 type eventHandler struct{}
 
-func (h *eventHandler) OnConnect(c *centrifuge.Client, e centrifuge.ConnectEvent) {
+func (h *eventHandler) OnConnect(_ *centrifuge.Client, _ centrifuge.ConnectEvent) {
 	log.Println("Connected")
 }
 
-func (h *eventHandler) OnError(c *centrifuge.Client, e centrifuge.ErrorEvent) {
+func (h *eventHandler) OnError(_ *centrifuge.Client, e centrifuge.ErrorEvent) {
 	log.Println("Error", e.Message)
 }
 
-func (h *eventHandler) OnDisconnect(c *centrifuge.Client, e centrifuge.DisconnectEvent) {
+func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
 	log.Println("Disconnected", e.Reason)
 }
 
 func (h *eventHandler) OnMessage(c *centrifuge.Client, e centrifuge.MessageEvent) {
 	log.Println("Message received", string(e.Data))
-	res, err := c.RPC([]byte("{}"))
+	result, err := c.RPC([]byte("{}"))
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	log.Printf("RPC result: %s", string(res))
+	log.Printf("RPC result 2: %s", string(result.Data))
 }
 
-func newConnection() *centrifuge.Client {
+func newClient() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
-
 	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
-
 	handler := &eventHandler{}
 	c.OnDisconnect(handler)
 	c.OnConnect(handler)
 	c.OnError(handler)
 	c.OnMessage(handler)
-
-	err := c.Connect()
-	if err != nil {
-		log.Fatalln(err)
-	}
 	return c
 }
 
 func main() {
 	log.Println("Start program")
-	c := newConnection()
+
+	c := newClient()
 	defer func() { _ = c.Close() }()
 
-	res, err := c.RPC([]byte("{}"))
+	err := c.Connect()
 	if err != nil {
-		log.Println(err)
+		log.Fatalln(err)
+	}
+
+	go func() {
+		log.Println(http.ListenAndServe(":5000", nil))
+	}()
+
+	result, err := c.RPC([]byte("{}"))
+	if err != nil {
+		log.Fatalln(err)
 		return
 	}
-	log.Printf("RPC result: %s", string(res))
+	log.Printf("RPC result: %s", string(result.Data))
 
 	select {}
 }
