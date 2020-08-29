@@ -71,32 +71,37 @@ type DisconnectHandler interface {
 	OnDisconnect(*Client, DisconnectEvent)
 }
 
-// MessageHandler is an interface describing how to async message from server.
+// MessageHandler is an interface describing how to handle async message from server.
 type MessageHandler interface {
 	OnMessage(*Client, MessageEvent)
 }
 
-// ServerPublishHandler ...
+// ServerPublishHandler is an interface describing how to handle Publication from
+// server-side subscriptions.
 type ServerPublishHandler interface {
 	OnServerPublish(*Client, ServerPublishEvent)
 }
 
-// ServerSubscribeHandler ...
+// ServerSubscribeHandler is an interface describing how to handle subscribe events from
+// server-side subscriptions.
 type ServerSubscribeHandler interface {
 	OnServerSubscribe(*Client, ServerSubscribeEvent)
 }
 
-// ServerUnsubscribeHandler ...
+// ServerUnsubscribeHandler is an interface describing how to handle unsubscribe events from
+// server-side subscriptions.
 type ServerUnsubscribeHandler interface {
 	OnServerUnsubscribe(*Client, ServerUnsubscribeEvent)
 }
 
-// ServerJoinHandler ...
+// ServerJoinHandler is an interface describing how to handle Join events from
+// server-side subscriptions.
 type ServerJoinHandler interface {
 	OnServerJoin(*Client, ServerJoinEvent)
 }
 
-// ServerLeaveHandler ...
+// ServerLeaveHandler is an interface describing how to handle Leave events from
+// server-side subscriptions.
 type ServerLeaveHandler interface {
 	OnServerLeave(*Client, ServerLeaveEvent)
 }
@@ -141,27 +146,27 @@ func (c *Client) OnConnect(handler ConnectHandler) {
 	c.events.onConnect = handler
 }
 
-// OnServerPublish ...
+// OnServerPublish sets function to handle Publications from server-side subscriptions.
 func (c *Client) OnServerPublish(handler ServerPublishHandler) {
 	c.events.onServerPublish = handler
 }
 
-// OnServerPublish ...
+// OnServerSubscribe sets function to handle server-side subscription subscribe events.
 func (c *Client) OnServerSubscribe(handler ServerSubscribeHandler) {
 	c.events.onServerSubscribe = handler
 }
 
-// OnServerUnsubscribe ...
+// OnServerUnsubscribe sets function to handle unsubscribe from server-side subscriptions.
 func (c *Client) OnServerUnsubscribe(handler ServerSubscribeHandler) {
 	c.events.onServerSubscribe = handler
 }
 
-// OnServerJoin ...
+// OnServerJoin sets function to handle Join event from server-side subscriptions.
 func (c *Client) OnServerJoin(handler ServerJoinHandler) {
 	c.events.onServerJoin = handler
 }
 
-// OnServerLeave ...
+// OnServerLeave sets function to handle Leave event from server-side subscriptions.
 func (c *Client) OnServerLeave(handler ServerLeaveHandler) {
 	c.events.onServerLeave = handler
 }
