@@ -1,3 +1,8 @@
+v0.6.1
+======
+
+* fix setting server-side unsubscribe handler, call server-side unsubscribe event on disconnect 
+
 v0.6.0
 ======
 

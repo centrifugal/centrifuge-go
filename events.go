@@ -157,8 +157,8 @@ func (c *Client) OnServerSubscribe(handler ServerSubscribeHandler) {
 }
 
 // OnServerUnsubscribe sets function to handle unsubscribe from server-side subscriptions.
-func (c *Client) OnServerUnsubscribe(handler ServerSubscribeHandler) {
-	c.events.onServerSubscribe = handler
+func (c *Client) OnServerUnsubscribe(handler ServerUnsubscribeHandler) {
+	c.events.onServerUnsubscribe = handler
 }
 
 // OnServerJoin sets function to handle Join event from server-side subscriptions.

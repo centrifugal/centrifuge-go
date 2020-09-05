@@ -375,9 +375,13 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		c.transport = nil
 	}
 
-	unsubs := make([]*Subscription, 0, len(c.subs))
+	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
-		unsubs = append(unsubs, s)
+		subsToUnsubscribe = append(subsToUnsubscribe, s)
+	}
+	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
+	for ch := range c.serverSubs {
+		serverSubsToUnsubscribe = append(serverSubsToUnsubscribe, ch)
 	}
 
 	needDisconnectEvent := !c.hasBeenDisconnected || c.status == CONNECTED
@@ -397,7 +401,7 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		}
 	}
 
-	for _, s := range unsubs {
+	for _, s := range subsToUnsubscribe {
 		s.triggerOnUnsubscribe(true, d.Reconnect)
 	}
 
@@ -406,8 +410,18 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		handler = c.events.onDisconnect
 	}
 
+	var serverUnsubscribeHandler ServerUnsubscribeHandler
+	if c.events != nil && c.events.onServerUnsubscribe != nil {
+		serverUnsubscribeHandler = c.events.onServerUnsubscribe
+	}
+
 	if handler != nil && needDisconnectEvent {
 		c.runHandler(func() {
+			if serverUnsubscribeHandler != nil {
+				for _, ch := range serverSubsToUnsubscribe {
+					serverUnsubscribeHandler.OnServerUnsubscribe(c, ServerUnsubscribeEvent{Channel: ch})
+				}
+			}
 			handler.OnDisconnect(c, DisconnectEvent{Reason: d.Reason, Reconnect: d.Reconnect})
 		})
 	}
