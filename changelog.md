@@ -1,3 +1,8 @@
+v0.6.2
+======
+
+* fix deadlock on a private channel resubscribe - see [#38](https://github.com/centrifugal/centrifuge-go/pull/38)
+
 v0.6.1
 ======
 
