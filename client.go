@@ -892,7 +892,7 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 			return
 		}
 
-		err = c.resubscribe()
+		err = c.resubscribe(c.id)
 		if err != nil {
 			// we need just to close the connection and outgoing requests here
 			// but preserve all subscriptions.
@@ -913,9 +913,9 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 	return err
 }
 
-func (c *Client) resubscribe() error {
+func (c *Client) resubscribe(clientID string) error {
 	for _, sub := range c.subs {
-		err := sub.resubscribe(true)
+		err := sub.resubscribe(true, clientID)
 		if err != nil {
 			return err
 		}
@@ -1017,7 +1017,7 @@ func (c *Client) sendSubRefresh(channel string, fn func(protocol.SubRefreshResul
 	clientID := c.id
 	c.mu.RUnlock()
 
-	token, err := c.privateSign(channel)
+	token, err := c.privateSign(channel, clientID)
 	if err != nil {
 		return
 	}
@@ -1124,13 +1124,13 @@ func (c *Client) sendConnect(isReconnect bool, fn func(protocol.ConnectResult, e
 	})
 }
 
-func (c *Client) privateSign(channel string) (string, error) {
+func (c *Client) privateSign(channel string, clientID string) (string, error) {
 	var token string
 	if strings.HasPrefix(channel, c.config.PrivateChannelPrefix) && c.events != nil {
 		handler := c.events.onPrivateSub
 		if handler != nil {
 			ev := PrivateSubEvent{
-				ClientID: c.clientID(),
+				ClientID: clientID,
 				Channel:  channel,
 			}
 			ps, err := handler.OnPrivateSub(c, ev)
