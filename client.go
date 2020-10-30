@@ -1507,6 +1507,9 @@ func (c *Client) unsubscribe(channel string, fn func(UnsubscribeResult, error)) 
 		return
 	}
 	c.sendUnsubscribe(channel, fn)
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	delete(c.subs, channel)
 }
 
 func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, error)) {
