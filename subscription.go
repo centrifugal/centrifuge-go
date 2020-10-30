@@ -485,6 +485,7 @@ func (s *Subscription) resubscribe(isResubscribe bool, clientID string) error {
 		s.subscribeSuccess(isRecover, res)
 	})
 	s.mu.Unlock()
+	s.centrifuge.storeSubscription(s)
 	return err
 }
 

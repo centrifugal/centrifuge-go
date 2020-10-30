@@ -1512,6 +1512,15 @@ func (c *Client) unsubscribe(channel string, fn func(UnsubscribeResult, error)) 
 	delete(c.subs, channel)
 }
 
+func (c *Client) storeSubscription(s *Subscription) {
+	if c.subscribed(s.channel) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.subs[s.channel] = s
+}
+
 func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, error)) {
 	params := &protocol.UnsubscribeRequest{
 		Channel: channel,
