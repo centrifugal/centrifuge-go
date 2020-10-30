@@ -1,3 +1,8 @@
+v0.6.3
+======
+
+* Fix memory align on 32bit arch, see [#40](https://github.com/centrifugal/centrifuge-go/pull/40)
+
 v0.6.2
 ======
 
