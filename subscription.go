@@ -127,6 +127,7 @@ const (
 
 // Subscription represents client subscription to channel.
 type Subscription struct {
+	futureID        uint64
 	mu              sync.Mutex
 	channel         string
 	centrifuge      *Client
@@ -141,7 +142,6 @@ type Subscription struct {
 	err             error
 	needResubscribe bool
 	subFutures      map[uint64]subFuture
-	futureID        uint64
 }
 
 type subFuture struct {
