@@ -1516,8 +1516,8 @@ func (c *Client) storeSubscription(s *Subscription) {
 	if c.subscribed(s.channel) {
 		return
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	c.subs[s.channel] = s
 }
 

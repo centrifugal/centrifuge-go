@@ -316,7 +316,11 @@ func (s *Subscription) Subscribe() error {
 	if !s.centrifuge.connected() {
 		return nil
 	}
-	return s.resubscribe(false, s.centrifuge.clientID())
+	err := s.resubscribe(false, s.centrifuge.clientID())
+	if err != nil {
+		s.centrifuge.storeSubscription(s)
+	}
+	return err
 }
 
 func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool, needRecover bool) {
@@ -485,7 +489,6 @@ func (s *Subscription) resubscribe(isResubscribe bool, clientID string) error {
 		s.subscribeSuccess(isRecover, res)
 	})
 	s.mu.Unlock()
-	s.centrifuge.storeSubscription(s)
 	return err
 }
 
