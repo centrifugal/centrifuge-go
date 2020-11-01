@@ -1507,8 +1507,8 @@ func (c *Client) unsubscribe(channel string, fn func(UnsubscribeResult, error)) 
 		return
 	}
 	c.sendUnsubscribe(channel, fn)
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	delete(c.subs, channel)
 }
 
@@ -1516,8 +1516,8 @@ func (c *Client) storeSubscription(s *Subscription) {
 	if c.subscribed(s.channel) {
 		return
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.subs[s.channel] = s
 }
 
