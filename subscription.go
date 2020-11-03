@@ -308,12 +308,16 @@ func (s *Subscription) Unsubscribe() error {
 	return nil
 }
 
+// Close remove subscription from client's subs map
+func (s *Subscription) Close() {
+	s.centrifuge.removeSubscription(s.channel)
+}
+
 // Subscribe allows to subscribe again after unsubscribing.
 func (s *Subscription) Subscribe() error {
 	s.mu.Lock()
 	s.needResubscribe = true
 	s.mu.Unlock()
-	s.centrifuge.storeSubscription(s)
 	if !s.centrifuge.connected() {
 		return nil
 	}
