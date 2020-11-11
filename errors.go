@@ -20,5 +20,5 @@ var (
 	ErrDuplicateSubscription = errors.New("duplicate subscription")
 	// ErrSubscribeClosed returned if subscription was closed
 	// for subscribe to this channel should use Client's NewSubscription
-	ErrSubscribeClosed = errors.New("subscribe is closed")
+	ErrSubscriptionClosed = errors.New("subscription is closed")
 )

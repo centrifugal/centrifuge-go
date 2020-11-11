@@ -318,7 +318,7 @@ func (s *Subscription) Close() {
 // Subscribe allows to subscribe again after unsubscribing.
 func (s *Subscription) Subscribe() error {
 	if s.status == SUBCLOSED {
-		return ErrSubscribeClosed
+		return ErrSubscriptionClosed
 	}
 	s.mu.Lock()
 	s.needResubscribe = true
