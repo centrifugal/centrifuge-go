@@ -192,6 +192,13 @@ func (s *Subscription) removeSubFuture(id uint64) {
 
 // Publish allows to publish data to channel.
 func (s *Subscription) Publish(data []byte) (PublishResult, error) {
+	s.mu.Lock()
+	if s.status == SUBCLOSED {
+		s.mu.Unlock()
+		return PublishResult{}, ErrSubscriptionClosed
+	}
+	s.mu.Unlock()
+
 	resCh := make(chan PublishResult, 1)
 	errCh := make(chan error, 1)
 	s.publish(data, func(result PublishResult, err error) {
@@ -203,6 +210,13 @@ func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 
 // History allows to extract channel history.
 func (s *Subscription) History() (HistoryResult, error) {
+	s.mu.Lock()
+	if s.status == SUBCLOSED {
+		s.mu.Unlock()
+		return HistoryResult{}, ErrSubscriptionClosed
+	}
+	s.mu.Unlock()
+
 	resCh := make(chan HistoryResult, 1)
 	errCh := make(chan error, 1)
 	s.history(func(result HistoryResult, err error) {
@@ -214,6 +228,13 @@ func (s *Subscription) History() (HistoryResult, error) {
 
 // Presence allows to extract channel history.
 func (s *Subscription) Presence() (PresenceResult, error) {
+	s.mu.Lock()
+	if s.status == SUBCLOSED {
+		s.mu.Unlock()
+		return PresenceResult{}, ErrSubscriptionClosed
+	}
+	s.mu.Unlock()
+
 	resCh := make(chan PresenceResult, 1)
 	errCh := make(chan error, 1)
 	s.presence(func(result PresenceResult, err error) {
@@ -304,23 +325,38 @@ func (s *Subscription) presenceStats(fn func(PresenceStatsResult, error)) {
 
 // Unsubscribe allows to unsubscribe from channel.
 func (s *Subscription) Unsubscribe() error {
+	s.mu.Lock()
+	if s.status == SUBCLOSED {
+		s.mu.Unlock()
+		return ErrSubscriptionClosed
+	}
+	s.mu.Unlock()
+
 	s.triggerOnUnsubscribe(false, false)
 	s.centrifuge.unsubscribe(s.channel, func(result UnsubscribeResult, err error) {})
 	return nil
 }
 
 // Close remove subscription from client's subs map
-func (s *Subscription) Close() {
+func (s *Subscription) Close() error {
+	s.mu.Lock()
+	if s.status == SUBCLOSED {
+		s.mu.Unlock()
+		return ErrSubscriptionClosed
+	}
+	s.mu.Unlock()
 	s.status = SUBCLOSED
 	s.centrifuge.removeSubscription(s.channel)
+	return nil
 }
 
 // Subscribe allows to subscribe again after unsubscribing.
 func (s *Subscription) Subscribe() error {
+	s.mu.Lock()
 	if s.status == SUBCLOSED {
+		s.mu.Unlock()
 		return ErrSubscriptionClosed
 	}
-	s.mu.Lock()
 	s.needResubscribe = true
 	s.mu.Unlock()
 	if !s.centrifuge.connected() {
