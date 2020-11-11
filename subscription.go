@@ -123,6 +123,7 @@ const (
 	SUBSCRIBING
 	SUBSCRIBED
 	SUBERROR
+	SUBCLOSED
 )
 
 // Subscription represents client subscription to channel.
@@ -310,11 +311,15 @@ func (s *Subscription) Unsubscribe() error {
 
 // Close remove subscription from client's subs map
 func (s *Subscription) Close() {
+	s.status = SUBCLOSED
 	s.centrifuge.removeSubscription(s.channel)
 }
 
 // Subscribe allows to subscribe again after unsubscribing.
 func (s *Subscription) Subscribe() error {
+	if s.status == SUBCLOSED {
+		return ErrSubscribeClosed
+	}
 	s.mu.Lock()
 	s.needResubscribe = true
 	s.mu.Unlock()
