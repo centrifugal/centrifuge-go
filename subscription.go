@@ -323,6 +323,11 @@ func (s *Subscription) presenceStats(fn func(PresenceStatsResult, error)) {
 	})
 }
 
+func (s *Subscription) triggerUnsubscribeEvent() {
+	s.triggerOnUnsubscribe(false, false)
+	s.centrifuge.unsubscribe(s.channel, func(result UnsubscribeResult, err error) {})
+}
+
 // Unsubscribe allows to unsubscribe from channel.
 func (s *Subscription) Unsubscribe() error {
 	s.mu.Lock()
@@ -332,8 +337,7 @@ func (s *Subscription) Unsubscribe() error {
 	}
 	s.mu.Unlock()
 
-	s.triggerOnUnsubscribe(false, false)
-	s.centrifuge.unsubscribe(s.channel, func(result UnsubscribeResult, err error) {})
+	s.triggerUnsubscribeEvent()
 	return nil
 }
 
@@ -344,8 +348,10 @@ func (s *Subscription) Close() error {
 		s.mu.Unlock()
 		return ErrSubscriptionClosed
 	}
-	s.mu.Unlock()
 	s.status = SUBCLOSED
+	s.mu.Unlock()
+
+	s.triggerUnsubscribeEvent()
 	s.centrifuge.removeSubscription(s.channel)
 	return nil
 }
