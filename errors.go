@@ -18,7 +18,6 @@ var (
 	// that server does not allow subscribing to the same channel twice for
 	// the same connection.
 	ErrDuplicateSubscription = errors.New("duplicate subscription")
-	// ErrSubscribeClosed returned if subscription was closed
-	// for subscribe to this channel should use Client's NewSubscription
-	ErrSubscriptionClosed = errors.New("subscription is closed")
+	// ErrSubscribeClosed returned if Subscription was closed.
+	ErrSubscriptionClosed = errors.New("subscription closed")
 )

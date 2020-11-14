@@ -117,7 +117,7 @@ func (s *Subscription) OnSubscribeError(handler SubscribeErrorHandler) {
 	s.events.onSubscribeError = handler
 }
 
-// Describe different states of Subscription.
+// Different states of Subscription.
 const (
 	UNSUBSCRIBED = iota
 	SUBSCRIBING
@@ -126,8 +126,7 @@ const (
 	SUBCLOSED
 )
 
-// Subscription represents client subscription to channel. Subscription object
-//
+// Subscription represents client subscription to channel.
 type Subscription struct {
 	futureID        uint64
 	mu              sync.Mutex
