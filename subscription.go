@@ -184,12 +184,6 @@ func (s *Subscription) resolveSubFutures(err error) {
 	s.subFutures = make(map[uint64]subFuture)
 }
 
-func (s *Subscription) removeSubFuture(id uint64) {
-	s.mu.Lock()
-	delete(s.subFutures, id)
-	s.mu.Unlock()
-}
-
 // Publish allows to publish data to channel.
 func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 	s.mu.Lock()
