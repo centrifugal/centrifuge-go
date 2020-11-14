@@ -1145,7 +1145,10 @@ func (c *Client) privateSign(channel string, clientID string) (string, error) {
 	return token, nil
 }
 
-// NewSubscription allows to create new subscription on channel.
+// NewSubscription allocates new Subscription on a channel. As soon as Subscription
+// successfully created Client keeps reference to it inside internal map registry to
+// manage automatic resubscribe on reconnect. If you ended up with Subscription then
+// you can free resources by calling Subscription.Close method.
 func (c *Client) NewSubscription(channel string) (*Subscription, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

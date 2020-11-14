@@ -30,6 +30,7 @@ type testSubscriptionHandler struct {
 	onSubscribeSuccess func(*Subscription, SubscribeSuccessEvent)
 	onSubscribeError   func(*Subscription, SubscribeErrorEvent)
 	onPublish          func(*Subscription, PublishEvent)
+	onUnsubscribe      func(*Subscription, UnsubscribeEvent)
 }
 
 func (h *testSubscriptionHandler) OnSubscribeSuccess(c *Subscription, e SubscribeSuccessEvent) {
@@ -47,6 +48,12 @@ func (h *testSubscriptionHandler) OnSubscribeError(c *Subscription, e SubscribeE
 func (h *testSubscriptionHandler) OnPublish(c *Subscription, e PublishEvent) {
 	if h.onPublish != nil {
 		h.onPublish(c, e)
+	}
+}
+
+func (h *testSubscriptionHandler) OnUnsubscribe(c *Subscription, e UnsubscribeEvent) {
+	if h.onUnsubscribe != nil {
+		h.onUnsubscribe(c, e)
 	}
 }
 
@@ -269,5 +276,54 @@ func TestHandlePublish(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Errorf("expecting publication received over subscription")
+	}
+}
+
+func TestSubscriptionClose(t *testing.T) {
+	subscribedCh := make(chan struct{}, 1)
+	unsubscribedCh := make(chan struct{}, 1)
+	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer func() { _ = client.Close() }()
+	_ = client.Connect()
+	sub, err := client.NewSubscription("test_subscription_close")
+	if err != nil {
+		t.Errorf("error on new subscription: %v", err)
+	}
+	handler := &testSubscriptionHandler{
+		onSubscribeSuccess: func(c *Subscription, e SubscribeSuccessEvent) {
+			close(subscribedCh)
+		},
+		onUnsubscribe: func(subscription *Subscription, event UnsubscribeEvent) {
+			close(unsubscribedCh)
+		},
+	}
+	sub.OnUnsubscribe(handler)
+	sub.OnSubscribeSuccess(handler)
+	sub.OnPublish(handler)
+	_ = sub.Subscribe()
+	select {
+	case <-subscribedCh:
+		if err != nil {
+			t.Errorf("finish with error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Errorf("timeout waiting for subscribe")
+	}
+	err = sub.Close()
+	if err != nil {
+		t.Fatal("unexpected error", err)
+	}
+	select {
+	case <-unsubscribedCh:
+	case <-time.After(3 * time.Second):
+		t.Errorf("timeout waiting for subscribe")
+	}
+	err = sub.Subscribe()
+	if err != ErrSubscriptionClosed {
+		t.Fatal("ErrSubscriptionClosed expected on Subscribe after Close")
+	}
+	err = sub.Close()
+	if err != ErrSubscriptionClosed {
+		t.Fatal("ErrSubscriptionClosed expected on second Close")
 	}
 }

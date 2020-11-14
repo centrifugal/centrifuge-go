@@ -1,3 +1,8 @@
+v0.6.4
+======
+
+* Add `Subscription.Close` method to close Subscription when it's not needed anymore. This method unsubscribes from a channel and removes Subscription from internal `Client` subscription registry – thus freeing resources. Subscription is not usable after `Close` called. This method can be helpful if you work with lots of short-living subscriptions to different channels to prevent unlimited internal Subscription registry growth.
+
 v0.6.3
 ======
 

@@ -126,7 +126,8 @@ const (
 	SUBCLOSED
 )
 
-// Subscription represents client subscription to channel.
+// Subscription represents client subscription to channel. Subscription object
+//
 type Subscription struct {
 	futureID        uint64
 	mu              sync.Mutex
@@ -317,11 +318,6 @@ func (s *Subscription) presenceStats(fn func(PresenceStatsResult, error)) {
 	})
 }
 
-func (s *Subscription) triggerUnsubscribeEvent() {
-	s.triggerOnUnsubscribe(false, false)
-	s.centrifuge.unsubscribe(s.channel, func(result UnsubscribeResult, err error) {})
-}
-
 // Unsubscribe allows to unsubscribe from channel.
 func (s *Subscription) Unsubscribe() error {
 	s.mu.Lock()
@@ -330,23 +326,35 @@ func (s *Subscription) Unsubscribe() error {
 		return ErrSubscriptionClosed
 	}
 	s.mu.Unlock()
-
-	s.triggerUnsubscribeEvent()
+	s.triggerOnUnsubscribe(false, false)
+	s.centrifuge.unsubscribe(s.channel, func(result UnsubscribeResult, err error) {})
 	return nil
 }
 
-// Close remove subscription from client's subs map
+// Close unsubscribes from channel and removes Subscription from Client's
+// subscription map.
 func (s *Subscription) Close() error {
+	var needUnsubscribeEvent bool
 	s.mu.Lock()
 	if s.status == SUBCLOSED {
 		s.mu.Unlock()
 		return ErrSubscriptionClosed
 	}
+	if s.status == SUBSCRIBED {
+		needUnsubscribeEvent = true
+	}
 	s.status = SUBCLOSED
 	s.mu.Unlock()
-
-	s.triggerUnsubscribeEvent()
 	s.centrifuge.removeSubscription(s.channel)
+	s.centrifuge.unsubscribe(s.channel, func(result UnsubscribeResult, err error) {})
+	if needUnsubscribeEvent {
+		if s.events != nil && s.events.onUnsubscribe != nil {
+			handler := s.events.onUnsubscribe
+			s.centrifuge.runHandler(func() {
+				handler.OnUnsubscribe(s, UnsubscribeEvent{})
+			})
+		}
+	}
 	return nil
 }
 
