@@ -41,6 +41,8 @@ type serverSub struct {
 // Close method to clean up state when you don't need client instance
 // anymore.
 type Client struct {
+	msgID               uint32
+	futureID            uint64
 	mu                  sync.RWMutex
 	url                 string
 	encoding            protocol.Type
@@ -50,7 +52,6 @@ type Client struct {
 	version             string
 	connectData         protocol.Raw
 	transport           transport
-	msgID               uint32
 	status              int
 	id                  string
 	subs                map[string]*Subscription
@@ -70,7 +71,6 @@ type Client struct {
 	delayPing           chan struct{}
 	reconnectCh         chan struct{}
 	closeCh             chan struct{}
-	futureID            uint64
 	connectFutures      map[uint64]connectFuture
 	hasBeenDisconnected bool
 	cbQueue             *cbQueue
