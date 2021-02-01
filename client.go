@@ -26,8 +26,6 @@ const (
 	CLOSED
 )
 
-const defaultClientName = "go"
-
 type serverSub struct {
 	Offset      uint64
 	Epoch       string
@@ -48,8 +46,6 @@ type Client struct {
 	encoding            protocol.Type
 	config              Config
 	token               string
-	name                string
-	version             string
 	connectData         protocol.Raw
 	transport           transport
 	status              int
@@ -97,7 +93,6 @@ func New(u string, config Config) *Client {
 
 	c := &Client{
 		url:               u,
-		name:              defaultClientName,
 		config:            config,
 		status:            DISCONNECTED,
 		encoding:          encoding,
@@ -135,24 +130,6 @@ func (c *Client) SetToken(token string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.token = token
-}
-
-// SetName allows to set client name. You should only use a limited
-// amount of client names throughout your applications – i.e. don't
-// make it unique per user for example, this name describes environment
-// from which client connects.
-func (c *Client) SetName(name string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.name = name
-}
-
-// SetVersion allows to set client version. This is an application
-// specific information.
-func (c *Client) SetVersion(version string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.version = version
 }
 
 // SetConnectData allows to set data to send in connect command.
@@ -265,7 +242,7 @@ func (c *Client) rpc(method string, data []byte, fn func(RPCResult, error)) {
 			return
 		}
 		if r.Error != nil {
-			fn(RPCResult{}, r.Error)
+			fn(RPCResult{}, errorFromProto(r.Error))
 			return
 		}
 		var res protocol.RPCResult
@@ -924,7 +901,7 @@ func (c *Client) resubscribe(clientID string) error {
 }
 
 func isTokenExpiredError(err error) bool {
-	if e, ok := err.(*protocol.Error); ok && e.Code == 109 {
+	if e, ok := err.(*Error); ok && e.Code == 109 {
 		return true
 	}
 	return false
@@ -1050,7 +1027,7 @@ func (c *Client) sendSubRefresh(channel string, fn func(protocol.SubRefreshResul
 			return
 		}
 		if r.Error != nil {
-			fn(protocol.SubRefreshResult{}, r.Error)
+			fn(protocol.SubRefreshResult{}, errorFromProto(r.Error))
 			return
 		}
 		var res protocol.SubRefreshResult
@@ -1069,17 +1046,11 @@ func (c *Client) sendConnect(isReconnect bool, fn func(protocol.ConnectResult, e
 		Method: protocol.MethodTypeConnect,
 	}
 
-	if c.token != "" || c.connectData != nil || len(c.serverSubs) > 0 || c.name != "" || c.version != "" {
+	if c.token != "" || c.connectData != nil || len(c.serverSubs) > 0 || c.config.Name != "" || c.config.Version != "" {
 		params := &protocol.ConnectRequest{}
-		if c.token != "" {
-			params.Token = c.token
-		}
-		if c.name != "" {
-			params.Name = c.name
-		}
-		if c.version != "" {
-			params.Version = c.version
-		}
+		params.Token = c.token
+		params.Name = c.config.Name
+		params.Version = c.config.Version
 		if c.connectData != nil {
 			params.Data = c.connectData
 		}
@@ -1110,7 +1081,7 @@ func (c *Client) sendConnect(isReconnect bool, fn func(protocol.ConnectResult, e
 			return
 		}
 		if reply.Error != nil {
-			fn(protocol.ConnectResult{}, reply.Error)
+			fn(protocol.ConnectResult{}, errorFromProto(reply.Error))
 			return
 		}
 
@@ -1203,7 +1174,7 @@ func (c *Client) sendSubscribe(channel string, recover bool, streamPos streamPos
 			return
 		}
 		if reply.Error != nil {
-			fn(protocol.SubscribeResult{}, reply.Error)
+			fn(protocol.SubscribeResult{}, errorFromProto(reply.Error))
 			return
 		}
 		var res protocol.SubscribeResult
@@ -1316,7 +1287,7 @@ func (c *Client) sendPublish(channel string, data []byte, fn func(PublishResult,
 			return
 		}
 		if r.Error != nil {
-			fn(PublishResult{}, r.Error)
+			fn(PublishResult{}, errorFromProto(r.Error))
 			return
 		}
 		fn(PublishResult{}, nil)
@@ -1363,7 +1334,7 @@ func (c *Client) sendHistory(channel string, fn func(HistoryResult, error)) {
 			return
 		}
 		if r.Error != nil {
-			fn(HistoryResult{}, r.Error)
+			fn(HistoryResult{}, errorFromProto(r.Error))
 			return
 		}
 		var res protocol.HistoryResult
@@ -1421,7 +1392,7 @@ func (c *Client) sendPresence(channel string, fn func(PresenceResult, error)) {
 			return
 		}
 		if r.Error != nil {
-			fn(PresenceResult{}, r.Error)
+			fn(PresenceResult{}, errorFromProto(r.Error))
 			return
 		}
 		var res protocol.PresenceResult
@@ -1483,7 +1454,7 @@ func (c *Client) sendPresenceStats(channel string, fn func(PresenceStatsResult, 
 			return
 		}
 		if r.Error != nil {
-			fn(PresenceStatsResult{}, r.Error)
+			fn(PresenceStatsResult{}, errorFromProto(r.Error))
 			return
 		}
 		var res protocol.PresenceStatsResult
@@ -1540,7 +1511,7 @@ func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, erro
 			return
 		}
 		if r.Error != nil {
-			fn(UnsubscribeResult{}, r.Error)
+			fn(UnsubscribeResult{}, errorFromProto(r.Error))
 			return
 		}
 		var res protocol.UnsubscribeResult
