@@ -31,6 +31,7 @@ type ClientInfo struct {
 	ChanInfo []byte
 }
 
+// Error represents protocol-level error.
 type Error struct {
 	Code    uint32
 	Message string
