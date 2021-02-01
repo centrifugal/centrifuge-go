@@ -1,6 +1,8 @@
 package centrifuge
 
-import "errors"
+import (
+	"errors"
+)
 
 var (
 	// ErrTimeout returned if operation timed out.

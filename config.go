@@ -8,17 +8,14 @@ import (
 	"time"
 )
 
+// Config defaults.
 const (
-	// DefaultHandshakeTimeout ...
-	DefaultHandshakeTimeout = time.Second
-	// DefaultReadTimeout ...
-	DefaultReadTimeout = 5 * time.Second
-	// DefaultWriteTimeout ...
-	DefaultWriteTimeout = time.Second
-	// DefaultPingInterval ...
-	DefaultPingInterval = 25 * time.Second
-	// DefaultPrivateChannelPrefix ...
+	DefaultHandshakeTimeout     = time.Second
+	DefaultReadTimeout          = 5 * time.Second
+	DefaultWriteTimeout         = time.Second
+	DefaultPingInterval         = 25 * time.Second
 	DefaultPrivateChannelPrefix = "$"
+	DefaultName                 = "go"
 )
 
 // Config contains various client options.
@@ -51,6 +48,14 @@ type Config struct {
 	CookieJar http.CookieJar
 	// Header specifies custom HTTP Header to send.
 	Header http.Header
+	// Name allows setting client name. You should only use a limited
+	// amount of client names throughout your applications – i.e. don't
+	// make it unique per user for example, this name semantically represents
+	// an environment from which client connects.
+	Name string
+	// Version allows setting client version. This is an application
+	// specific information. By default no version set.
+	Version string
 }
 
 // DefaultConfig returns Config with default options.
@@ -62,5 +67,6 @@ func DefaultConfig() Config {
 		HandshakeTimeout:     DefaultHandshakeTimeout,
 		PrivateChannelPrefix: DefaultPrivateChannelPrefix,
 		Header:               http.Header{},
+		Name:                 DefaultName,
 	}
 }

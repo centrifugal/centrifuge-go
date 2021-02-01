@@ -1,6 +1,10 @@
 package centrifuge
 
-import "github.com/centrifugal/protocol"
+import (
+	"fmt"
+
+	"github.com/centrifugal/protocol"
+)
 
 // Publication is a data sent to channel.
 type Publication struct {
@@ -25,6 +29,19 @@ type ClientInfo struct {
 	// ChanInfo is an additional information about connection in context of
 	// channel subscription.
 	ChanInfo []byte
+}
+
+type Error struct {
+	Code    uint32
+	Message string
+}
+
+func errorFromProto(err *protocol.Error) *Error {
+	return &Error{Code: err.Code, Message: err.Message}
+}
+
+func (e Error) Error() string {
+	return fmt.Sprintf("%d: %s", e.Code, e.Message)
 }
 
 func newPushEncoder(enc protocol.Type) protocol.PushEncoder {

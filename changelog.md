@@ -1,3 +1,24 @@
+v0.7.0
+======
+
+* Updated `github.com/centrifugal/protocol` package dependency to catch up with the latest changes in it
+* Introduced `Error` type which is used where we previously exposed `protocol.Error` – so there is no need to import `protocol` package in application code to investigate error code or message
+* Methods `Client.SetName` and `Client.SetVersion` removed in favour of `Name` and `Version` fields of `Config`
+
+```
+$ gorelease -base v0.6.5 -version v0.7.0
+github.com/centrifugal/centrifuge-go
+------------------------------------
+Incompatible changes:
+- (*Client).SetName: removed
+- (*Client).SetVersion: removed
+Compatible changes:
+- Config.Name: added
+- Config.Version: added
+- DefaultName: added
+- Error: added
+```
+
 v0.6.5
 ======
 
