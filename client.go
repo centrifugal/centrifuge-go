@@ -26,8 +26,6 @@ const (
 	CLOSED
 )
 
-const defaultClientName = "go"
-
 type serverSub struct {
 	Offset      uint64
 	Epoch       string
