@@ -9,7 +9,7 @@ Feature matrix
 
 - [x] connect to server using JSON protocol format
 - [x] connect to server using Protobuf protocol format
-- [x] connect with JWT
+- [x] connect with token (JWT)
 - [x] connect with custom header
 - [x] automatic reconnect in case of errors, network problems etc
 - [x] an exponential backoff for reconnect
@@ -24,11 +24,16 @@ Feature matrix
 - [x] presence method of Subscription
 - [x] presence stats method of Subscription
 - [x] history method of Subscription
+- [x] top-level publish method
+- [ ] top-level presence method
+- [ ] top-level presence stats method
+- [ ] top-level history method
+- [ ] top-level unsubscribe method
 - [x] send asynchronous messages to server
 - [x] handle asynchronous messages from server
 - [x] send RPC commands
 - [x] publish to channel without being subscribed
-- [x] subscribe to private channels with JWT
+- [x] subscribe to private channels with token (JWT)
 - [x] connection token (JWT) refresh
 - [ ] private channel subscription token (JWT) refresh
 - [x] handle connection expired error
