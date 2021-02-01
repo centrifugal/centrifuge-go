@@ -34,9 +34,10 @@ Feature matrix
 - [x] handle connection expired error
 - [ ] handle subscription expired error
 - [x] ping/pong to find broken connection
-- [x] server-side subscriptions
 - [x] message recovery mechanism for client-side subscriptions
+- [x] server-side subscriptions
 - [x] message recovery mechanism for server-side subscriptions
+- [ ] history stream pagination
 
 License
 -------
