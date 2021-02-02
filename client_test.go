@@ -2,6 +2,7 @@ package centrifuge
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strconv"
@@ -325,5 +326,59 @@ func TestSubscriptionClose(t *testing.T) {
 	err = sub.Close()
 	if err != ErrSubscriptionClosed {
 		t.Fatal("ErrSubscriptionClosed expected on second Close")
+	}
+}
+
+func TestClient_Publish(t *testing.T) {
+	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer func() { _ = client.Close() }()
+	_ = client.Connect()
+	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
+	_, err := client.Publish("test", msg)
+	if err != nil {
+		// Publish should be allowed since we are using Centrifugo in insecure mode in tests.
+		t.Fatal(err)
+	}
+}
+
+func TestClient_Presence(t *testing.T) {
+	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer func() { _ = client.Close() }()
+	_ = client.Connect()
+	_, err := client.Presence("test")
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected protocol error")
+	}
+	if e.Code != 108 {
+		t.Fatal("expected not available error, got " + strconv.FormatUint(uint64(e.Code), 10))
+	}
+}
+
+func TestClient_PresenceStats(t *testing.T) {
+	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer func() { _ = client.Close() }()
+	_ = client.Connect()
+	_, err := client.PresenceStats("test")
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected protocol error")
+	}
+	if e.Code != 108 {
+		t.Fatal("expected not available error, got " + strconv.FormatUint(uint64(e.Code), 10))
+	}
+}
+
+func TestClient_History(t *testing.T) {
+	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	defer func() { _ = client.Close() }()
+	_ = client.Connect()
+	_, err := client.History("test")
+	var e *Error
+	if !errors.As(err, &e) {
+		t.Fatal("expected protocol error")
+	}
+	if e.Code != 108 {
+		t.Fatal("expected not available error, got " + strconv.FormatUint(uint64(e.Code), 10))
 	}
 }

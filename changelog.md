@@ -4,6 +4,7 @@ v0.7.0
 * Updated `github.com/centrifugal/protocol` package dependency to catch up with the latest changes in it
 * Introduced `Error` type which is used where we previously exposed `protocol.Error` – so there is no need to import `protocol` package in application code to investigate error code or message
 * Methods `Client.SetName` and `Client.SetVersion` removed in favour of `Name` and `Version` fields of `Config`
+* Add top-level methods `Client.History`, `Client.Presence`, `Client.PresenceStats` – so it's possible to call corresponding client API methods when using server-side subscriptions
 
 ```
 $ gorelease -base v0.6.5 -version v0.7.0
@@ -13,10 +14,15 @@ Incompatible changes:
 - (*Client).SetName: removed
 - (*Client).SetVersion: removed
 Compatible changes:
+- (*Client).History: added
+- (*Client).Presence: added
+- (*Client).PresenceStats: added
 - Config.Name: added
 - Config.Version: added
 - DefaultName: added
 - Error: added
+
+v0.7.0 is a valid semantic version for this release.
 ```
 
 v0.6.5

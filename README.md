@@ -4,8 +4,7 @@ Websocket client for [Centrifuge](https://github.com/centrifugal/centrifuge) lib
 
 There is no v1 release of this library yet – API still evolves. At the moment patch version updates only contain backwards compatible changes, minor version updates can have backwards incompatible API changes.
 
-Feature matrix
---------------
+## Feature matrix
 
 - [x] connect to server using JSON protocol format
 - [x] connect to server using Protobuf protocol format
@@ -25,9 +24,9 @@ Feature matrix
 - [x] presence stats method of Subscription
 - [x] history method of Subscription
 - [x] top-level publish method
-- [ ] top-level presence method
-- [ ] top-level presence stats method
-- [ ] top-level history method
+- [x] top-level presence method
+- [x] top-level presence stats method
+- [x] top-level history method
 - [ ] top-level unsubscribe method
 - [x] send asynchronous messages to server
 - [x] handle asynchronous messages from server
@@ -44,7 +43,12 @@ Feature matrix
 - [x] message recovery mechanism for server-side subscriptions
 - [ ] history stream pagination
 
-License
--------
+## Run tests
 
-MIT
+First run Centrifugo instance:
+
+```
+docker run -d -p 8000:8000 centrifugo/centrifugo:latest centrifugo --client_insecure
+```
+
+Then run `go test`

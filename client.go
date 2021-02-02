@@ -1302,6 +1302,17 @@ type HistoryResult struct {
 	Publications []Publication
 }
 
+// History for a channel without being subscribed.
+func (c *Client) History(channel string) (HistoryResult, error) {
+	resCh := make(chan HistoryResult, 1)
+	errCh := make(chan error, 1)
+	c.history(channel, func(result HistoryResult, err error) {
+		resCh <- result
+		errCh <- err
+	})
+	return <-resCh, <-errCh
+}
+
 func (c *Client) history(channel string, fn func(HistoryResult, error)) {
 	c.onConnect(func(err error) {
 		if err != nil {
@@ -1358,6 +1369,17 @@ func (c *Client) sendHistory(channel string, fn func(HistoryResult, error)) {
 // HistoryResult contains the result of presence op.
 type PresenceResult struct {
 	Presence map[string]ClientInfo
+}
+
+// Presence for a channel without being subscribed.
+func (c *Client) Presence(channel string) (PresenceResult, error) {
+	resCh := make(chan PresenceResult, 1)
+	errCh := make(chan error, 1)
+	c.presence(channel, func(result PresenceResult, err error) {
+		resCh <- result
+		errCh <- err
+	})
+	return <-resCh, <-errCh
 }
 
 func (c *Client) presence(channel string, fn func(PresenceResult, error)) {
@@ -1421,6 +1443,17 @@ type PresenceStats struct {
 // PresenceStatsResult wraps presence stats.
 type PresenceStatsResult struct {
 	PresenceStats
+}
+
+// PresenceStats for a channel without being subscribed.
+func (c *Client) PresenceStats(channel string) (PresenceStatsResult, error) {
+	resCh := make(chan PresenceStatsResult, 1)
+	errCh := make(chan error, 1)
+	c.presenceStats(channel, func(result PresenceStatsResult, err error) {
+		resCh <- result
+		errCh <- err
+	})
+	return <-resCh, <-errCh
 }
 
 func (c *Client) presenceStats(channel string, fn func(PresenceStatsResult, error)) {
