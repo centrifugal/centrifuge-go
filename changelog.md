@@ -1,3 +1,8 @@
+v0.7.1
+======
+
+* Fix atomic align on 32-bit [#49](https://github.com/centrifugal/centrifuge-go/pull/49)
+
 v0.7.0
 ======
 
