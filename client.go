@@ -39,8 +39,8 @@ type serverSub struct {
 // Close method to clean up state when you don't need client instance
 // anymore.
 type Client struct {
-	msgID               uint32
 	futureID            uint64
+	msgID               uint32
 	mu                  sync.RWMutex
 	url                 string
 	encoding            protocol.Type
