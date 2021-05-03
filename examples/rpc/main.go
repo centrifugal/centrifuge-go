@@ -35,7 +35,7 @@ func (h *eventHandler) OnMessage(c *centrifuge.Client, e centrifuge.MessageEvent
 
 func newClient() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
-	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
+	c := centrifuge.NewJsonClient(wsURL, centrifuge.DefaultConfig())
 	handler := &eventHandler{}
 	c.OnDisconnect(handler)
 	c.OnConnect(handler)
