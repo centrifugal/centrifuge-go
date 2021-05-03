@@ -105,7 +105,7 @@ func (h *eventHandler) OnUnsubscribe(sub *centrifuge.Subscription, _ centrifuge.
 
 func newClient(handler *eventHandler) *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
-	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
+	c := centrifuge.NewJsonClient(wsURL, centrifuge.DefaultConfig())
 
 	// Uncomment to make it work with Centrifugo and its JWT auth.
 	//c.SetToken(connToken("49", 0))

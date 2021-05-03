@@ -399,7 +399,7 @@ func (s *Subscription) subscribeSuccess(isResubscribe bool, res protocol.Subscri
 	}
 	closeCh := make(chan struct{})
 	s.subCloseCh = closeCh
-	s.runSubRefresh(res.TTL, closeCh)
+	s.runSubRefresh(res.Ttl, closeCh)
 	s.status = SUBSCRIBED
 	s.resolveSubFutures(nil)
 	s.mu.Unlock()
@@ -481,7 +481,7 @@ func (s *Subscription) handleLeave(info protocol.ClientInfo) {
 	}
 }
 
-func (s *Subscription) handleUnsub(m protocol.Unsub) {
+func (s *Subscription) handleUnsub(m protocol.Unsubscribe) {
 	_ = s.Unsubscribe()
 	if m.Resubscribe {
 		_ = s.Subscribe()
@@ -561,7 +561,7 @@ func (s *Subscription) runSubRefresh(ttl uint32, closeCh chan struct{}) {
 					return
 				}
 				s.mu.Lock()
-				s.runSubRefresh(result.TTL, closeCh)
+				s.runSubRefresh(result.Ttl, closeCh)
 				s.mu.Unlock()
 			})
 		}

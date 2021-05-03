@@ -63,7 +63,7 @@ func (h *subEventHandler) OnUnsubscribe(sub *centrifuge.Subscription, _ centrifu
 func newClient() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
 
-	c := centrifuge.New(wsURL, centrifuge.DefaultConfig())
+	c := centrifuge.NewJsonClient(wsURL, centrifuge.DefaultConfig())
 	c.SetToken(connToken("113", time.Now().Unix()+10))
 
 	handler := &eventHandler{}
