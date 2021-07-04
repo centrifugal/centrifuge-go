@@ -202,8 +202,33 @@ func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 	return <-resCh, <-errCh
 }
 
-// History allows to extract channel history.
-func (s *Subscription) History() (HistoryResult, error) {
+type HistoryOptions struct {
+	Limit int32
+	Since *StreamPosition
+}
+
+type HistoryOption func(options *HistoryOptions)
+
+func WithHistorySince(sp *StreamPosition) HistoryOption {
+	return func(options *HistoryOptions) {
+		options.Since = sp
+	}
+}
+
+func WithHistoryLimit(limit int32) HistoryOption {
+	return func(options *HistoryOptions) {
+		options.Limit = limit
+	}
+}
+
+// History allows to extract channel history. By default it returns current stream top
+// position without publications. Use WithHistoryLimit with a value > 0 to make this func
+// to return publications.
+func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
+	historyOpts := &HistoryOptions{}
+	for _, opt := range opts {
+		opt(historyOpts)
+	}
 	s.mu.Lock()
 	if s.status == SUBCLOSED {
 		s.mu.Unlock()
@@ -213,7 +238,7 @@ func (s *Subscription) History() (HistoryResult, error) {
 
 	resCh := make(chan HistoryResult, 1)
 	errCh := make(chan error, 1)
-	s.history(func(result HistoryResult, err error) {
+	s.history(*historyOpts, func(result HistoryResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
@@ -287,13 +312,13 @@ func (s *Subscription) publish(data []byte, fn func(PublishResult, error)) {
 	})
 }
 
-func (s *Subscription) history(fn func(HistoryResult, error)) {
+func (s *Subscription) history(opts HistoryOptions, fn func(HistoryResult, error)) {
 	s.onSubscribe(func(err error) {
 		if err != nil {
 			fn(HistoryResult{}, err)
 			return
 		}
-		s.centrifuge.history(s.channel, fn)
+		s.centrifuge.history(s.channel, opts, fn)
 	})
 }
 
@@ -357,8 +382,24 @@ func (s *Subscription) Close() error {
 	return nil
 }
 
-// Subscribe allows to subscribe again after unsubscribing.
-func (s *Subscription) Subscribe() error {
+type SubscribeOptions struct {
+	Since *StreamPosition
+}
+
+type SubscribeOption func(options *SubscribeOptions)
+
+func WithSubscribeSince(sp *StreamPosition) SubscribeOption {
+	return func(options *SubscribeOptions) {
+		options.Since = sp
+	}
+}
+
+// Subscribe allows initiating subscription process.
+func (s *Subscription) Subscribe(opts ...SubscribeOption) error {
+	subscribeOpts := &SubscribeOptions{}
+	for _, opt := range opts {
+		opt(subscribeOpts)
+	}
 	s.mu.Lock()
 	if s.status == SUBCLOSED {
 		s.mu.Unlock()
@@ -369,7 +410,7 @@ func (s *Subscription) Subscribe() error {
 	if !s.centrifuge.connected() {
 		return nil
 	}
-	return s.resubscribe(false, s.centrifuge.clientID())
+	return s.resubscribe(false, s.centrifuge.clientID(), *subscribeOpts)
 }
 
 func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool, needRecover bool) {
@@ -446,12 +487,7 @@ func (s *Subscription) handlePublication(pub protocol.Publication) {
 		s.centrifuge.runHandler(func() {
 			handler.OnPublish(s, PublishEvent{Publication: pubFromProto(pub)})
 			s.mu.Lock()
-			if pub.Seq > 0 || pub.Gen > 0 {
-				s.lastSeq = pub.Seq
-				s.lastGen = pub.Gen
-			} else {
-				s.lastOffset = pub.Offset
-			}
+			s.lastOffset = pub.Offset
 			s.mu.Unlock()
 		})
 	}
@@ -481,14 +517,14 @@ func (s *Subscription) handleLeave(info protocol.ClientInfo) {
 	}
 }
 
-func (s *Subscription) handleUnsub(m protocol.Unsubscribe) {
+func (s *Subscription) handleUnsubscribe(m protocol.Unsubscribe) {
 	_ = s.Unsubscribe()
 	if m.Resubscribe {
 		_ = s.Subscribe()
 	}
 }
 
-func (s *Subscription) resubscribe(isResubscribe bool, clientID string) error {
+func (s *Subscription) resubscribe(isResubscribe bool, clientID string, opts SubscribeOptions) error {
 	s.mu.Lock()
 	if s.status == SUBSCRIBED || s.status == SUBSCRIBING {
 		s.mu.Unlock()
@@ -518,16 +554,17 @@ func (s *Subscription) resubscribe(isResubscribe bool, clientID string) error {
 	}
 
 	var isRecover bool
-	var sp streamPosition
+	var sp StreamPosition
 	if s.recover && isResubscribe {
 		isRecover = true
-		if s.lastSeq > 0 || s.lastGen > 0 {
-			sp.Seq = s.lastSeq
-			sp.Gen = s.lastGen
-		} else {
-			sp.Offset = s.lastOffset
-		}
+		sp.Offset = s.lastOffset
 		sp.Epoch = s.lastEpoch
+	}
+	if opts.Since != nil {
+		s.recover = true
+		isRecover = true
+		sp.Offset = opts.Since.Offset
+		sp.Epoch = opts.Since.Epoch
 	}
 
 	err = s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token, func(res protocol.SubscribeResult, err error) {
@@ -574,28 +611,12 @@ func (s *Subscription) processRecover(res protocol.SubscribeResult) {
 	s.mu.Unlock()
 	if len(res.Publications) > 0 {
 		pubs := res.Publications
-
-		// Reverse pubs to handle legacy order.
-		// TODO: remove after Centrifuge v1 released.
-		// Reverse in case of Offset not set or legacy order inside slice.
-		if len(pubs) > 1 && (pubs[0].Offset == 0 || pubs[0].Offset > pubs[1].Offset) {
-			for i := len(pubs)/2 - 1; i >= 0; i-- {
-				opp := len(pubs) - 1 - i
-				pubs[i], pubs[opp] = pubs[opp], pubs[i]
-			}
-		}
-
 		for i := 0; i < len(pubs); i++ {
 			s.handlePublication(*res.Publications[i])
 		}
 	} else {
 		s.mu.Lock()
-		if res.Seq > 0 || res.Gen > 0 {
-			s.lastSeq = res.Seq
-			s.lastGen = res.Gen
-		} else {
-			s.lastOffset = res.Offset
-		}
+		s.lastOffset = res.Offset
 		s.mu.Unlock()
 	}
 }
