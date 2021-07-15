@@ -538,7 +538,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 		if !ok {
 			return c.handleServerUnsub(channel, *m)
 		}
-		sub.handleUnsub(*m)
+		sub.handleUnsubscribe(*m)
 	case protocol.Push_PUBLICATION:
 		m, err := c.pushDecoder.DecodePublication(msg.Data)
 		if err != nil {
@@ -619,7 +619,9 @@ func (c *Client) handleServerPublication(channel string, pub protocol.Publicatio
 				c.mu.Unlock()
 				return
 			}
-			serverSub.Offset = pub.Offset
+			if serverSub.Recoverable && pub.Offset > 0 {
+				serverSub.Offset = pub.Offset
+			}
 			c.mu.Unlock()
 		})
 	}
@@ -907,7 +909,7 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 
 func (c *Client) resubscribe(clientID string) error {
 	for _, sub := range c.subs {
-		err := sub.resubscribe(true, clientID)
+		err := sub.resubscribe(true, clientID, SubscribeOptions{})
 		if err != nil {
 			return err
 		}
@@ -1133,7 +1135,9 @@ func (c *Client) privateSign(channel string, clientID string) (string, error) {
 
 // NewSubscription allocates new Subscription on a channel. As soon as Subscription
 // successfully created Client keeps reference to it inside internal map registry to
-// manage automatic resubscribe on reconnect. If you ended up with Subscription then
+// manage automatic resubscribe on reconnect. After creating Subscription call its
+// Subscription.Subscribe method to actually start subscribing process. To temporary
+// unsubscribe call Subscription.Unsubscribe. If you ended up with Subscription then
 // you can free resources by calling Subscription.Close method.
 func (c *Client) NewSubscription(channel string) (*Subscription, error) {
 	c.mu.Lock()
@@ -1147,24 +1151,19 @@ func (c *Client) NewSubscription(channel string) (*Subscription, error) {
 	return sub, nil
 }
 
-type streamPosition struct {
-	Seq    uint32
-	Gen    uint32
+type StreamPosition struct {
 	Offset uint64
 	Epoch  string
 }
 
-func (c *Client) sendSubscribe(channel string, recover bool, streamPos streamPosition, token string, fn func(res protocol.SubscribeResult, err error)) error {
+func (c *Client) sendSubscribe(channel string, recover bool, streamPos StreamPosition, token string, fn func(res protocol.SubscribeResult, err error)) error {
 	params := &protocol.SubscribeRequest{
 		Channel: channel,
 	}
 
 	if recover {
 		params.Recover = true
-		if streamPos.Seq > 0 || streamPos.Gen > 0 {
-			params.Seq = streamPos.Seq
-			params.Gen = streamPos.Gen
-		} else if streamPos.Offset > 0 {
+		if streamPos.Offset > 0 {
 			params.Offset = streamPos.Offset
 		}
 		params.Epoch = streamPos.Epoch
@@ -1318,29 +1317,40 @@ type HistoryResult struct {
 }
 
 // History for a channel without being subscribed.
-func (c *Client) History(channel string) (HistoryResult, error) {
+func (c *Client) History(channel string, opts ...HistoryOption) (HistoryResult, error) {
 	resCh := make(chan HistoryResult, 1)
 	errCh := make(chan error, 1)
-	c.history(channel, func(result HistoryResult, err error) {
+	historyOpts := &HistoryOptions{}
+	for _, opt := range opts {
+		opt(historyOpts)
+	}
+	c.history(channel, *historyOpts, func(result HistoryResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
 	return <-resCh, <-errCh
 }
 
-func (c *Client) history(channel string, fn func(HistoryResult, error)) {
+func (c *Client) history(channel string, opts HistoryOptions, fn func(HistoryResult, error)) {
 	c.onConnect(func(err error) {
 		if err != nil {
 			fn(HistoryResult{}, err)
 			return
 		}
-		c.sendHistory(channel, fn)
+		c.sendHistory(channel, opts, fn)
 	})
 }
 
-func (c *Client) sendHistory(channel string, fn func(HistoryResult, error)) {
+func (c *Client) sendHistory(channel string, opts HistoryOptions, fn func(HistoryResult, error)) {
 	params := &protocol.HistoryRequest{
 		Channel: channel,
+		Limit:   opts.Limit,
+	}
+	if opts.Since != nil {
+		params.Since = &protocol.StreamPosition{
+			Offset: opts.Since.Offset,
+			Epoch:  opts.Since.Epoch,
+		}
 	}
 
 	paramsData, err := c.paramsEncoder.Encode(params)
