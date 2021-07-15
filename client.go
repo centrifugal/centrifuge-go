@@ -619,7 +619,9 @@ func (c *Client) handleServerPublication(channel string, pub protocol.Publicatio
 				c.mu.Unlock()
 				return
 			}
-			serverSub.Offset = pub.Offset
+			if serverSub.Recoverable && pub.Offset > 0 {
+				serverSub.Offset = pub.Offset
+			}
 			c.mu.Unlock()
 		})
 	}

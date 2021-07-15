@@ -487,7 +487,9 @@ func (s *Subscription) handlePublication(pub protocol.Publication) {
 		s.centrifuge.runHandler(func() {
 			handler.OnPublish(s, PublishEvent{Publication: pubFromProto(pub)})
 			s.mu.Lock()
-			s.lastOffset = pub.Offset
+			if pub.Offset > 0 {
+				s.lastOffset = pub.Offset
+			}
 			s.mu.Unlock()
 		})
 	}
