@@ -19,13 +19,13 @@ type ServerSubscribeEvent struct {
 	Recovered    bool
 }
 
-// ServerJoinEvent has info about user who left channel.
+// ServerJoinEvent has info about user who join channel.
 type ServerJoinEvent struct {
 	Channel string
 	ClientInfo
 }
 
-// ServerLeaveEvent has info about user who joined channel.
+// ServerLeaveEvent has info about user who left channel.
 type ServerLeaveEvent struct {
 	Channel string
 	ClientInfo
@@ -47,13 +47,6 @@ type ConnectEvent struct {
 type DisconnectEvent struct {
 	Reason    string
 	Reconnect bool
-}
-
-// ErrorEvent is an error event context passed to OnError callback.
-type ErrorEvent struct {
-	// TODO: return error type here instead of string
-	// so user code could distinguish various types of possible errors?
-	Message string
 }
 
 // MessageEvent is an event for async message from server to client.
@@ -116,9 +109,9 @@ type RefreshHandler interface {
 	OnRefresh(*Client) (string, error)
 }
 
-// ErrorHandler is an interface describing how to handle error event.
+// ErrorHandler is an interface describing how to handle error.
 type ErrorHandler interface {
-	OnError(*Client, ErrorEvent)
+	OnError(*Client, error)
 }
 
 // eventHub has all event handlers for client.

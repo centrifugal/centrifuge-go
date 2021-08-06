@@ -15,8 +15,8 @@ func (h *eventHandler) OnConnect(_ *centrifuge.Client, _ centrifuge.ConnectEvent
 	log.Println("Connected")
 }
 
-func (h *eventHandler) OnError(_ *centrifuge.Client, e centrifuge.ErrorEvent) {
-	log.Println("Error", e.Message)
+func (h *eventHandler) OnError(_ *centrifuge.Client, err error) {
+	log.Println("Error", err.Error())
 }
 
 func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {

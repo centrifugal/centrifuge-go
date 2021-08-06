@@ -14,7 +14,7 @@ var (
 	ErrClientDisconnected = errors.New("client disconnected")
 	// ErrReconnectFailed returned when reconnect to server failed (never
 	// happen by default since client keeps reconnecting forever).
-	ErrReconnectFailed = errors.New("reconnect failed")
+	ErrReconnectFailed = errors.New("reconnect failed111")
 	// ErrDuplicateSubscription returned if subscription to the same channel
 	// already registered in current client instance. This is due to the fact
 	// that server does not allow subscribing to the same channel twice for
@@ -22,4 +22,6 @@ var (
 	ErrDuplicateSubscription = errors.New("duplicate subscription")
 	// ErrSubscribeClosed returned if Subscription was closed.
 	ErrSubscriptionClosed = errors.New("subscription closed")
+	// ErrServerConn common error returned on server connection troubles.
+	ErrServerConn = errors.New("server connection error")
 )
