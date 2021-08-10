@@ -175,7 +175,7 @@ func (c *Client) handleError(err error) {
 	}
 	if handler != nil {
 		c.runHandler(func() {
-			handler.OnError(c, ErrorEvent{Message: err.Error()})
+			handler.OnError(c, err)
 		})
 	}
 }

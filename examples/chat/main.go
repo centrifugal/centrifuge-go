@@ -42,8 +42,8 @@ func (h *eventHandler) OnConnect(_ *centrifuge.Client, e centrifuge.ConnectEvent
 	log.Printf("Connected to chat with ID %s", e.ClientID)
 }
 
-func (h *eventHandler) OnError(_ *centrifuge.Client, e centrifuge.ErrorEvent) {
-	log.Printf("Error: %s", e.Message)
+func (h *eventHandler) OnError(_ *centrifuge.Client, err error) {
+	log.Printf("Error: %s", err.Error())
 }
 
 func (h *eventHandler) OnMessage(_ *centrifuge.Client, e centrifuge.MessageEvent) {

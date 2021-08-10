@@ -82,10 +82,10 @@ func newWebsocketTransport(url string, encoding protocol.Type, config websocketC
 
 	conn, resp, err := dialer.Dial(url, wsHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("error dial: %v", err)
+		return nil, fmt.Errorf("%w: error dial: %v", ErrServerConn, err)
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		return nil, fmt.Errorf("wrong status code while connecting to server: %d", resp.StatusCode)
+		return nil, fmt.Errorf("%w: wrong status code while connecting to server: %d", ErrServerConn, resp.StatusCode)
 	}
 
 	t := &websocketTransport{

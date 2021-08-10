@@ -22,4 +22,6 @@ var (
 	ErrDuplicateSubscription = errors.New("duplicate subscription")
 	// ErrSubscribeClosed returned if Subscription was closed.
 	ErrSubscriptionClosed = errors.New("subscription closed")
+	// ErrServerConn common error returned on server connection troubles.
+	ErrServerConn = errors.New("server connection error")
 )
