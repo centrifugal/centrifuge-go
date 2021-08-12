@@ -1,6 +1,7 @@
 package centrifuge
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -419,7 +420,7 @@ func (s *Subscription) subscribeError(err error) {
 		s.mu.Unlock()
 		return
 	}
-	if err == ErrTimeout {
+	if errors.Is(err, ErrTimeout) {
 		s.status = UNSUBSCRIBED
 		s.mu.Unlock()
 		go s.centrifuge.handleDisconnect(&disconnect{"subscribe timeout", true})

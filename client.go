@@ -901,7 +901,7 @@ func (c *Client) resubscribe(clientID string) error {
 }
 
 func isTokenExpiredError(err error) bool {
-	if e, ok := err.(*Error); ok && e.Code == 109 {
+	if e, ok := err.(*ClientError); ok && e.Code == 109 {
 		return true
 	}
 	return false

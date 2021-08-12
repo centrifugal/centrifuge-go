@@ -95,7 +95,7 @@ func newConnection() *centrifuge.Client {
 
 type eventHandler struct{}
 
-func (h *eventHandler) OnError(_ *centrifuge.Client, _ centrifuge.ErrorEvent) {}
+func (h *eventHandler) OnError(_ *centrifuge.Client, _ error) {}
 
 func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
 	if e.Reason != "clean disconnect" {

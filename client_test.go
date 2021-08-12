@@ -346,7 +346,7 @@ func TestClient_Presence(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.Presence("test")
-	var e *Error
+	var e *ClientError
 	if !errors.As(err, &e) {
 		t.Fatal("expected protocol error")
 	}
@@ -360,7 +360,7 @@ func TestClient_PresenceStats(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.PresenceStats("test")
-	var e *Error
+	var e *ClientError
 	if !errors.As(err, &e) {
 		t.Fatal("expected protocol error")
 	}
@@ -374,7 +374,7 @@ func TestClient_History(t *testing.T) {
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.History("test")
-	var e *Error
+	var e *ClientError
 	if !errors.As(err, &e) {
 		t.Fatal("expected protocol error")
 	}
