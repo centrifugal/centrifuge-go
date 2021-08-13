@@ -320,11 +320,11 @@ func TestSubscriptionClose(t *testing.T) {
 		t.Errorf("timeout waiting for subscribe")
 	}
 	err = sub.Subscribe()
-	if err != ErrSubscriptionClosed {
+	if !errors.Is(err, ErrSubscriptionClosed) {
 		t.Fatal("ErrSubscriptionClosed expected on Subscribe after Close")
 	}
 	err = sub.Close()
-	if err != ErrSubscriptionClosed {
+	if !errors.Is(err, ErrSubscriptionClosed) {
 		t.Fatal("ErrSubscriptionClosed expected on second Close")
 	}
 }
@@ -381,4 +381,14 @@ func TestClient_History(t *testing.T) {
 	if e.Code != 108 {
 		t.Fatal("expected not available error, got " + strconv.FormatUint(uint64(e.Code), 10))
 	}
+}
+
+func TestClient_ClosingError(t *testing.T) {
+	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	_ = client.Close()
+	err := client.Connect()
+	if !errors.Is(err, ErrClientClosed) {
+		t.Fatalf("expected client closed error, got %s", err)
+	}
+
 }
