@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt"
 )
 
 func connToken(user string, exp int64) string {
