@@ -184,7 +184,7 @@ func (c *Client) handleError(err error) {
 // Message handler must be registered on server.
 func (c *Client) Send(data []byte) error {
 	cmd := &protocol.Command{
-		Method: protocol.MethodTypeSend,
+		Method: protocol.Command_SEND,
 	}
 	params := &protocol.SendRequest{
 		Data: data,
@@ -223,8 +223,8 @@ func (c *Client) NamedRPC(method string, data []byte) (RPCResult, error) {
 
 func (c *Client) rpc(method string, data []byte, fn func(RPCResult, error)) {
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypeRPC,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_RPC,
 	}
 	params := &protocol.RPCRequest{
 		Data:   data,
@@ -463,16 +463,16 @@ func (c *Client) runHandler(fn func()) {
 }
 
 func (c *Client) handle(reply *protocol.Reply) error {
-	if reply.ID > 0 {
+	if reply.Id > 0 {
 		c.requestsMu.RLock()
-		req, ok := c.requests[reply.ID]
+		req, ok := c.requests[reply.Id]
 		c.requestsMu.RUnlock()
 		if ok {
 			if req.cb != nil {
 				req.cb(*reply, nil)
 			}
 		}
-		c.removeRequest(reply.ID)
+		c.removeRequest(reply.Id)
 	} else {
 		push, err := c.pushDecoder.Decode(reply.Result)
 		if err != nil {
@@ -505,14 +505,14 @@ func (c *Client) handleMessage(msg protocol.Message) error {
 
 func (c *Client) handlePush(msg protocol.Push) error {
 	switch msg.Type {
-	case protocol.PushTypeMessage:
+	case protocol.Push_MESSAGE:
 		m, err := c.pushDecoder.DecodeMessage(msg.Data)
 		if err != nil {
 			return err
 		}
 		_ = c.handleMessage(*m)
-	case protocol.PushTypeUnsub:
-		m, err := c.pushDecoder.DecodeUnsub(msg.Data)
+	case protocol.Push_UNSUBSCRIBE:
+		m, err := c.pushDecoder.DecodeUnsubscribe(msg.Data)
 		if err != nil {
 			return err
 		}
@@ -524,7 +524,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 			return c.handleServerUnsub(channel, *m)
 		}
 		sub.handleUnsub(*m)
-	case protocol.PushTypePublication:
+	case protocol.Push_PUBLICATION:
 		m, err := c.pushDecoder.DecodePublication(msg.Data)
 		if err != nil {
 			return err
@@ -537,7 +537,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 			return c.handleServerPublication(channel, *m)
 		}
 		sub.handlePublication(*m)
-	case protocol.PushTypeJoin:
+	case protocol.Push_JOIN:
 		m, err := c.pushDecoder.DecodeJoin(msg.Data)
 		if err != nil {
 			return nil
@@ -550,7 +550,7 @@ func (c *Client) handlePush(msg protocol.Push) error {
 			return c.handleServerJoin(channel, *m)
 		}
 		sub.handleJoin(m.Info)
-	case protocol.PushTypeLeave:
+	case protocol.Push_LEAVE:
 		m, err := c.pushDecoder.DecodeLeave(msg.Data)
 		if err != nil {
 			return nil
@@ -563,8 +563,8 @@ func (c *Client) handlePush(msg protocol.Push) error {
 			return c.handleServerLeave(channel, *m)
 		}
 		sub.handleLeave(m.Info)
-	case protocol.PushTypeSub:
-		m, err := c.pushDecoder.DecodeSub(msg.Data)
+	case protocol.Push_SUBSCRIBE:
+		m, err := c.pushDecoder.DecodeSubscribe(msg.Data)
 		if err != nil {
 			return nil
 		}
@@ -650,7 +650,7 @@ func (c *Client) handleServerLeave(channel string, leave protocol.Leave) error {
 	return nil
 }
 
-func (c *Client) handleServerSub(channel string, sub protocol.Sub) error {
+func (c *Client) handleServerSub(channel string, sub protocol.Subscribe) error {
 	c.mu.Lock()
 	_, ok := c.serverSubs[channel]
 	if ok {
@@ -678,7 +678,7 @@ func (c *Client) handleServerSub(channel string, sub protocol.Sub) error {
 	return nil
 }
 
-func (c *Client) handleServerUnsub(channel string, _ protocol.Unsub) error {
+func (c *Client) handleServerUnsub(channel string, _ protocol.Unsubscribe) error {
 	c.mu.Lock()
 	_, ok := c.serverSubs[channel]
 	if ok {
@@ -792,7 +792,7 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 				case <-time.After(time.Duration(interval) * time.Second):
 					c.sendRefresh(closeCh)
 				}
-			}(res.TTL, closeCh)
+			}(res.Ttl, closeCh)
 		}
 		c.resolveConnectFutures(nil)
 		c.mu.Unlock()
@@ -950,8 +950,8 @@ func (c *Client) sendRefresh(closeCh chan struct{}) {
 
 	c.mu.RLock()
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypeRefresh,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_REFRESH,
 	}
 	params := &protocol.RefreshRequest{
 		Token: c.token,
@@ -984,7 +984,7 @@ func (c *Client) sendRefresh(closeCh chan struct{}) {
 				case <-time.After(time.Duration(interval) * time.Second):
 					c.sendRefresh(closeCh)
 				}
-			}(res.TTL)
+			}(res.Ttl)
 		}
 	})
 }
@@ -1005,8 +1005,8 @@ func (c *Client) sendSubRefresh(channel string, fn func(protocol.SubRefreshResul
 		return
 	}
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypeSubRefresh,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_SUB_REFRESH,
 	}
 	params := &protocol.SubRefreshRequest{
 		Channel: channel,
@@ -1042,8 +1042,8 @@ func (c *Client) sendSubRefresh(channel string, fn func(protocol.SubRefreshResul
 
 func (c *Client) sendConnect(isReconnect bool, fn func(protocol.ConnectResult, error)) error {
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypeConnect,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_CONNECT,
 	}
 
 	if c.token != "" || c.connectData != nil || len(c.serverSubs) > 0 || c.config.Name != "" || c.config.Version != "" {
@@ -1164,8 +1164,8 @@ func (c *Client) sendSubscribe(channel string, recover bool, streamPos streamPos
 	}
 
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypeSubscribe,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_SUBSCRIBE,
 		Params: paramsData,
 	}
 	return c.sendAsync(cmd, func(reply protocol.Reply, err error) {
@@ -1277,8 +1277,8 @@ func (c *Client) sendPublish(channel string, data []byte, fn func(PublishResult,
 		return
 	}
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypePublish,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_PUBLISH,
 		Params: paramsData,
 	}
 	err = c.sendAsync(cmd, func(r protocol.Reply, err error) {
@@ -1335,8 +1335,8 @@ func (c *Client) sendHistory(channel string, fn func(HistoryResult, error)) {
 	}
 
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypeHistory,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_HISTORY,
 		Params: paramsData,
 	}
 	err = c.sendAsync(cmd, func(r protocol.Reply, err error) {
@@ -1404,8 +1404,8 @@ func (c *Client) sendPresence(channel string, fn func(PresenceResult, error)) {
 	}
 
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypePresence,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_PRESENCE,
 		Params: paramsData,
 	}
 	err = c.sendAsync(cmd, func(r protocol.Reply, err error) {
@@ -1477,8 +1477,8 @@ func (c *Client) sendPresenceStats(channel string, fn func(PresenceStatsResult, 
 	}
 
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypePresenceStats,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_PRESENCE_STATS,
 		Params: paramsData,
 	}
 	err = c.sendAsync(cmd, func(r protocol.Reply, err error) {
@@ -1534,8 +1534,8 @@ func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, erro
 	}
 
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypeUnsubscribe,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_UNSUBSCRIBE,
 		Params: paramsData,
 	}
 	err = c.sendAsync(cmd, func(r protocol.Reply, err error) {
@@ -1562,8 +1562,8 @@ func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, erro
 
 func (c *Client) sendPing(fn func(error)) {
 	cmd := &protocol.Command{
-		ID:     c.nextMsgID(),
-		Method: protocol.MethodTypePing,
+		Id:     c.nextMsgID(),
+		Method: protocol.Command_PING,
 	}
 	_ = c.sendAsync(cmd, func(_ protocol.Reply, err error) {
 		fn(err)
@@ -1571,18 +1571,18 @@ func (c *Client) sendPing(fn func(error)) {
 }
 
 func (c *Client) sendAsync(cmd *protocol.Command, cb func(protocol.Reply, error)) error {
-	c.addRequest(cmd.ID, cb)
+	c.addRequest(cmd.Id, cb)
 
 	err := c.send(cmd)
 	if err != nil {
 		return err
 	}
 	go func() {
-		defer c.removeRequest(cmd.ID)
+		defer c.removeRequest(cmd.Id)
 		select {
 		case <-time.After(c.config.ReadTimeout):
 			c.requestsMu.RLock()
-			req, ok := c.requests[cmd.ID]
+			req, ok := c.requests[cmd.Id]
 			c.requestsMu.RUnlock()
 			if !ok {
 				return
@@ -1590,7 +1590,7 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(protocol.Reply, error)
 			req.cb(protocol.Reply{}, ErrTimeout)
 		case <-c.closeCh:
 			c.requestsMu.RLock()
-			req, ok := c.requests[cmd.ID]
+			req, ok := c.requests[cmd.Id]
 			c.requestsMu.RUnlock()
 			if !ok {
 				return
