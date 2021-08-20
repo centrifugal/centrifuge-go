@@ -1,3 +1,8 @@
+v0.7.2
+======
+
+* Bump protocol to v0.5.0 [#56](https://github.com/centrifugal/centrifuge-go/pull/56)
+
 v0.7.1
 ======
 
