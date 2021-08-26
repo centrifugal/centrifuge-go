@@ -87,7 +87,7 @@ func newCommandEncoder(enc protocol.Type) protocol.CommandEncoder {
 	return protocol.NewProtobufCommandEncoder()
 }
 
-func infoFromProto(v protocol.ClientInfo) ClientInfo {
+func infoFromProto(v *protocol.ClientInfo) ClientInfo {
 	info := ClientInfo{
 		Client: v.GetClient(),
 		User:   v.GetUser(),
@@ -101,13 +101,13 @@ func infoFromProto(v protocol.ClientInfo) ClientInfo {
 	return info
 }
 
-func pubFromProto(pub protocol.Publication) Publication {
+func pubFromProto(pub *protocol.Publication) Publication {
 	p := Publication{
 		Offset: pub.GetOffset(),
 		Data:   pub.Data,
 	}
 	if pub.GetInfo() != nil {
-		info := infoFromProto(*pub.GetInfo())
+		info := infoFromProto(pub.GetInfo())
 		p.Info = &info
 	}
 	return p

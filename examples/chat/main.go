@@ -10,7 +10,7 @@ import (
 	_ "net/http/pprof"
 
 	"github.com/centrifugal/centrifuge-go"
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt"
 )
 
 // In real life clients should never know secret key. This is only for example

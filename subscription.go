@@ -430,7 +430,7 @@ func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool, needRecover bo
 	}
 }
 
-func (s *Subscription) subscribeSuccess(isResubscribe bool, res protocol.SubscribeResult) {
+func (s *Subscription) subscribeSuccess(isResubscribe bool, res *protocol.SubscribeResult) {
 	s.mu.Lock()
 	if s.status != SUBSCRIBING {
 		s.mu.Unlock()
@@ -476,7 +476,7 @@ func (s *Subscription) subscribeError(err error) {
 	}
 }
 
-func (s *Subscription) handlePublication(pub protocol.Publication) {
+func (s *Subscription) handlePublication(pub *protocol.Publication) {
 	var handler PublishHandler
 	if s.events != nil && s.events.onPublish != nil {
 		handler = s.events.onPublish
@@ -493,7 +493,7 @@ func (s *Subscription) handlePublication(pub protocol.Publication) {
 	}
 }
 
-func (s *Subscription) handleJoin(info protocol.ClientInfo) {
+func (s *Subscription) handleJoin(info *protocol.ClientInfo) {
 	var handler JoinHandler
 	if s.events != nil && s.events.onJoin != nil {
 		handler = s.events.onJoin
@@ -505,7 +505,7 @@ func (s *Subscription) handleJoin(info protocol.ClientInfo) {
 	}
 }
 
-func (s *Subscription) handleLeave(info protocol.ClientInfo) {
+func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
 	var handler LeaveHandler
 	if s.events != nil && s.events.onLeave != nil {
 		handler = s.events.onLeave
@@ -517,11 +517,8 @@ func (s *Subscription) handleLeave(info protocol.ClientInfo) {
 	}
 }
 
-func (s *Subscription) handleUnsubscribe(m protocol.Unsubscribe) {
+func (s *Subscription) handleUnsubscribe(_ *protocol.Unsubscribe) {
 	_ = s.Unsubscribe()
-	if m.Resubscribe {
-		_ = s.Subscribe()
-	}
 }
 
 func (s *Subscription) resubscribe(isResubscribe bool, clientID string, opts SubscribeOptions) error {
@@ -567,7 +564,7 @@ func (s *Subscription) resubscribe(isResubscribe bool, clientID string, opts Sub
 		sp.Epoch = opts.Since.Epoch
 	}
 
-	err = s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token, func(res protocol.SubscribeResult, err error) {
+	err = s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
 			s.subscribeError(err)
 			return
@@ -590,7 +587,7 @@ func (s *Subscription) runSubRefresh(ttl uint32, closeCh chan struct{}) {
 		case <-closeCh:
 			return
 		case <-time.After(time.Duration(interval) * time.Second):
-			s.centrifuge.sendSubRefresh(s.channel, func(result protocol.SubRefreshResult, err error) {
+			s.centrifuge.sendSubRefresh(s.channel, func(result *protocol.SubRefreshResult, err error) {
 				if err != nil {
 					return
 				}
@@ -605,14 +602,14 @@ func (s *Subscription) runSubRefresh(ttl uint32, closeCh chan struct{}) {
 	}(ttl)
 }
 
-func (s *Subscription) processRecover(res protocol.SubscribeResult) {
+func (s *Subscription) processRecover(res *protocol.SubscribeResult) {
 	s.mu.Lock()
 	s.lastEpoch = res.Epoch
 	s.mu.Unlock()
 	if len(res.Publications) > 0 {
 		pubs := res.Publications
 		for i := 0; i < len(pubs); i++ {
-			s.handlePublication(*res.Publications[i])
+			s.handlePublication(res.Publications[i])
 		}
 	} else {
 		s.mu.Lock()
