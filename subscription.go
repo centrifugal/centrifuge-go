@@ -135,8 +135,6 @@ type Subscription struct {
 	subCloseCh      chan struct{}
 	status          int
 	events          *subscriptionEventHub
-	lastSeq         uint32
-	lastGen         uint32
 	lastOffset      uint64
 	lastEpoch       string
 	recover         bool
