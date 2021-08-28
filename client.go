@@ -1345,6 +1345,7 @@ func (c *Client) sendHistory(channel string, opts HistoryOptions, fn func(Histor
 	params := &protocol.HistoryRequest{
 		Channel: channel,
 		Limit:   opts.Limit,
+		Reverse: opts.Reverse,
 	}
 	if opts.Since != nil {
 		params.Since = &protocol.StreamPosition{

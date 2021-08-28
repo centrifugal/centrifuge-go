@@ -201,8 +201,9 @@ func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 }
 
 type HistoryOptions struct {
-	Limit int32
-	Since *StreamPosition
+	Limit   int32
+	Since   *StreamPosition
+	Reverse bool
 }
 
 type HistoryOption func(options *HistoryOptions)
@@ -216,6 +217,12 @@ func WithHistorySince(sp *StreamPosition) HistoryOption {
 func WithHistoryLimit(limit int32) HistoryOption {
 	return func(options *HistoryOptions) {
 		options.Limit = limit
+	}
+}
+
+func WithHistoryReverse(reverse bool) HistoryOption {
+	return func(options *HistoryOptions) {
+		options.Reverse = reverse
 	}
 }
 

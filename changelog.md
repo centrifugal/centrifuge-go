@@ -1,3 +1,19 @@
+v0.8.1
+======
+
+* Support for History reverse option.
+
+```
+gorelease -base v0.8.0 -version v0.8.1
+github.com/centrifugal/centrifuge-go
+------------------------------------
+Compatible changes:
+- HistoryOptions.Reverse: added
+- WithHistoryReverse: added
+
+v0.8.1 is a valid semantic version for this release.
+```
+
 v0.8.0
 ======
 
