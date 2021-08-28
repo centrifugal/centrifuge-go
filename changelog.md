@@ -1,3 +1,31 @@
+v0.8.0
+======
+
+Update to work with Centrifuge >= v0.18.0 and Centrifugo v3.
+
+```
+gorelease -base v0.7.2 -version v0.8.0
+github.com/centrifugal/centrifuge-go
+------------------------------------
+Incompatible changes:
+- (*Client).History: changed from func(string) (HistoryResult, error) to func(string, ...HistoryOption) (HistoryResult, error)
+- (*Subscription).History: changed from func() (HistoryResult, error) to func(...HistoryOption) (HistoryResult, error)
+- (*Subscription).Subscribe: changed from func() error to func(...SubscribeOption) error
+Compatible changes:
+- HistoryOption: added
+- HistoryOptions: added
+- NewJsonClient: added
+- NewProtobufClient: added
+- StreamPosition: added
+- SubscribeOption: added
+- SubscribeOptions: added
+- WithHistoryLimit: added
+- WithHistorySince: added
+- WithSubscribeSince: added
+
+v0.8.0 is a valid semantic version for this release.
+```
+
 v0.7.2
 ======
 
