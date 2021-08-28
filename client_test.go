@@ -84,7 +84,7 @@ func TestConnectWrongAddress(t *testing.T) {
 }
 
 func TestSuccessfulConnect(t *testing.T) {
-	client := NewProtobufClient("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
@@ -109,7 +109,7 @@ func TestSuccessfulConnect(t *testing.T) {
 }
 
 func TestDisconnect(t *testing.T) {
-	client := NewProtobufClient("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	connectDoneCh := make(chan error, 1)
 	disconnectDoneCh := make(chan error, 1)
@@ -148,7 +148,7 @@ func TestDisconnect(t *testing.T) {
 }
 
 func TestPublishProtobuf(t *testing.T) {
-	client := NewProtobufClient("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.Publish("test", []byte("boom"))
