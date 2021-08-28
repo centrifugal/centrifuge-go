@@ -31,7 +31,7 @@ func extractDisconnectWebsocket(err error) *disconnect {
 type websocketTransport struct {
 	mu             sync.Mutex
 	conn           *websocket.Conn
-	encoding       protocol.Type
+	protocolType   protocol.Type
 	commandEncoder protocol.CommandEncoder
 	replyCh        chan *protocol.Reply
 	config         websocketConfig
@@ -68,7 +68,7 @@ type websocketConfig struct {
 	Header http.Header
 }
 
-func newWebsocketTransport(url string, encoding protocol.Type, config websocketConfig) (transport, error) {
+func newWebsocketTransport(url string, protocolType protocol.Type, config websocketConfig) (transport, error) {
 	wsHeaders := config.Header
 
 	dialer := &websocket.Dialer{}
@@ -79,6 +79,10 @@ func newWebsocketTransport(url string, encoding protocol.Type, config websocketC
 	dialer.EnableCompression = config.EnableCompression
 	dialer.TLSClientConfig = config.TLSConfig
 	dialer.Jar = config.CookieJar
+
+	if protocolType == protocol.TypeProtobuf {
+		dialer.Subprotocols = []string{"centrifuge-protobuf"}
+	}
 
 	conn, resp, err := dialer.Dial(url, wsHeaders)
 	if err != nil {
@@ -93,8 +97,8 @@ func newWebsocketTransport(url string, encoding protocol.Type, config websocketC
 		replyCh:        make(chan *protocol.Reply, 128),
 		config:         config,
 		closeCh:        make(chan struct{}),
-		commandEncoder: newCommandEncoder(encoding),
-		encoding:       encoding,
+		commandEncoder: newCommandEncoder(protocolType),
+		protocolType:   protocolType,
 	}
 	go t.reader()
 	return t, nil
@@ -126,7 +130,7 @@ func (t *websocketTransport) reader() {
 		//println("<----", strings.Trim(string(data), "\n"))
 	loop:
 		for {
-			decoder := newReplyDecoder(t.encoding, data)
+			decoder := newReplyDecoder(t.protocolType, data)
 			for {
 				reply, err := decoder.Decode()
 				if err != nil {
@@ -161,7 +165,7 @@ func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration)
 		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
 	//println("---->", strings.Trim(string(data), "\n"))
-	if t.encoding == protocol.TypeJSON {
+	if t.protocolType == protocol.TypeJSON {
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
 	} else {
 		err = t.conn.WriteMessage(websocket.BinaryMessage, data)

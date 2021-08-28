@@ -59,7 +59,7 @@ func (h *testSubscriptionHandler) OnUnsubscribe(c *Subscription, e UnsubscribeEv
 }
 
 func TestConnectWrongAddress(t *testing.T) {
-	client := New("ws://localhost:9000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:9000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
@@ -84,7 +84,7 @@ func TestConnectWrongAddress(t *testing.T) {
 }
 
 func TestSuccessfulConnect(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
@@ -109,7 +109,7 @@ func TestSuccessfulConnect(t *testing.T) {
 }
 
 func TestDisconnect(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	connectDoneCh := make(chan error, 1)
 	disconnectDoneCh := make(chan error, 1)
@@ -148,7 +148,7 @@ func TestDisconnect(t *testing.T) {
 }
 
 func TestPublishProtobuf(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.Publish("test", []byte("boom"))
@@ -158,7 +158,7 @@ func TestPublishProtobuf(t *testing.T) {
 }
 
 func TestPublishJSON(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.Publish("test", []byte("{}"))
@@ -168,7 +168,7 @@ func TestPublishJSON(t *testing.T) {
 }
 
 func TestPublishInvalidJSON(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.Publish("test", []byte("boom"))
@@ -179,7 +179,7 @@ func TestPublishInvalidJSON(t *testing.T) {
 
 func TestSubscribeSuccess(t *testing.T) {
 	doneCh := make(chan error, 1)
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test")
@@ -204,7 +204,7 @@ func TestSubscribeSuccess(t *testing.T) {
 
 func TestSubscribeError(t *testing.T) {
 	doneCh := make(chan error, 1)
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test:test")
@@ -241,7 +241,7 @@ func randString(n int) string {
 
 func TestHandlePublish(t *testing.T) {
 	doneCh := make(chan error, 1)
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test_handle_publish")
@@ -283,7 +283,7 @@ func TestHandlePublish(t *testing.T) {
 func TestSubscriptionClose(t *testing.T) {
 	subscribedCh := make(chan struct{}, 1)
 	unsubscribedCh := make(chan struct{}, 1)
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test_subscription_close")
@@ -330,7 +330,7 @@ func TestSubscriptionClose(t *testing.T) {
 }
 
 func TestClient_Publish(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
@@ -342,7 +342,7 @@ func TestClient_Publish(t *testing.T) {
 }
 
 func TestClient_Presence(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.Presence("test")
@@ -356,7 +356,7 @@ func TestClient_Presence(t *testing.T) {
 }
 
 func TestClient_PresenceStats(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.PresenceStats("test")
@@ -370,7 +370,7 @@ func TestClient_PresenceStats(t *testing.T) {
 }
 
 func TestClient_History(t *testing.T) {
-	client := New("ws://localhost:8000/connection/websocket", DefaultConfig())
+	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
 	defer func() { _ = client.Close() }()
 	_ = client.Connect()
 	_, err := client.History("test")
