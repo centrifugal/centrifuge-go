@@ -6,6 +6,9 @@ import (
 	"log"
 	_ "net/http/pprof"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/centrifugal/centrifuge-go"
 )
@@ -127,6 +130,22 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+
+	sigsCh := make(chan os.Signal, 1)
+	signal.Notify(sigsCh, os.Interrupt)
+	signal.Notify(sigsCh, syscall.SIGTERM)
+
+	go func() {
+		sig := <-sigsCh
+		log.Printf("handle signal %s\n", sig)
+		errClose := c.Close()
+		if errClose != nil {
+			log.Fatalln(errClose)
+		}
+
+		time.Sleep(1 * time.Second)
+		os.Exit(0)
+	}()
 
 	pubText := func(text string) error {
 		msg := &ChatMessage{
