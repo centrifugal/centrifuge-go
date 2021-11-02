@@ -1,6 +1,7 @@
 package centrifuge
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/protocol"
+	"github.com/lucas-clemente/quic-go"
 )
 
 type disconnect struct {
@@ -97,10 +99,6 @@ func NewProtobufClient(u string, config Config) *Client {
 }
 
 func newClient(u string, isProtobuf bool, config Config) *Client {
-	if !strings.HasPrefix(u, "ws") {
-		panic(fmt.Sprintf("unsupported connection endpoint: %s", u))
-	}
-
 	protocolType := protocol.TypeJSON
 	if isProtobuf {
 		protocolType = protocol.TypeProtobuf
@@ -750,11 +748,32 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 		Header:            c.config.Header,
 	}
 
-	t, err := newWebsocketTransport(c.url, c.protocolType, wsConfig)
-	if err != nil {
-		go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
-		reconnectWaitCB()
-		return err
+	var t transport
+	var err error
+
+	if strings.HasPrefix(c.url, "ws") {
+		t, err = newWebsocketTransport(c.url, c.protocolType, wsConfig)
+		if err != nil {
+			go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
+			reconnectWaitCB()
+			return err
+		}
+	} else {
+		wtCfg := webTransportConfig{
+			TLSConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+			QUICConfig:         &quic.Config{},
+			DisableCompression: true,
+			EnableDatagrams:    true,
+		}
+
+		t, err = newWebTransport(c.url, c.protocolType, wtCfg)
+		if err != nil {
+			go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
+			reconnectWaitCB()
+			return err
+		}
 	}
 
 	c.mu.Lock()
