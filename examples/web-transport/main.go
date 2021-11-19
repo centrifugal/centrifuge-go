@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"log"
 	_ "net/http/pprof"
 	"os"
@@ -86,8 +87,16 @@ func (h *eventHandler) OnUnsubscribe(sub *centrifuge.Subscription, _ centrifuge.
 }
 
 func newClient(handler *eventHandler) *centrifuge.Client {
-	wsURL := "https://localhost:4242"
-	c := centrifuge.NewJsonClient(wsURL, centrifuge.DefaultConfig())
+	url := "https://localhost:4242"
+	msgFormat := flag.String("format", "json", "help message for flag n")
+	flag.Parse()
+
+	var c *centrifuge.Client
+	if *msgFormat == "protobuf" {
+		c = centrifuge.NewProtobufClient(url, centrifuge.DefaultConfig())
+	} else {
+		c = centrifuge.NewJsonClient(url, centrifuge.DefaultConfig())
+	}
 
 	c.OnConnect(handler)
 	c.OnDisconnect(handler)
