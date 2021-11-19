@@ -138,7 +138,7 @@ func (t *webTransport) reader() {
 
 			msgLengthBytes := make([]byte, binary.MaxVarintLen64)
 			bytesNum := binary.PutUvarint(msgLengthBytes, msgLength)
-			data := make([]byte, r.Buffered())
+			data := make([]byte, msgLength)
 
 			_, err = r.Read(data)
 			if err != nil {
