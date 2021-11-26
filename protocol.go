@@ -87,6 +87,13 @@ func newCommandEncoder(enc protocol.Type) protocol.CommandEncoder {
 	return protocol.NewProtobufCommandEncoder()
 }
 
+func newDataEncoder(enc protocol.Type) protocol.DataEncoder {
+	if enc == protocol.TypeJSON {
+		return protocol.NewJSONDataEncoder()
+	}
+	return protocol.NewProtobufDataEncoder()
+}
+
 func infoFromProto(v *protocol.ClientInfo) ClientInfo {
 	info := ClientInfo{
 		Client: v.GetClient(),

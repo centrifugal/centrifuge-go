@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -99,6 +100,14 @@ func NewProtobufClient(u string, config Config) *Client {
 }
 
 func newClient(u string, isProtobuf bool, config Config) *Client {
+	parsedURL, err := url.Parse(u)
+	if err != nil {
+		panic(err)
+	}
+	if !strings.HasPrefix(parsedURL.Scheme, "ws") && !strings.HasPrefix(parsedURL.Scheme, "http") {
+		panic("unsupported URL scheme: " + parsedURL.Scheme)
+	}
+
 	protocolType := protocol.TypeJSON
 	if isProtobuf {
 		protocolType = protocol.TypeProtobuf
@@ -759,16 +768,21 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 			return err
 		}
 	} else {
+		u, _ := url.Parse(c.url)
+		if c.protocolType == protocol.TypeProtobuf {
+			q := u.Query()
+			q.Set("format", "protobuf")
+			u.RawQuery = q.Encode()
+		}
 		wtCfg := webTransportConfig{
 			TLSConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
 			QUICConfig:         &quic.Config{},
 			DisableCompression: true,
-			EnableDatagrams:    true,
+			Header:             c.config.Header,
 		}
-
-		t, err = newWebTransport(c.url, c.protocolType, wtCfg)
+		t, err = newWebTransport(u.String(), c.protocolType, wtCfg)
 		if err != nil {
 			go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
 			reconnectWaitCB()

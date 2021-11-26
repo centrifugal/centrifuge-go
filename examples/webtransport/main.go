@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"log"
-	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	_ "net/http/pprof"
 
 	"github.com/centrifugal/centrifuge-go"
 )
@@ -88,11 +89,11 @@ func (h *eventHandler) OnUnsubscribe(sub *centrifuge.Subscription, _ centrifuge.
 
 func newClient(handler *eventHandler) *centrifuge.Client {
 	url := "https://localhost:4242"
-	msgFormat := flag.String("format", "json", "help message for flag n")
+	isProtobuf := flag.Bool("protobuf", false, "use Protobuf format")
 	flag.Parse()
 
 	var c *centrifuge.Client
-	if *msgFormat == "protobuf" {
+	if *isProtobuf {
 		c = centrifuge.NewProtobufClient(url, centrifuge.DefaultConfig())
 	} else {
 		c = centrifuge.NewJsonClient(url, centrifuge.DefaultConfig())

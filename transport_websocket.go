@@ -155,16 +155,26 @@ func (t *websocketTransport) reader() {
 }
 
 func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration) error {
-	data, err := t.commandEncoder.Encode(cmd)
+	cmdBytes, err := t.commandEncoder.Encode(cmd)
 	if err != nil {
 		return err
 	}
+	var data []byte
+	if t.protocolType == protocol.TypeJSON {
+		// Fast path for JSON message.
+		data = cmdBytes
+	} else {
+		encoder := protocol.GetDataEncoder(t.protocolType)
+		defer protocol.PutDataEncoder(t.protocolType, encoder)
+		_ = encoder.Encode(cmdBytes)
+		data = encoder.Finish()
+	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if timeout > 0 {
 		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
-	//println("---->", strings.Trim(string(data), "\n"))
 	if t.protocolType == protocol.TypeJSON {
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
 	} else {

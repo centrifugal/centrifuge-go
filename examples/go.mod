@@ -4,6 +4,7 @@ go 1.14
 
 replace (
 	github.com/centrifugal/centrifuge-go => ../
+	github.com/centrifugal/protocol => ../../protocol
 	github.com/lucas-clemente/quic-go v0.24.0 => github.com/alta/quic-go v0.0.0-20210923171602-7151b11990d2
 )
 

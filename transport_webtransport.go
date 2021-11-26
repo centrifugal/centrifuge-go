@@ -1,14 +1,11 @@
 package centrifuge
 
 import (
-	"bufio"
 	"crypto/tls"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -35,7 +32,9 @@ type webTransportConfig struct {
 	TLSConfig          *tls.Config
 	QUICConfig         *quic.Config
 	DisableCompression bool
-	EnableDatagrams    bool
+
+	// Header specifies custom HTTP Header to send.
+	Header http.Header
 }
 
 func newWebTransport(url string, protocolType protocol.Type, config webTransportConfig) (transport, error) {
@@ -44,12 +43,17 @@ func newWebTransport(url string, protocolType protocol.Type, config webTransport
 			TLSClientConfig:    config.TLSConfig,
 			DisableCompression: config.DisableCompression,
 			QuicConfig:         config.QUICConfig,
-			EnableDatagrams:    config.EnableDatagrams,
 			EnableWebTransport: true,
 		},
 	}
 
-	res, err := client.Get(url)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header = config.Header
+
+	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -104,66 +108,25 @@ func (t *webTransport) Close() error {
 
 func (t *webTransport) reader() {
 	defer func() {
-		err := t.Close()
-		if err != nil {
-			fmt.Printf("error on stream close - [%s]\n", err)
-		}
-		err = t.webTransport.Close()
-		if err != nil {
-			fmt.Printf("error on wt client close - [%s]\n", err)
-		}
+		_ = t.Close()
+		_ = t.webTransport.Close()
 	}()
 	defer close(t.replyCh)
 
-	var err error
-	var replyDecoderData []byte
-	r := bufio.NewReader(t.stream)
+	var replyDecoder protocol.StreamReplyDecoder
+	if t.protocolType == protocol.TypeJSON {
+		replyDecoder = protocol.NewJSONStreamReplyDecoder(t.stream)
+	} else {
+		replyDecoder = protocol.NewProtobufStreamReplyDecoder(t.stream)
+	}
 	for {
-		if t.protocolType == protocol.TypeJSON {
-			replyDecoderData, err = r.ReadBytes('\n')
-			if err != nil {
-				fmt.Printf("read error - [%s]\n", err)
-				return
-			}
-			log.Println("<----", strings.Trim(string(replyDecoderData), "\n"))
-		} else if t.protocolType == protocol.TypeProtobuf {
-			msgLength, err := binary.ReadUvarint(r)
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-
-				log.Fatalln("error on read message length: ", err)
-			}
-
-			msgLengthBytes := make([]byte, binary.MaxVarintLen64)
-			bytesNum := binary.PutUvarint(msgLengthBytes, msgLength)
-			data := make([]byte, msgLength)
-
-			_, err = r.Read(data)
-			if err != nil {
-				if err == io.EOF {
-					continue
-				}
-
-				log.Println("error on read bytes from stream buffer: ", err)
-				return
-			}
-
-			replyDecoderData = append(msgLengthBytes[:bytesNum], data...)
-		}
-
-		decoder := newReplyDecoder(t.protocolType, replyDecoderData)
-		reply, err := decoder.Decode()
+		reply, err := replyDecoder.Decode()
 		if err != nil {
-			if err == io.EOF {
-				continue
+			if err != io.EOF {
+				t.disconnect = &disconnect{Reason: "decode error", Reconnect: false}
 			}
-
-			t.disconnect = &disconnect{Reason: "decode error", Reconnect: false}
 			return
 		}
-
 		select {
 		case <-t.closeCh:
 			return
@@ -177,10 +140,12 @@ func (t *webTransport) reader() {
 }
 
 func (t *webTransport) Write(cmd *protocol.Command, timeout time.Duration) error {
-	data, err := t.commandEncoder.Encode(cmd)
+	cmdBytes, err := t.commandEncoder.Encode(cmd)
 	if err != nil {
 		return err
 	}
+	encoder := protocol.GetDataEncoder(t.protocolType)
+	defer protocol.PutDataEncoder(t.protocolType, encoder)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -189,17 +154,17 @@ func (t *webTransport) Write(cmd *protocol.Command, timeout time.Duration) error
 		_ = t.stream.SetWriteDeadline(time.Now().Add(timeout))
 	}
 
-	if t.protocolType == protocol.TypeJSON {
-		_, err = t.stream.Write(append(data, '\n'))
-	} else if t.protocolType == protocol.TypeProtobuf {
-		_, err = t.stream.Write(data)
+	_ = encoder.Encode(cmdBytes)
+	_, err = t.stream.Write(encoder.Finish())
+	if err != nil {
+		return err
 	}
 
 	if timeout > 0 {
 		_ = t.stream.SetWriteDeadline(time.Time{})
 	}
 
-	return err
+	return nil
 }
 
 func (t *webTransport) Read() (*protocol.Reply, *disconnect, error) {
