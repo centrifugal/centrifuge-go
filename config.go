@@ -18,8 +18,17 @@ const (
 	DefaultName                 = "go"
 )
 
+type ProtocolVersion uint8
+
+const (
+	ProtocolVersion1 ProtocolVersion = 1
+	ProtocolVersion2 ProtocolVersion = 2
+)
+
 // Config contains various client options.
 type Config struct {
+	ProtocolVersion ProtocolVersion
+
 	// NetDialContext specifies the dial function for creating TCP connections. If
 	// NetDialContext is nil, net.DialContext is used.
 	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)

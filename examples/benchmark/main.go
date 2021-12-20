@@ -32,6 +32,7 @@ func usage() {
 
 var url = flag.String("s", "ws://localhost:8000/connection/websocket", "Connection URI")
 var useProtobuf = flag.Bool("p", false, "Use protobuf format")
+var useVersion = flag.Int("v", 1, "Use protocol version")
 var numPubs = flag.Int("np", DefaultNumPubs, "Number of Concurrent Publishers")
 var numSubs = flag.Int("ns", DefaultNumSubs, "Number of Concurrent Subscribers")
 var numMsg = flag.Int("n", DefaultNumMsg, "Number of Messages to Publish")
@@ -64,6 +65,7 @@ func main() {
 	// Run Subscribers first
 	startWg.Add(*numSubs)
 	for i := 0; i < *numSubs; i++ {
+		time.Sleep(time.Millisecond)
 		go runSubscriber(&startWg, &doneWg, *numMsg, *msgSize)
 	}
 	startWg.Wait()
@@ -87,12 +89,17 @@ func main() {
 
 func newConnection() *centrifuge.Client {
 	var c *centrifuge.Client
-	if *useProtobuf {
-		c = centrifuge.NewProtobufClient(*url, centrifuge.DefaultConfig())
+	config := centrifuge.DefaultConfig()
+	if *useVersion == 1 {
+		config.ProtocolVersion = centrifuge.ProtocolVersion1
 	} else {
-		c = centrifuge.NewJsonClient(*url, centrifuge.DefaultConfig())
+		config.ProtocolVersion = centrifuge.ProtocolVersion2
 	}
-
+	if *useProtobuf {
+		c = centrifuge.NewProtobufClient(*url, config)
+	} else {
+		c = centrifuge.NewJsonClient(*url, config)
+	}
 	events := &eventHandler{}
 	c.OnError(events)
 	c.OnDisconnect(events)
