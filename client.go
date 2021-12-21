@@ -1762,9 +1762,8 @@ func (c *Client) sendPing(fn func(error)) {
 	}
 	if c.config.ProtocolVersion == ProtocolVersion1 {
 		cmd.Method = protocol.Command_PING
-	} else {
-		// Skip since Id is enough for ping.
 	}
+	// Skip v2 branch since Id is enough for ping.
 	_ = c.sendAsync(cmd, func(_ *protocol.Reply, err error) {
 		fn(err)
 	})
