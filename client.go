@@ -202,17 +202,20 @@ func (c *Client) handleError(err error) {
 // Send message to server without waiting for response.
 // Message handler must be registered on server.
 func (c *Client) Send(data []byte) error {
-	cmd := &protocol.Command{
-		Method: protocol.Command_SEND,
-	}
+	cmd := &protocol.Command{}
 	params := &protocol.SendRequest{
 		Data: data,
 	}
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		return err
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		paramsData, err := c.paramsEncoder.Encode(params)
+		if err != nil {
+			return err
+		}
+		cmd.Params = paramsData
+		cmd.Method = protocol.Command_SEND
+	} else {
+		cmd.Send = params
 	}
-	cmd.Params = paramsData
 	return c.send(cmd)
 }
 
@@ -242,20 +245,27 @@ func (c *Client) NamedRPC(method string, data []byte) (RPCResult, error) {
 
 func (c *Client) rpc(method string, data []byte, fn func(RPCResult, error)) {
 	cmd := &protocol.Command{
-		Id:     c.nextMsgID(),
-		Method: protocol.Command_RPC,
+		Id: c.nextMsgID(),
 	}
+
 	params := &protocol.RPCRequest{
 		Data:   data,
 		Method: method,
 	}
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		fn(RPCResult{}, fmt.Errorf("encode error: %v", err))
-		return
+
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		paramsData, err := c.paramsEncoder.Encode(params)
+		if err != nil {
+			fn(RPCResult{}, fmt.Errorf("encode error: %v", err))
+			return
+		}
+		cmd.Params = paramsData
+		cmd.Method = protocol.Command_RPC
+	} else {
+		cmd.Rpc = params
 	}
-	cmd.Params = paramsData
-	err = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
+
+	err := c.sendAsync(cmd, func(r *protocol.Reply, err error) {
 		if err != nil {
 			fn(RPCResult{}, err)
 			return
@@ -264,13 +274,17 @@ func (c *Client) rpc(method string, data []byte, fn func(RPCResult, error)) {
 			fn(RPCResult{}, errorFromProto(r.Error))
 			return
 		}
-		var res protocol.RPCResult
-		err = c.resultDecoder.Decode(r.Result, &res)
-		if err != nil {
-			fn(RPCResult{}, err)
-			return
+		if c.config.ProtocolVersion == ProtocolVersion1 {
+			var res protocol.RPCResult
+			err = c.resultDecoder.Decode(r.Result, &res)
+			if err != nil {
+				fn(RPCResult{}, err)
+				return
+			}
+			fn(RPCResult{Data: res.Data}, nil)
+		} else {
+			fn(RPCResult{Data: r.Rpc.Data}, nil)
 		}
-		fn(RPCResult{Data: res.Data}, nil)
 	})
 	if err != nil {
 		fn(RPCResult{}, err)
@@ -1034,18 +1048,22 @@ func (c *Client) sendRefresh(closeCh chan struct{}) {
 
 	c.mu.RLock()
 	cmd := &protocol.Command{
-		Id:     c.nextMsgID(),
-		Method: protocol.Command_REFRESH,
+		Id: c.nextMsgID(),
 	}
 	params := &protocol.RefreshRequest{
 		Token: c.token,
 	}
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		c.mu.RUnlock()
-		return
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		paramsData, err := c.paramsEncoder.Encode(params)
+		if err != nil {
+			c.mu.RUnlock()
+			return
+		}
+		cmd.Method = protocol.Command_REFRESH
+		cmd.Params = paramsData
+	} else {
+		cmd.Refresh = params
 	}
-	cmd.Params = paramsData
 	c.mu.RUnlock()
 
 	_ = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
@@ -1055,12 +1073,21 @@ func (c *Client) sendRefresh(closeCh chan struct{}) {
 		if r.Error != nil {
 			return
 		}
-		var res protocol.RefreshResult
-		err = c.resultDecoder.Decode(r.Result, &res)
-		if err != nil {
-			return
+		var expires bool
+		var ttl uint32
+		if c.config.ProtocolVersion == ProtocolVersion1 {
+			var res protocol.RefreshResult
+			err = c.resultDecoder.Decode(r.Result, &res)
+			if err != nil {
+				return
+			}
+			expires = res.Expires
+			ttl = res.Ttl
+		} else {
+			expires = r.Refresh.Expires
+			ttl = r.Refresh.Ttl
 		}
-		if res.Expires {
+		if expires {
 			go func(interval uint32) {
 				select {
 				case <-closeCh:
@@ -1068,7 +1095,7 @@ func (c *Client) sendRefresh(closeCh chan struct{}) {
 				case <-time.After(time.Duration(interval) * time.Second):
 					c.sendRefresh(closeCh)
 				}
-			}(res.Ttl)
+			}(ttl)
 		}
 	})
 }
@@ -1089,20 +1116,24 @@ func (c *Client) sendSubRefresh(channel string, fn func(*protocol.SubRefreshResu
 		return
 	}
 	cmd := &protocol.Command{
-		Id:     c.nextMsgID(),
-		Method: protocol.Command_SUB_REFRESH,
+		Id: c.nextMsgID(),
 	}
 	params := &protocol.SubRefreshRequest{
 		Channel: channel,
 		Token:   token,
 	}
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		c.mu.RUnlock()
-		fn(nil, err)
-		return
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		paramsData, err := c.paramsEncoder.Encode(params)
+		if err != nil {
+			c.mu.RUnlock()
+			fn(nil, err)
+			return
+		}
+		cmd.Method = protocol.Command_SUB_REFRESH
+		cmd.Params = paramsData
+	} else {
+		cmd.SubRefresh = params
 	}
-	cmd.Params = paramsData
 	c.mu.RUnlock()
 
 	_ = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
@@ -1114,13 +1145,17 @@ func (c *Client) sendSubRefresh(channel string, fn func(*protocol.SubRefreshResu
 			fn(nil, errorFromProto(r.Error))
 			return
 		}
-		var res protocol.SubRefreshResult
-		err = c.resultDecoder.Decode(r.Result, &res)
-		if err != nil {
-			fn(nil, err)
-			return
+		if c.config.ProtocolVersion == ProtocolVersion1 {
+			var res protocol.SubRefreshResult
+			err = c.resultDecoder.Decode(r.Result, &res)
+			if err != nil {
+				fn(nil, err)
+				return
+			}
+			fn(&res, nil)
+		} else {
+			fn(r.SubRefresh, nil)
 		}
-		fn(&res, nil)
 	})
 }
 
@@ -1401,6 +1436,8 @@ func (c *Client) sendPublish(channel string, data []byte, fn func(PublishResult,
 // HistoryResult contains the result of history op.
 type HistoryResult struct {
 	Publications []Publication
+	Offset       uint64
+	Epoch        string
 }
 
 // History for a channel without being subscribed.
@@ -1441,18 +1478,23 @@ func (c *Client) sendHistory(channel string, opts HistoryOptions, fn func(Histor
 		}
 	}
 
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		fn(HistoryResult{}, err)
-		return
+	cmd := &protocol.Command{
+		Id: c.nextMsgID(),
 	}
 
-	cmd := &protocol.Command{
-		Id:     c.nextMsgID(),
-		Method: protocol.Command_HISTORY,
-		Params: paramsData,
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		paramsData, err := c.paramsEncoder.Encode(params)
+		if err != nil {
+			fn(HistoryResult{}, err)
+			return
+		}
+		cmd.Params = paramsData
+		cmd.Method = protocol.Command_HISTORY
+	} else {
+		cmd.History = params
 	}
-	err = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
+
+	err := c.sendAsync(cmd, func(r *protocol.Reply, err error) {
 		if err != nil {
 			fn(HistoryResult{}, err)
 			return
@@ -1461,17 +1503,33 @@ func (c *Client) sendHistory(channel string, opts HistoryOptions, fn func(Histor
 			fn(HistoryResult{}, errorFromProto(r.Error))
 			return
 		}
-		var res protocol.HistoryResult
-		err = c.resultDecoder.Decode(r.Result, &res)
-		if err != nil {
-			fn(HistoryResult{}, err)
-			return
+		var publications []*protocol.Publication
+		var offset uint64
+		var epoch string
+		if c.config.ProtocolVersion == ProtocolVersion1 {
+			var res protocol.HistoryResult
+			err = c.resultDecoder.Decode(r.Result, &res)
+			if err != nil {
+				fn(HistoryResult{}, err)
+				return
+			}
+			publications = res.Publications
+			offset = res.Offset
+			epoch = res.Epoch
+		} else {
+			publications = r.History.Publications
+			offset = r.History.Offset
+			epoch = r.History.Epoch
 		}
-		pubs := make([]Publication, len(res.Publications))
-		for i, m := range res.Publications {
+		pubs := make([]Publication, len(publications))
+		for i, m := range publications {
 			pubs[i] = pubFromProto(m)
 		}
-		fn(HistoryResult{Publications: pubs}, nil)
+		fn(HistoryResult{
+			Publications: pubs,
+			Offset:       offset,
+			Epoch:        epoch,
+		}, nil)
 	})
 	if err != nil {
 		fn(HistoryResult{}, err)
@@ -1510,18 +1568,23 @@ func (c *Client) sendPresence(channel string, fn func(PresenceResult, error)) {
 		Channel: channel,
 	}
 
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		fn(PresenceResult{}, err)
-		return
+	cmd := &protocol.Command{
+		Id: c.nextMsgID(),
 	}
 
-	cmd := &protocol.Command{
-		Id:     c.nextMsgID(),
-		Method: protocol.Command_PRESENCE,
-		Params: paramsData,
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		paramsData, err := c.paramsEncoder.Encode(params)
+		if err != nil {
+			fn(PresenceResult{}, err)
+			return
+		}
+		cmd.Method = protocol.Command_PRESENCE
+		cmd.Params = paramsData
+	} else {
+		cmd.Presence = params
 	}
-	err = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
+
+	err := c.sendAsync(cmd, func(r *protocol.Reply, err error) {
 		if err != nil {
 			fn(PresenceResult{}, err)
 			return
@@ -1530,15 +1593,23 @@ func (c *Client) sendPresence(channel string, fn func(PresenceResult, error)) {
 			fn(PresenceResult{}, errorFromProto(r.Error))
 			return
 		}
-		var res protocol.PresenceResult
-		err = c.resultDecoder.Decode(r.Result, &res)
-		if err != nil {
-			fn(PresenceResult{}, err)
-			return
-		}
+
 		p := make(map[string]ClientInfo)
-		for uid, info := range res.Presence {
-			p[uid] = infoFromProto(info)
+
+		if c.config.ProtocolVersion == ProtocolVersion1 {
+			var res protocol.PresenceResult
+			err = c.resultDecoder.Decode(r.Result, &res)
+			if err != nil {
+				fn(PresenceResult{}, err)
+				return
+			}
+			for uid, info := range res.Presence {
+				p[uid] = infoFromProto(info)
+			}
+		} else {
+			for uid, info := range r.Presence.Presence {
+				p[uid] = infoFromProto(info)
+			}
 		}
 		fn(PresenceResult{Presence: p}, nil)
 	})
@@ -1583,18 +1654,24 @@ func (c *Client) sendPresenceStats(channel string, fn func(PresenceStatsResult, 
 	params := &protocol.PresenceStatsRequest{
 		Channel: channel,
 	}
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		fn(PresenceStatsResult{}, err)
-		return
-	}
 
 	cmd := &protocol.Command{
-		Id:     c.nextMsgID(),
-		Method: protocol.Command_PRESENCE_STATS,
-		Params: paramsData,
+		Id: c.nextMsgID(),
 	}
-	err = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
+
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		paramsData, err := c.paramsEncoder.Encode(params)
+		if err != nil {
+			fn(PresenceStatsResult{}, err)
+			return
+		}
+		cmd.Method = protocol.Command_PRESENCE_STATS
+		cmd.Params = paramsData
+	} else {
+		cmd.PresenceStats = params
+	}
+
+	err := c.sendAsync(cmd, func(r *protocol.Reply, err error) {
 		if err != nil {
 			fn(PresenceStatsResult{}, err)
 			return
@@ -1603,16 +1680,23 @@ func (c *Client) sendPresenceStats(channel string, fn func(PresenceStatsResult, 
 			fn(PresenceStatsResult{}, errorFromProto(r.Error))
 			return
 		}
-		var res protocol.PresenceStatsResult
-		err = c.resultDecoder.Decode(r.Result, &res)
-		if err != nil {
-			fn(PresenceStatsResult{}, err)
-			return
+		if c.config.ProtocolVersion == ProtocolVersion1 {
+			var res protocol.PresenceStatsResult
+			err = c.resultDecoder.Decode(r.Result, &res)
+			if err != nil {
+				fn(PresenceStatsResult{}, err)
+				return
+			}
+			fn(PresenceStatsResult{PresenceStats{
+				NumClients: int(res.NumClients),
+				NumUsers:   int(res.NumUsers),
+			}}, nil)
+		} else {
+			fn(PresenceStatsResult{PresenceStats{
+				NumClients: int(r.PresenceStats.NumClients),
+				NumUsers:   int(r.PresenceStats.NumUsers),
+			}}, nil)
 		}
-		fn(PresenceStatsResult{PresenceStats{
-			NumClients: int(res.NumClients),
-			NumUsers:   int(res.NumUsers),
-		}}, nil)
 	})
 	if err != nil {
 		fn(PresenceStatsResult{}, err)
@@ -1640,30 +1724,29 @@ func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, erro
 		Channel: channel,
 	}
 
-	paramsData, err := c.paramsEncoder.Encode(params)
-	if err != nil {
-		fn(UnsubscribeResult{}, err)
-		return
+	cmd := &protocol.Command{
+		Id: c.nextMsgID(),
 	}
 
-	cmd := &protocol.Command{
-		Id:     c.nextMsgID(),
-		Method: protocol.Command_UNSUBSCRIBE,
-		Params: paramsData,
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		paramsData, err := c.paramsEncoder.Encode(params)
+		if err != nil {
+			fn(UnsubscribeResult{}, err)
+			return
+		}
+		cmd.Method = protocol.Command_UNSUBSCRIBE
+		cmd.Params = paramsData
+	} else {
+		cmd.Unsubscribe = params
 	}
-	err = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
+
+	err := c.sendAsync(cmd, func(r *protocol.Reply, err error) {
 		if err != nil {
 			fn(UnsubscribeResult{}, err)
 			return
 		}
 		if r.Error != nil {
 			fn(UnsubscribeResult{}, errorFromProto(r.Error))
-			return
-		}
-		var res protocol.UnsubscribeResult
-		err = c.resultDecoder.Decode(r.Result, &res)
-		if err != nil {
-			fn(UnsubscribeResult{}, err)
 			return
 		}
 		fn(UnsubscribeResult{}, nil)
@@ -1675,8 +1758,12 @@ func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, erro
 
 func (c *Client) sendPing(fn func(error)) {
 	cmd := &protocol.Command{
-		Id:     c.nextMsgID(),
-		Method: protocol.Command_PING,
+		Id: c.nextMsgID(),
+	}
+	if c.config.ProtocolVersion == ProtocolVersion1 {
+		cmd.Method = protocol.Command_PING
+	} else {
+		// Skip since Id is enough for ping.
 	}
 	_ = c.sendAsync(cmd, func(_ *protocol.Reply, err error) {
 		fn(err)
