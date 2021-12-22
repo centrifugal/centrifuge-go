@@ -16,6 +16,8 @@ type Publication struct {
 	// Info is an optional information about client connection published
 	// this data to channel.
 	Info *ClientInfo
+	// Meta is a custom key-value pairs attached to Publication.
+	Meta map[string]string
 }
 
 // ClientInfo contains information about client connection.
@@ -109,6 +111,9 @@ func pubFromProto(pub *protocol.Publication) Publication {
 	if pub.GetInfo() != nil {
 		info := infoFromProto(pub.GetInfo())
 		p.Info = &info
+	}
+	if pub.GetMeta() != nil {
+		p.Meta = pub.GetMeta()
 	}
 	return p
 }
