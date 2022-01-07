@@ -18,10 +18,25 @@ import (
 func extractDisconnectWebsocket(err error) *disconnect {
 	if err != nil {
 		if closeErr, ok := err.(*websocket.CloseError); ok {
-			var disconnect disconnect
-			err := json.Unmarshal([]byte(closeErr.Text), &disconnect)
+			var d disconnect
+			err := json.Unmarshal([]byte(closeErr.Text), &d)
 			if err == nil {
-				return &disconnect
+				return &d
+			} else {
+				code := uint32(closeErr.Code)
+				reason := closeErr.Text
+				reconnect := code < 3500 || code >= 5000 || (code >= 4000 && code < 4500)
+				if code < 3000 {
+					// We expose codes defined by Centrifuge protocol, hiding
+					// details about transport-specific error codes. We may have extra
+					// optional transportCode field in the future.
+					code = 4
+				}
+				return &disconnect{
+					Code:      code,
+					Reason:    reason,
+					Reconnect: reconnect,
+				}
 			}
 		}
 	}
@@ -137,7 +152,7 @@ func (t *websocketTransport) reader() {
 					if err == io.EOF {
 						break loop
 					}
-					t.disconnect = &disconnect{Reason: "decode error", Reconnect: false}
+					t.disconnect = &disconnect{Code: 3, Reason: "decode error", Reconnect: false}
 					return
 				}
 				select {
@@ -146,7 +161,7 @@ func (t *websocketTransport) reader() {
 				case t.replyCh <- reply:
 				default:
 					// Can't keep up with server message rate.
-					t.disconnect = &disconnect{Reason: "client slow", Reconnect: true}
+					t.disconnect = &disconnect{Code: 12, Reason: "client slow", Reconnect: true}
 					return
 				}
 			}

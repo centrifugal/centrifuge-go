@@ -14,6 +14,7 @@ import (
 )
 
 type disconnect struct {
+	Code      uint32
 	Reason    string
 	Reconnect bool
 }
@@ -158,7 +159,7 @@ func (c *Client) SetConnectData(data []byte) {
 	c.connectData = data
 }
 
-// SetHeader allows to set custom header to be sent in Upgrade HTTP request.
+// SetHeader allows setting custom header to be sent in Upgrade HTTP request.
 func (c *Client) SetHeader(key, value string) {
 	if c.config.Header == nil {
 		c.config.Header = http.Header{}
@@ -224,15 +225,15 @@ type RPCResult struct {
 	Data []byte
 }
 
-// RPC allows to make RPC – send data to server and wait for response.
+// RPC allows making RPC – send data to server and wait for response.
 // RPC handler must be registered on server.
 func (c *Client) RPC(data []byte) (RPCResult, error) {
 	return c.NamedRPC("", data)
 }
 
-// NamedRPC allows to make RPC – send data to server ant wait for response.
+// NamedRPC allows making RPC – send data to server ant wait for response.
 // RPC handler must be registered on server.
-// In contrast to RPC method it allows to pass method name.
+// In contrast to RPC method it allows passing method name.
 func (c *Client) NamedRPC(method string, data []byte) (RPCResult, error) {
 	resCh := make(chan RPCResult, 1)
 	errCh := make(chan error, 1)
@@ -361,6 +362,7 @@ func (c *Client) reconnectRoutine() {
 func (c *Client) handleDisconnect(d *disconnect) {
 	if d == nil {
 		d = &disconnect{
+			Code:      4,
 			Reason:    "connection closed",
 			Reconnect: true,
 		}
@@ -432,7 +434,11 @@ func (c *Client) handleDisconnect(d *disconnect) {
 					serverUnsubscribeHandler.OnServerUnsubscribe(c, ServerUnsubscribeEvent{Channel: ch})
 				}
 			}
-			handler.OnDisconnect(c, DisconnectEvent{Reason: d.Reason, Reconnect: d.Reconnect})
+			event := DisconnectEvent{Reason: d.Reason, Reconnect: d.Reconnect}
+			if c.config.ProtocolVersion >= ProtocolVersion2 {
+				event.Code = d.Code
+			}
+			handler.OnDisconnect(c, event)
 		})
 	}
 
@@ -454,7 +460,7 @@ func (c *Client) periodicPing(closeCh chan struct{}) {
 		case <-time.After(timeout):
 			c.sendPing(func(err error) {
 				if err != nil {
-					go c.handleDisconnect(&disconnect{Reason: "no ping", Reconnect: true})
+					go c.handleDisconnect(&disconnect{Code: 11, Reason: "no ping", Reconnect: true})
 					return
 				}
 			})
@@ -833,7 +839,7 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 
 	t, err := newWebsocketTransport(c.url, c.protocolType, wsConfig)
 	if err != nil {
-		go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
+		go c.handleDisconnect(&disconnect{Code: 1, Reason: "connect error", Reconnect: true})
 		reconnectWaitCB()
 		return err
 	}
@@ -869,7 +875,7 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 				}
 				c.mu.Unlock()
 			}
-			go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
+			go c.handleDisconnect(&disconnect{Code: 6, Reason: "connect error", Reconnect: true})
 			return
 		}
 
@@ -971,7 +977,7 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 		if err != nil {
 			// we need just to close the connection and outgoing requests here
 			// but preserve all subscriptions.
-			go c.handleDisconnect(&disconnect{Reason: "subscribe error", Reconnect: true})
+			go c.handleDisconnect(&disconnect{Code: 8, Reason: "subscribe error", Reconnect: true})
 			return
 		}
 
@@ -983,7 +989,7 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 	c.mu.Unlock()
 	if err != nil {
 		reconnectWaitCB()
-		go c.handleDisconnect(&disconnect{Reason: "connect error", Reconnect: true})
+		go c.handleDisconnect(&disconnect{Code: 6, Reason: "connect error", Reconnect: true})
 	}
 	return err
 }
@@ -1010,6 +1016,7 @@ func (c *Client) disconnect(reconnect bool) error {
 	c.reconnect = reconnect
 	c.mu.Unlock()
 	c.handleDisconnect(&disconnect{
+		Code:      0,
 		Reconnect: reconnect,
 		Reason:    "clean disconnect",
 	})
@@ -1807,7 +1814,7 @@ func (c *Client) send(cmd *protocol.Command) error {
 	}
 	err := transport.Write(cmd, c.config.WriteTimeout)
 	if err != nil {
-		go c.handleDisconnect(&disconnect{Reason: "write error", Reconnect: true})
+		go c.handleDisconnect(&disconnect{Code: 2, Reason: "write error", Reconnect: true})
 		return io.EOF
 	}
 	return nil

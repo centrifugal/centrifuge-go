@@ -468,7 +468,7 @@ func (s *Subscription) subscribeError(err error) {
 	if err == ErrTimeout {
 		s.status = UNSUBSCRIBED
 		s.mu.Unlock()
-		go s.centrifuge.handleDisconnect(&disconnect{"subscribe timeout", true})
+		go s.centrifuge.handleDisconnect(&disconnect{Code: 10, Reason: "subscribe timeout", Reconnect: true})
 		return
 	}
 	s.err = err

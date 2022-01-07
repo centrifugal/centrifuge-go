@@ -45,6 +45,8 @@ type ConnectEvent struct {
 
 // DisconnectEvent is a disconnect event context passed to OnDisconnect callback.
 type DisconnectEvent struct {
+	// Code of disconnect. Only set for protocol v2.
+	Code      uint32
 	Reason    string
 	Reconnect bool
 }
