@@ -1,6 +1,7 @@
 package centrifuge
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -487,6 +488,15 @@ func (s *Subscription) subscribeSuccess(isResubscribe bool, res *protocol.Subscr
 	s.processRecover(res)
 }
 
+func uintInSlice(s uint32, slice []uint32) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Subscription) subscribeError(err error) {
 	s.mu.Lock()
 	if s.status != SUBSCRIBING {
@@ -502,7 +512,8 @@ func (s *Subscription) subscribeError(err error) {
 	s.err = err
 	s.status = SUBERROR
 	s.resolveSubFutures(err)
-	if len(s.autoResubscribeErrorCodes) > 0 { // TODO: proper search.
+	var serverError *Error
+	if errors.As(err, &serverError) && uintInSlice(serverError.Code, s.autoResubscribeErrorCodes) {
 		s.resubscribeAttempts++
 		delay, _ := s.resubscribeStrategy.timeBeforeNextAttempt(s.resubscribeAttempts)
 		//fmt.Printf("Retry subscription to %s after %s, attempt %d\n", s.channel, delay, s.resubscribeAttempts)

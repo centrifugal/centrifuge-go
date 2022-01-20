@@ -17,9 +17,9 @@ type backoffReconnect struct {
 	Factor float64
 	// Jitter eases contention by randomizing backoff steps.
 	Jitter bool
-	// MinMilliseconds is a minimum value of the reconnect interval.
+	// MinMilliseconds is a minimum value of reconnect interval.
 	MinMilliseconds int
-	// MaxMilliseconds is a maximum value of the reconnect interval.
+	// MaxMilliseconds is a maximum value of reconnect interval.
 	MaxMilliseconds int
 }
 
