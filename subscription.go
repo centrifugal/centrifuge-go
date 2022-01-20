@@ -9,11 +9,12 @@ import (
 	"github.com/centrifugal/protocol"
 )
 
-// SubscribeSuccessEvent is a subscribe success event context passed
-// to event callback.
+// SubscribeSuccessEvent is an event context passed
+// to subscribe success callback.
 type SubscribeSuccessEvent struct {
 	Resubscribed bool
 	Recovered    bool
+	Data         []byte
 }
 
 // SubscribeErrorEvent is a subscribe error event context passed to
@@ -87,32 +88,32 @@ func newSubscriptionEventHub() *subscriptionEventHub {
 	return &subscriptionEventHub{}
 }
 
-// OnPublish allows to set PublishHandler to SubEventHandler.
+// OnPublish allows setting PublishHandler to SubEventHandler.
 func (s *Subscription) OnPublish(handler PublishHandler) {
 	s.events.onPublish = handler
 }
 
-// OnJoin allows to set JoinHandler to SubEventHandler.
+// OnJoin allows setting JoinHandler to SubEventHandler.
 func (s *Subscription) OnJoin(handler JoinHandler) {
 	s.events.onJoin = handler
 }
 
-// OnLeave allows to set LeaveHandler to SubEventHandler.
+// OnLeave allows setting LeaveHandler to SubEventHandler.
 func (s *Subscription) OnLeave(handler LeaveHandler) {
 	s.events.onLeave = handler
 }
 
-// OnUnsubscribe allows to set UnsubscribeHandler to SubEventHandler.
+// OnUnsubscribe allows setting UnsubscribeHandler to SubEventHandler.
 func (s *Subscription) OnUnsubscribe(handler UnsubscribeHandler) {
 	s.events.onUnsubscribe = handler
 }
 
-// OnSubscribeSuccess allows to set SubscribeSuccessHandler to SubEventHandler.
+// OnSubscribeSuccess allows setting SubscribeSuccessHandler to SubEventHandler.
 func (s *Subscription) OnSubscribeSuccess(handler SubscribeSuccessHandler) {
 	s.events.onSubscribeSuccess = handler
 }
 
-// OnSubscribeError allows to set SubscribeErrorHandler to SubEventHandler.
+// OnSubscribeError allows setting SubscribeErrorHandler to SubEventHandler.
 func (s *Subscription) OnSubscribeError(handler SubscribeErrorHandler) {
 	s.events.onSubscribeError = handler
 }
@@ -125,6 +126,12 @@ const (
 	SUBERROR
 	SUBCLOSED
 )
+
+// SubscriptionConfig allows setting Subscription options.
+type SubscriptionConfig struct {
+	AutoResubscribeErrorCodes []uint32
+	Data                      []byte
+}
 
 // Subscription represents client subscription to channel.
 type Subscription struct {
@@ -141,6 +148,14 @@ type Subscription struct {
 	err             error
 	needResubscribe bool
 	subFutures      map[uint64]subFuture
+	data            []byte
+
+	autoResubscribeErrorCodes []uint32
+	autoResubscribeMinDelay   time.Duration
+	autoResubscribeMaxDelay   time.Duration
+	resubscribeAttempts       int
+	resubscribeStrategy       reconnectStrategy
+	resubscribeTimer          *time.Timer
 }
 
 type subFuture struct {
@@ -152,14 +167,19 @@ func newSubFuture(fn func(error)) subFuture {
 	return subFuture{fn: fn, closeCh: make(chan struct{})}
 }
 
-func (c *Client) newSubscription(channel string) *Subscription {
+func (c *Client) newSubscription(channel string, config ...SubscriptionConfig) *Subscription {
 	s := &Subscription{
-		centrifuge:      c,
-		channel:         channel,
-		subCloseCh:      make(chan struct{}),
-		events:          newSubscriptionEventHub(),
-		subFutures:      make(map[uint64]subFuture),
-		needResubscribe: false,
+		centrifuge:          c,
+		channel:             channel,
+		subCloseCh:          make(chan struct{}),
+		events:              newSubscriptionEventHub(),
+		subFutures:          make(map[uint64]subFuture),
+		needResubscribe:     false,
+		resubscribeStrategy: defaultBackoffReconnect,
+	}
+	if len(config) == 1 {
+		s.autoResubscribeErrorCodes = config[0].AutoResubscribeErrorCodes
+		s.data = config[0].Data
 	}
 	return s
 }
@@ -182,7 +202,7 @@ func (s *Subscription) resolveSubFutures(err error) {
 	s.subFutures = make(map[uint64]subFuture)
 }
 
-// Publish allows to publish data to channel.
+// Publish allows publishing data to subscription channel.
 func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 	s.mu.Lock()
 	if s.status == SUBCLOSED {
@@ -226,7 +246,7 @@ func WithHistoryReverse(reverse bool) HistoryOption {
 	}
 }
 
-// History allows to extract channel history. By default it returns current stream top
+// History allows extracting channel history. By default, it returns current stream top
 // position without publications. Use WithHistoryLimit with a value > 0 to make this func
 // to return publications.
 func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
@@ -250,7 +270,7 @@ func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
 	return <-resCh, <-errCh
 }
 
-// Presence allows to extract channel history.
+// Presence allows extracting channel presence.
 func (s *Subscription) Presence() (PresenceResult, error) {
 	s.mu.Lock()
 	if s.status == SUBCLOSED {
@@ -268,7 +288,7 @@ func (s *Subscription) Presence() (PresenceResult, error) {
 	return <-resCh, <-errCh
 }
 
-// PresenceStats allows to extract channel presence stats.
+// PresenceStats allows extracting channel presence stats.
 func (s *Subscription) PresenceStats() (PresenceStatsResult, error) {
 	resCh := make(chan PresenceStatsResult, 1)
 	errCh := make(chan error, 1)
@@ -347,7 +367,7 @@ func (s *Subscription) presenceStats(fn func(PresenceStatsResult, error)) {
 	})
 }
 
-// Unsubscribe allows to unsubscribe from channel.
+// Unsubscribe allows unsubscribing from channel.
 func (s *Subscription) Unsubscribe() error {
 	s.mu.Lock()
 	if s.status == SUBCLOSED {
@@ -420,6 +440,10 @@ func (s *Subscription) Subscribe(opts ...SubscribeOption) error {
 
 func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool, needRecover bool) {
 	s.mu.Lock()
+	s.resubscribeAttempts = 0
+	if s.resubscribeTimer != nil {
+		s.resubscribeTimer.Stop()
+	}
 	if s.status != SUBSCRIBED {
 		s.status = UNSUBSCRIBED
 		s.mu.Unlock()
@@ -447,11 +471,15 @@ func (s *Subscription) subscribeSuccess(isResubscribe bool, res *protocol.Subscr
 	s.subCloseCh = closeCh
 	s.runSubRefresh(res.Ttl, closeCh)
 	s.status = SUBSCRIBED
+	s.resubscribeAttempts = 0
+	if s.resubscribeTimer != nil {
+		s.resubscribeTimer.Stop()
+	}
 	s.resolveSubFutures(nil)
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeSuccess != nil {
 		handler := s.events.onSubscribeSuccess
-		ev := SubscribeSuccessEvent{Resubscribed: isResubscribe, Recovered: res.Recovered}
+		ev := SubscribeSuccessEvent{Resubscribed: isResubscribe, Recovered: res.Recovered, Data: res.GetData()}
 		s.centrifuge.runHandler(func() {
 			handler.OnSubscribeSuccess(s, ev)
 		})
@@ -474,6 +502,20 @@ func (s *Subscription) subscribeError(err error) {
 	s.err = err
 	s.status = SUBERROR
 	s.resolveSubFutures(err)
+	if len(s.autoResubscribeErrorCodes) > 0 { // TODO: proper search.
+		s.resubscribeAttempts++
+		delay, _ := s.resubscribeStrategy.timeBeforeNextAttempt(s.resubscribeAttempts)
+		//fmt.Printf("Retry subscription to %s after %s, attempt %d\n", s.channel, delay, s.resubscribeAttempts)
+		s.resubscribeTimer = time.AfterFunc(delay, func() {
+			s.mu.Lock()
+			if s.status != SUBERROR {
+				s.mu.Unlock()
+				return
+			}
+			s.mu.Unlock()
+			_ = s.Subscribe()
+		})
+	}
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeError != nil {
 		handler := s.events.onSubscribeError
@@ -571,7 +613,7 @@ func (s *Subscription) resubscribe(isResubscribe bool, clientID string, opts Sub
 		sp.Epoch = opts.Since.Epoch
 	}
 
-	err = s.centrifuge.sendSubscribe(s.channel, isRecover, sp, token, func(res *protocol.SubscribeResult, err error) {
+	err = s.centrifuge.sendSubscribe(s.channel, s.data, isRecover, sp, token, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
 			s.subscribeError(err)
 			return

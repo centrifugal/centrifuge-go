@@ -327,6 +327,7 @@ func (c *Client) reconnectRoutine() {
 			semaphore = make(chan struct{}, 1)
 			c.mu.RLock()
 			duration, err := c.reconnectStrategy.timeBeforeNextAttempt(c.reconnectAttempts)
+			//fmt.Printf("Retry connection after %s, attempt %d\n", duration, c.reconnectAttempts)
 			c.mu.RUnlock()
 			if err != nil {
 				c.handleError(err)
@@ -1252,17 +1253,17 @@ func (c *Client) privateSign(channel string, clientID string) (string, error) {
 // NewSubscription allocates new Subscription on a channel. As soon as Subscription
 // successfully created Client keeps reference to it inside internal map registry to
 // manage automatic resubscribe on reconnect. After creating Subscription call its
-// Subscription.Subscribe method to actually start subscribing process. To temporary
+// Subscription.Subscribe method to actually start subscribing process. To temporarily
 // unsubscribe call Subscription.Unsubscribe. If you ended up with Subscription then
 // you can free resources by calling Subscription.Close method.
-func (c *Client) NewSubscription(channel string) (*Subscription, error) {
+func (c *Client) NewSubscription(channel string, config ...SubscriptionConfig) (*Subscription, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	var sub *Subscription
 	if _, ok := c.subs[channel]; ok {
 		return nil, ErrDuplicateSubscription
 	}
-	sub = c.newSubscription(channel)
+	sub = c.newSubscription(channel, config...)
 	c.subs[channel] = sub
 	return sub, nil
 }
@@ -1272,7 +1273,7 @@ type StreamPosition struct {
 	Epoch  string
 }
 
-func (c *Client) sendSubscribe(channel string, recover bool, streamPos StreamPosition, token string, fn func(res *protocol.SubscribeResult, err error)) error {
+func (c *Client) sendSubscribe(channel string, data []byte, recover bool, streamPos StreamPosition, token string, fn func(res *protocol.SubscribeResult, err error)) error {
 	params := &protocol.SubscribeRequest{
 		Channel: channel,
 	}
@@ -1287,6 +1288,7 @@ func (c *Client) sendSubscribe(channel string, recover bool, streamPos StreamPos
 	if token != "" {
 		params.Token = token
 	}
+	params.Data = data
 
 	cmd := &protocol.Command{
 		Id: c.nextMsgID(),

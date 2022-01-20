@@ -27,7 +27,7 @@ var defaultBackoffReconnect = &backoffReconnect{
 	NumReconnect:    0,
 	MinMilliseconds: 100,
 	MaxMilliseconds: 20 * 1000,
-	Factor:          4,
+	Factor:          2,
 	Jitter:          true,
 }
 
