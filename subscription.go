@@ -152,8 +152,6 @@ type Subscription struct {
 	data            []byte
 
 	autoResubscribeErrorCodes []uint32
-	autoResubscribeMinDelay   time.Duration
-	autoResubscribeMaxDelay   time.Duration
 	resubscribeAttempts       int
 	resubscribeStrategy       reconnectStrategy
 	resubscribeTimer          *time.Timer
