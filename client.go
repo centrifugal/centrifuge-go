@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -35,7 +36,7 @@ type serverSub struct {
 
 // Client represents client connection to Centrifugo or Centrifuge
 // library based server. It provides methods to set various event
-// handlers, subscribe to channels, call RPC commands etc. Call client
+// handlers, subscribe channels, call RPC commands etc. Call client
 // Connect method to trigger actual connection with server. Call client
 // Close method to clean up state when you don't need client instance
 // anymore.
@@ -43,7 +44,8 @@ type Client struct {
 	futureID            uint64
 	msgID               uint32
 	mu                  sync.RWMutex
-	url                 string
+	urls                []string
+	round               int
 	protocolType        protocol.Type
 	config              Config
 	token               string
@@ -81,25 +83,34 @@ func (c *Client) nextMsgID() uint32 {
 // to trigger connection establishment with server.
 // Deprecated: if you are using Centrifuge >= v0.18.0 or Centrifugo >= 3 then use NewJsonClient or NewProtobufClient.
 //goland:noinspection GoUnusedExportedFunction
-func New(u string, config Config) *Client {
-	return newClient(u, strings.Contains(u, "format=protobuf"), config)
+func New(connectionURL string, config Config) *Client {
+	return newClient(connectionURL, strings.Contains(connectionURL, "format=protobuf"), config)
 }
 
 // NewJsonClient initializes Client which uses JSON-based protocol internally.
 // After client initialized call its Connect method.
-func NewJsonClient(u string, config Config) *Client {
-	return newClient(u, false, config)
+func NewJsonClient(connectionURL string, config Config) *Client {
+	return newClient(connectionURL, false, config)
 }
 
 // NewProtobufClient initializes Client which uses Protobuf-based protocol internally.
 // After client initialized call its Connect method.
-func NewProtobufClient(u string, config Config) *Client {
-	return newClient(u, true, config)
+func NewProtobufClient(connectionURL string, config Config) *Client {
+	return newClient(connectionURL, true, config)
 }
 
-func newClient(u string, isProtobuf bool, config Config) *Client {
-	if !strings.HasPrefix(u, "ws") {
-		panic(fmt.Sprintf("unsupported connection endpoint: %s", u))
+func newClient(connectionURL string, isProtobuf bool, config Config) *Client {
+	// We support setting multiple urls to try then in round-robin fashion. But
+	// for now this feature is not documented and used for internal tests. In most
+	// cases there should be a single public server WS endpoint.
+	urls := strings.Split(connectionURL, ",")
+	if len(urls) == 0 {
+		panic("connection url required")
+	}
+	for _, u := range urls {
+		if !strings.HasPrefix(u, "ws") {
+			panic(fmt.Sprintf("unsupported connection endpoint: %s", u))
+		}
 	}
 
 	if config.ProtocolVersion == 0 {
@@ -112,7 +123,7 @@ func newClient(u string, isProtobuf bool, config Config) *Client {
 	}
 
 	c := &Client{
-		url:               u,
+		urls:              urls,
 		config:            config,
 		status:            DISCONNECTED,
 		protocolType:      protocolType,
@@ -144,7 +155,7 @@ func newClient(u string, isProtobuf bool, config Config) *Client {
 	return c
 }
 
-// SetToken allows to set connection token to let client
+// SetToken allows setting connection token to let client
 // authenticate itself on connect.
 func (c *Client) SetToken(token string) {
 	c.mu.Lock()
@@ -152,7 +163,7 @@ func (c *Client) SetToken(token string) {
 	c.token = token
 }
 
-// SetConnectData allows to set data to send in connect command.
+// SetConnectData allows setting data to send in connect command.
 func (c *Client) SetConnectData(data []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -534,19 +545,16 @@ func (c *Client) handle(reply *protocol.Reply) error {
 }
 
 func (c *Client) handleMessage(msg *protocol.Message) error {
-
 	var handler MessageHandler
 	if c.events != nil && c.events.onMessage != nil {
 		handler = c.events.onMessage
 	}
-
 	if handler != nil {
 		event := MessageEvent{Data: msg.Data}
 		c.runHandler(func() {
 			handler.OnMessage(c, event)
 		})
 	}
-
 	return nil
 }
 
@@ -827,6 +835,11 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 	}
 	c.status = CONNECTING
 	c.reconnect = true
+	c.round++
+	if c.round >= math.MaxInt {
+		c.round = 0
+	}
+	round := c.round
 	c.mu.Unlock()
 
 	wsConfig := websocketConfig{
@@ -838,7 +851,8 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 		Header:            c.config.Header,
 	}
 
-	t, err := newWebsocketTransport(c.url, c.protocolType, wsConfig)
+	u := c.urls[round%len(c.urls)]
+	t, err := newWebsocketTransport(u, c.protocolType, wsConfig)
 	if err != nil {
 		go c.handleDisconnect(&disconnect{Code: 1, Reason: "connect error", Reconnect: true})
 		reconnectWaitCB()
@@ -1546,7 +1560,7 @@ func (c *Client) sendHistory(channel string, opts HistoryOptions, fn func(Histor
 	}
 }
 
-// HistoryResult contains the result of presence op.
+// PresenceResult contains the result of presence op.
 type PresenceResult struct {
 	Presence map[string]ClientInfo
 }
