@@ -13,11 +13,11 @@ type Publication struct {
 	Offset uint64
 	// Data published to channel.
 	Data []byte
-	// Info is an optional information about client connection published
+	// Info is optional information about client connection published
 	// this data to channel.
 	Info *ClientInfo
-	// Meta is a custom key-value pairs attached to Publication.
-	Meta map[string]string
+	// Tags contain custom key-value pairs attached to Publication.
+	Tags map[string]string
 }
 
 // ClientInfo contains information about client connection.
@@ -112,8 +112,8 @@ func pubFromProto(pub *protocol.Publication) Publication {
 		info := infoFromProto(pub.GetInfo())
 		p.Info = &info
 	}
-	if pub.GetMeta() != nil {
-		p.Meta = pub.GetMeta()
+	if pub.GetTags() != nil {
+		p.Tags = pub.GetTags()
 	}
 	return p
 }
