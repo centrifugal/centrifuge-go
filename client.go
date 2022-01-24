@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -836,9 +835,6 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 	c.status = CONNECTING
 	c.reconnect = true
 	c.round++
-	if c.round >= math.MaxInt {
-		c.round = 0
-	}
 	round := c.round
 	c.mu.Unlock()
 
