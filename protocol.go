@@ -26,9 +26,9 @@ type ClientInfo struct {
 	Client string
 	// User is an ID of authenticated user. Zero value means anonymous user.
 	User string
-	// ConnInfo is an additional information about connection.
+	// ConnInfo is additional information about connection.
 	ConnInfo []byte
-	// ChanInfo is an additional information about connection in context of
+	// ChanInfo is additional information about connection in context of
 	// channel subscription.
 	ChanInfo []byte
 }
@@ -107,13 +107,11 @@ func pubFromProto(pub *protocol.Publication) Publication {
 	p := Publication{
 		Offset: pub.GetOffset(),
 		Data:   pub.Data,
+		Tags:   pub.GetTags(),
 	}
 	if pub.GetInfo() != nil {
 		info := infoFromProto(pub.GetInfo())
 		p.Info = &info
-	}
-	if pub.GetTags() != nil {
-		p.Tags = pub.GetTags()
 	}
 	return p
 }
