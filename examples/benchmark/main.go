@@ -32,7 +32,6 @@ func usage() {
 
 var url = flag.String("s", "ws://localhost:8000/connection/websocket", "Connection URI")
 var useProtobuf = flag.Bool("p", false, "Use protobuf format")
-var useVersion = flag.Int("v", 1, "Use protocol version")
 var numPubs = flag.Int("np", DefaultNumPubs, "Number of Concurrent Publishers")
 var numSubs = flag.Int("ns", DefaultNumSubs, "Number of Concurrent Subscribers")
 var numMsg = flag.Int("n", DefaultNumMsg, "Number of Messages to Publish")
@@ -65,7 +64,7 @@ func main() {
 	// Run Subscribers first
 	startWg.Add(*numSubs)
 	for i := 0; i < *numSubs; i++ {
-		time.Sleep(time.Millisecond)
+		time.Sleep(1 * time.Millisecond)
 		go runSubscriber(&startWg, &doneWg, *numMsg, *msgSize)
 	}
 	startWg.Wait()
@@ -74,6 +73,7 @@ func main() {
 	startWg.Add(*numPubs)
 	pubCounts := MsgPerClient(*numMsg, *numPubs)
 	for i := 0; i < *numPubs; i++ {
+		time.Sleep(1 * time.Millisecond)
 		go runPublisher(&startWg, &doneWg, pubCounts[i], *msgSize)
 	}
 
@@ -89,36 +89,23 @@ func main() {
 
 func newConnection() *centrifuge.Client {
 	var c *centrifuge.Client
-	config := centrifuge.DefaultConfig()
-	if *useVersion == 1 {
-		config.ProtocolVersion = centrifuge.ProtocolVersion1
-	} else {
-		config.ProtocolVersion = centrifuge.ProtocolVersion2
-	}
+	config := centrifuge.Config{}
 	if *useProtobuf {
 		c = centrifuge.NewProtobufClient(*url, config)
 	} else {
 		c = centrifuge.NewJsonClient(*url, config)
 	}
-	events := &eventHandler{}
-	c.OnError(events)
-	c.OnDisconnect(events)
+	c.OnDisconnect(func(e centrifuge.DisconnectEvent) {
+		if e.Code != 0 {
+			log.Printf("disconnect: %d, %s", e.Code, e.Reason)
+		}
+	})
 	return c
-}
-
-type eventHandler struct{}
-
-func (h *eventHandler) OnError(_ *centrifuge.Client, _ centrifuge.ErrorEvent) {}
-
-func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
-	if e.Reason != "clean disconnect" {
-		log.Printf("disconnect: %s", e.Reason)
-	}
 }
 
 func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	c := newConnection()
-	defer func() { _ = c.Close() }()
+	defer c.Close()
 
 	args := flag.Args()
 	subj := args[0]
@@ -159,20 +146,20 @@ type subEventHandler struct {
 	start    time.Time
 }
 
-func (h *subEventHandler) OnPublish(_ *centrifuge.Subscription, _ centrifuge.PublishEvent) {
+func (h *subEventHandler) OnPublication(_ centrifuge.PublicationEvent) {
 	h.received++
 	if h.received >= h.numMsg {
 		benchmark.AddSubSample(NewSample(h.numMsg, h.msgSize, h.start, time.Now()))
 		h.doneWg.Done()
-		_ = h.client.Close()
+		h.client.Close()
 	}
 }
 
-func (h *subEventHandler) OnSubscribeSuccess(_ *centrifuge.Subscription, _ centrifuge.SubscribeSuccessEvent) {
+func (h *subEventHandler) OnSubscribe(_ centrifuge.SubscribeEvent) {
 	h.startWg.Done()
 }
 
-func (h *subEventHandler) OnSubscribeError(_ *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
+func (h *subEventHandler) OnError(e centrifuge.SubscriptionErrorEvent) {
 	log.Fatalf("subscribe error: %v", e.Error)
 }
 
@@ -181,6 +168,11 @@ func runSubscriber(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 
 	args := flag.Args()
 	subj := args[0]
+
+	sub, err := c.NewSubscription(subj)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	subEvents := &subEventHandler{
 		numMsg:  numMsg,
@@ -191,18 +183,16 @@ func runSubscriber(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 		start:   time.Now(),
 	}
 
-	sub, err := c.NewSubscription(subj)
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	sub.OnPublish(subEvents)
-	sub.OnSubscribeSuccess(subEvents)
-	sub.OnSubscribeError(subEvents)
+	sub.OnPublication(subEvents.OnPublication)
+	sub.OnSubscribe(subEvents.OnSubscribe)
+	sub.OnError(subEvents.OnError)
 
 	err = c.Connect()
 	if err != nil {
-		log.Fatalf("Can't connect: %v\n", err)
+		err = c.Connect()
+		if err != nil {
+			log.Fatalf("Can't connect: %v\n", err)
+		}
 	}
 
 	_ = sub.Subscribe()
@@ -423,10 +413,6 @@ func (bm *Benchmark) Report() string {
 		return "No publisher or subscribers. Nothing to report."
 	}
 
-	if bm.Pubs.HasSamples() && bm.Subs.HasSamples() {
-		buffer.WriteString(fmt.Sprintf("%s Pub/Sub stats: %s\n", bm.Name, bm))
-		indent += " "
-	}
 	if bm.Pubs.HasSamples() {
 		buffer.WriteString(fmt.Sprintf("%sPub stats: %s\n", indent, bm.Pubs))
 		if len(bm.Pubs.Samples) > 1 {
@@ -446,6 +432,11 @@ func (bm *Benchmark) Report() string {
 			buffer.WriteString(fmt.Sprintf("%s %s\n", indent, bm.Subs.Statistics()))
 		}
 	}
+
+	if bm.Pubs.HasSamples() && bm.Subs.HasSamples() {
+		buffer.WriteString(fmt.Sprintf("%s Pub/Sub stats: %s\n", bm.Name, bm))
+	}
+
 	return buffer.String()
 }
 

@@ -2,7 +2,7 @@ package centrifuge
 
 import "sync"
 
-// cbQueue allows to process callbacks in separate goroutine with
+// cbQueue allows processing callbacks in separate goroutine with
 // preserved order.
 // This queue implementation is a slightly modified code borrowed from
 // https://github.com/nats-io/nats.go client released under Apache 2.0

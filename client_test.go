@@ -11,67 +11,75 @@ import (
 )
 
 type testEventHandler struct {
-	onConnect    func(*Client, ConnectEvent)
-	onDisconnect func(*Client, DisconnectEvent)
+	onConnect    func(ConnectEvent)
+	onDisconnect func(DisconnectEvent)
+	onError      func(ErrorEvent)
 }
 
-func (h *testEventHandler) OnConnect(c *Client, e ConnectEvent) {
+func (h *testEventHandler) OnConnect(e ConnectEvent) {
 	if h.onConnect != nil {
-		h.onConnect(c, e)
+		h.onConnect(e)
 	}
 }
 
-func (h *testEventHandler) OnDisconnect(c *Client, e DisconnectEvent) {
+func (h *testEventHandler) OnDisconnect(e DisconnectEvent) {
 	if h.onDisconnect != nil {
-		h.onDisconnect(c, e)
+		h.onDisconnect(e)
+	}
+}
+
+func (h *testEventHandler) OnError(e ErrorEvent) {
+	if h.onError != nil {
+		h.onError(e)
 	}
 }
 
 type testSubscriptionHandler struct {
-	onSubscribeSuccess func(*Subscription, SubscribeSuccessEvent)
-	onSubscribeError   func(*Subscription, SubscribeErrorEvent)
-	onPublish          func(*Subscription, PublishEvent)
-	onUnsubscribe      func(*Subscription, UnsubscribeEvent)
+	onSubscribe   func(SubscribeEvent)
+	onError       func(SubscriptionErrorEvent)
+	onPublication func(PublicationEvent)
+	onUnsubscribe func(UnsubscribeEvent)
 }
 
-func (h *testSubscriptionHandler) OnSubscribeSuccess(c *Subscription, e SubscribeSuccessEvent) {
-	if h.onSubscribeSuccess != nil {
-		h.onSubscribeSuccess(c, e)
+func (h *testSubscriptionHandler) OnSubscribe(e SubscribeEvent) {
+	if h.onSubscribe != nil {
+		h.onSubscribe(e)
 	}
 }
 
-func (h *testSubscriptionHandler) OnSubscribeError(c *Subscription, e SubscribeErrorEvent) {
-	if h.onSubscribeError != nil {
-		h.onSubscribeError(c, e)
+func (h *testSubscriptionHandler) OnError(e SubscriptionErrorEvent) {
+	if h.onError != nil {
+		h.onError(e)
 	}
 }
 
-func (h *testSubscriptionHandler) OnPublish(c *Subscription, e PublishEvent) {
-	if h.onPublish != nil {
-		h.onPublish(c, e)
+func (h *testSubscriptionHandler) OnPublication(e PublicationEvent) {
+	if h.onPublication != nil {
+		h.onPublication(e)
 	}
 }
 
-func (h *testSubscriptionHandler) OnUnsubscribe(c *Subscription, e UnsubscribeEvent) {
+func (h *testSubscriptionHandler) OnUnsubscribe(e UnsubscribeEvent) {
 	if h.onUnsubscribe != nil {
-		h.onUnsubscribe(c, e)
+		h.onUnsubscribe(e)
 	}
 }
 
 func TestConnectWrongAddress(t *testing.T) {
-	client := NewJsonClient("ws://localhost:9000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:9000/connection/websocket", Config{})
+	defer client.Close()
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
-		onDisconnect: func(c *Client, e DisconnectEvent) {
-			if e.Reconnect != true {
-				doneCh <- fmt.Errorf("wrong reconnect value")
+		onError: func(e ErrorEvent) {
+			var err TransportError
+			if !errors.As(e.Error, &err) {
+				doneCh <- fmt.Errorf("wrong error")
 				return
 			}
 			close(doneCh)
 		},
 	}
-	client.OnDisconnect(handler)
+	client.OnError(handler.OnError)
 	_ = client.Connect()
 	select {
 	case err := <-doneCh:
@@ -84,11 +92,11 @@ func TestConnectWrongAddress(t *testing.T) {
 }
 
 func TestSuccessfulConnect(t *testing.T) {
-	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	client.Close()
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
-		onConnect: func(c *Client, e ConnectEvent) {
+		onConnect: func(e ConnectEvent) {
 			if e.ClientID == "" {
 				doneCh <- fmt.Errorf("wrong client ID value")
 				return
@@ -96,7 +104,7 @@ func TestSuccessfulConnect(t *testing.T) {
 			close(doneCh)
 		},
 	}
-	client.OnConnect(handler)
+	client.OnConnect(handler.OnConnect)
 	_ = client.Connect()
 	select {
 	case err := <-doneCh:
@@ -109,15 +117,15 @@ func TestSuccessfulConnect(t *testing.T) {
 }
 
 func TestDisconnect(t *testing.T) {
-	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	client.Close()
 	connectDoneCh := make(chan error, 1)
 	disconnectDoneCh := make(chan error, 1)
 	handler := &testEventHandler{
-		onConnect: func(c *Client, e ConnectEvent) {
+		onConnect: func(e ConnectEvent) {
 			close(connectDoneCh)
 		},
-		onDisconnect: func(c *Client, e DisconnectEvent) {
+		onDisconnect: func(e DisconnectEvent) {
 			if e.Reconnect != false {
 				disconnectDoneCh <- fmt.Errorf("wrong reconnect value")
 				return
@@ -125,8 +133,8 @@ func TestDisconnect(t *testing.T) {
 			close(disconnectDoneCh)
 		},
 	}
-	client.OnConnect(handler)
-	client.OnDisconnect(handler)
+	client.OnConnect(handler.OnConnect)
+	client.OnDisconnect(handler.OnDisconnect)
 	_ = client.Connect()
 	select {
 	case err := <-connectDoneCh:
@@ -136,7 +144,7 @@ func TestDisconnect(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Errorf("expecting successful connect")
 	}
-	_ = client.Disconnect()
+	client.Disconnect()
 	select {
 	case err := <-disconnectDoneCh:
 		if err != nil {
@@ -148,8 +156,8 @@ func TestDisconnect(t *testing.T) {
 }
 
 func TestPublishProtobuf(t *testing.T) {
-	client := NewProtobufClient("ws://localhost:8000/connection/websocket?format=protobuf", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	client.Close()
 	_ = client.Connect()
 	_, err := client.Publish("test", []byte("boom"))
 	if err != nil {
@@ -158,8 +166,8 @@ func TestPublishProtobuf(t *testing.T) {
 }
 
 func TestPublishJSON(t *testing.T) {
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	_, err := client.Publish("test", []byte("{}"))
 	if err != nil {
@@ -168,8 +176,8 @@ func TestPublishJSON(t *testing.T) {
 }
 
 func TestPublishInvalidJSON(t *testing.T) {
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	_, err := client.Publish("test", []byte("boom"))
 	if err == nil {
@@ -179,18 +187,19 @@ func TestPublishInvalidJSON(t *testing.T) {
 
 func TestSubscribeSuccess(t *testing.T) {
 	doneCh := make(chan error, 1)
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test")
 	if err != nil {
 		t.Errorf("error on new subscription: %v", err)
 	}
-	sub.OnSubscribeSuccess(&testSubscriptionHandler{
-		onSubscribeSuccess: func(c *Subscription, e SubscribeSuccessEvent) {
+	subHandler := &testSubscriptionHandler{
+		onSubscribe: func(e SubscribeEvent) {
 			close(doneCh)
 		},
-	})
+	}
+	sub.OnSubscribe(subHandler.OnSubscribe)
 	_ = sub.Subscribe()
 	select {
 	case err := <-doneCh:
@@ -204,19 +213,20 @@ func TestSubscribeSuccess(t *testing.T) {
 
 func TestSubscribeError(t *testing.T) {
 	doneCh := make(chan error, 1)
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test:test")
 	if err != nil {
 		t.Errorf("error on new subscription: %v", err)
 	}
-	sub.OnSubscribeError(&testSubscriptionHandler{
-		onSubscribeError: func(c *Subscription, e SubscribeErrorEvent) {
+	subHandler := &testSubscriptionHandler{
+		onError: func(e SubscriptionErrorEvent) {
 			// Due to unknown namespace.
 			close(doneCh)
 		},
-	})
+	}
+	sub.OnError(subHandler.OnError)
 	_ = sub.Subscribe()
 	select {
 	case err := <-doneCh:
@@ -241,8 +251,8 @@ func randString(n int) string {
 
 func TestHandlePublish(t *testing.T) {
 	doneCh := make(chan error, 1)
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test_handle_publish")
 	if err != nil {
@@ -250,13 +260,13 @@ func TestHandlePublish(t *testing.T) {
 	}
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
 	handler := &testSubscriptionHandler{
-		onSubscribeSuccess: func(c *Subscription, e SubscribeSuccessEvent) {
+		onSubscribe: func(e SubscribeEvent) {
 			_, err := client.Publish("test_handle_publish", msg)
 			if err != nil {
 				t.Fail()
 			}
 		},
-		onPublish: func(c *Subscription, e PublishEvent) {
+		onPublication: func(e PublicationEvent) {
 			if !bytes.Equal(e.Data, msg) {
 				return
 			}
@@ -267,8 +277,8 @@ func TestHandlePublish(t *testing.T) {
 			close(doneCh)
 		},
 	}
-	sub.OnSubscribeSuccess(handler)
-	sub.OnPublish(handler)
+	sub.OnSubscribe(handler.OnSubscribe)
+	sub.OnPublication(handler.OnPublication)
 	_ = sub.Subscribe()
 	select {
 	case err := <-doneCh:
@@ -280,27 +290,27 @@ func TestHandlePublish(t *testing.T) {
 	}
 }
 
-func TestSubscriptionClose(t *testing.T) {
+func TestSubscription_Unsubscribe(t *testing.T) {
 	subscribedCh := make(chan struct{}, 1)
 	unsubscribedCh := make(chan struct{}, 1)
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test_subscription_close")
 	if err != nil {
 		t.Errorf("error on new subscription: %v", err)
 	}
 	handler := &testSubscriptionHandler{
-		onSubscribeSuccess: func(c *Subscription, e SubscribeSuccessEvent) {
+		onSubscribe: func(e SubscribeEvent) {
 			close(subscribedCh)
 		},
-		onUnsubscribe: func(subscription *Subscription, event UnsubscribeEvent) {
+		onUnsubscribe: func(event UnsubscribeEvent) {
 			close(unsubscribedCh)
 		},
 	}
-	sub.OnUnsubscribe(handler)
-	sub.OnSubscribeSuccess(handler)
-	sub.OnPublish(handler)
+	sub.OnUnsubscribe(handler.OnUnsubscribe)
+	sub.OnSubscribe(handler.OnSubscribe)
+	sub.OnPublication(handler.OnPublication)
 	_ = sub.Subscribe()
 	select {
 	case <-subscribedCh:
@@ -310,7 +320,7 @@ func TestSubscriptionClose(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Errorf("timeout waiting for subscribe")
 	}
-	err = sub.Close()
+	err = sub.Unsubscribe()
 	if err != nil {
 		t.Fatal("unexpected error", err)
 	}
@@ -319,19 +329,11 @@ func TestSubscriptionClose(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Errorf("timeout waiting for subscribe")
 	}
-	err = sub.Subscribe()
-	if err != ErrSubscriptionClosed {
-		t.Fatal("ErrSubscriptionClosed expected on Subscribe after Close")
-	}
-	err = sub.Close()
-	if err != ErrSubscriptionClosed {
-		t.Fatal("ErrSubscriptionClosed expected on second Close")
-	}
 }
 
 func TestClient_Publish(t *testing.T) {
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
 	_, err := client.Publish("test", msg)
@@ -342,8 +344,8 @@ func TestClient_Publish(t *testing.T) {
 }
 
 func TestClient_Presence(t *testing.T) {
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	_, err := client.Presence("test")
 	var e *Error
@@ -356,8 +358,8 @@ func TestClient_Presence(t *testing.T) {
 }
 
 func TestClient_PresenceStats(t *testing.T) {
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	_, err := client.PresenceStats("test")
 	var e *Error
@@ -370,8 +372,8 @@ func TestClient_PresenceStats(t *testing.T) {
 }
 
 func TestClient_History(t *testing.T) {
-	client := NewJsonClient("ws://localhost:8000/connection/websocket", DefaultConfig())
-	defer func() { _ = client.Close() }()
+	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer client.Close()
 	_ = client.Connect()
 	_, err := client.History("test")
 	var e *Error

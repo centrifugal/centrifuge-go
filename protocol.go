@@ -35,12 +35,13 @@ type ClientInfo struct {
 
 // Error represents protocol-level error.
 type Error struct {
-	Code    uint32
-	Message string
+	Code      uint32
+	Message   string
+	Temporary bool
 }
 
 func errorFromProto(err *protocol.Error) *Error {
-	return &Error{Code: err.Code, Message: err.Message}
+	return &Error{Code: err.Code, Message: err.Message, Temporary: err.Temporary}
 }
 
 func (e Error) Error() string {

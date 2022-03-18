@@ -2,159 +2,94 @@ package centrifuge
 
 import (
 	"errors"
-	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/centrifugal/protocol"
+	"github.com/google/uuid"
 )
 
-// SubscribeSuccessEvent is an event context passed
-// to subscribe success callback.
-type SubscribeSuccessEvent struct {
-	Resubscribed bool
-	Recovered    bool
-	Data         []byte
-}
-
-// SubscribeErrorEvent is a subscribe error event context passed to
-// event callback.
-type SubscribeErrorEvent struct {
-	Error string
-}
-
-// UnsubscribeEvent is an event passed to unsubscribe event handler.
-type UnsubscribeEvent struct{}
-
-// LeaveEvent has info about user who left channel.
-type LeaveEvent struct {
-	ClientInfo
-}
-
-// JoinEvent has info about user who joined channel.
-type JoinEvent struct {
-	ClientInfo
-}
-
-// PublishEvent has info about received channel Publication.
-type PublishEvent struct {
-	Publication
-}
-
-// PublishHandler is a function to handle messages published in
-// channels.
-type PublishHandler interface {
-	OnPublish(*Subscription, PublishEvent)
-}
-
-// JoinHandler is a function to handle join messages.
-type JoinHandler interface {
-	OnJoin(*Subscription, JoinEvent)
-}
-
-// LeaveHandler is a function to handle leave messages.
-type LeaveHandler interface {
-	OnLeave(*Subscription, LeaveEvent)
-}
-
-// UnsubscribeHandler is a function to handle unsubscribe event.
-type UnsubscribeHandler interface {
-	OnUnsubscribe(*Subscription, UnsubscribeEvent)
-}
-
-// SubscribeSuccessHandler is a function to handle subscribe success event.
-type SubscribeSuccessHandler interface {
-	OnSubscribeSuccess(*Subscription, SubscribeSuccessEvent)
-}
-
-// SubscribeErrorHandler is a function to handle subscribe error event.
-type SubscribeErrorHandler interface {
-	OnSubscribeError(*Subscription, SubscribeErrorEvent)
-}
-
-// subscriptionEventHub contains callback functions that will be called when
-// corresponding event happens with subscription to channel.
-type subscriptionEventHub struct {
-	onPublish          PublishHandler
-	onJoin             JoinHandler
-	onLeave            LeaveHandler
-	onUnsubscribe      UnsubscribeHandler
-	onSubscribeSuccess SubscribeSuccessHandler
-	onSubscribeError   SubscribeErrorHandler
-}
-
-// newSubscriptionEventHub initializes new subscriptionEventHub.
-func newSubscriptionEventHub() *subscriptionEventHub {
-	return &subscriptionEventHub{}
-}
-
-// OnPublish allows setting PublishHandler to SubEventHandler.
-func (s *Subscription) OnPublish(handler PublishHandler) {
-	s.events.onPublish = handler
-}
-
-// OnJoin allows setting JoinHandler to SubEventHandler.
-func (s *Subscription) OnJoin(handler JoinHandler) {
-	s.events.onJoin = handler
-}
-
-// OnLeave allows setting LeaveHandler to SubEventHandler.
-func (s *Subscription) OnLeave(handler LeaveHandler) {
-	s.events.onLeave = handler
-}
-
-// OnUnsubscribe allows setting UnsubscribeHandler to SubEventHandler.
-func (s *Subscription) OnUnsubscribe(handler UnsubscribeHandler) {
-	s.events.onUnsubscribe = handler
-}
-
-// OnSubscribeSuccess allows setting SubscribeSuccessHandler to SubEventHandler.
-func (s *Subscription) OnSubscribeSuccess(handler SubscribeSuccessHandler) {
-	s.events.onSubscribeSuccess = handler
-}
-
-// OnSubscribeError allows setting SubscribeErrorHandler to SubEventHandler.
-func (s *Subscription) OnSubscribeError(handler SubscribeErrorHandler) {
-	s.events.onSubscribeError = handler
-}
+// SubState represents state of Subscription.
+type SubState string
 
 // Different states of Subscription.
 const (
-	UNSUBSCRIBED = iota
-	SUBSCRIBING
-	SUBSCRIBED
-	SUBERROR
-	SUBCLOSED
+	SubStateUnsubscribed SubState = "unsubscribed"
+	SubStateSubscribing  SubState = "subscribing"
+	SubStateSubscribed   SubState = "subscribed"
+	SubStateFailed       SubState = "failed"
+)
+
+// SubFailReason describes possible reasons of Subscription close.
+type SubFailReason string
+
+// Different Subscription close reasons.
+const (
+	SubFailReasonClientFailed    SubFailReason = "client failed"
+	SubFailReasonSubscribeFailed SubFailReason = "subscribe failed"
+	SubFailReasonRefreshFailed   SubFailReason = "refresh failed"
+	SubFailReasonUnauthorized    SubFailReason = "unauthorized"
+	SubFailReasonUnrecoverable   SubFailReason = "unrecoverable"
 )
 
 // SubscriptionConfig allows setting Subscription options.
 type SubscriptionConfig struct {
-	AutoResubscribeErrorCodes []uint32
-	Data                      []byte
+	// Data is an arbitrary data to pass to a server in each subscribe request.
+	Data []byte
+	// Token for Subscription.
+	Token string
+	// TokenUniquePerConnection gives client a tip to re-ask token upon every
+	// subscription attempt.
+	TokenUniquePerConnection bool
+}
+
+func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *Subscription {
+	s := &Subscription{
+		Channel:             channel,
+		centrifuge:          c,
+		events:              newSubscriptionEventHub(),
+		subFutures:          make(map[uint64]subFuture),
+		resubscribeStrategy: defaultBackoffReconnect,
+	}
+	if len(config) == 1 {
+		cfg := config[0]
+		s.token = cfg.Token
+		s.tokenUniquePerConnection = cfg.TokenUniquePerConnection
+		s.data = cfg.Data
+	}
+	return s
 }
 
 // Subscription represents client subscription to channel.
 type Subscription struct {
-	futureID        uint64
-	mu              sync.Mutex
-	channel         string
-	centrifuge      *Client
-	subCloseCh      chan struct{}
-	status          int
-	events          *subscriptionEventHub
-	lastOffset      uint64
-	lastEpoch       string
-	recover         bool
-	err             error
-	needResubscribe bool
-	subFutures      map[uint64]subFuture
-	data            []byte
+	futureID   uint64
+	mu         sync.Mutex
+	centrifuge *Client
 
-	autoResubscribeErrorCodes []uint32
-	resubscribeAttempts       int
-	resubscribeStrategy       reconnectStrategy
-	resubscribeTimer          *time.Timer
+	// Channel for a subscription.
+	Channel string
+
+	state SubState
+
+	events     *subscriptionEventHub
+	offset     uint64
+	epoch      string
+	recover    bool
+	err        error
+	subFutures map[uint64]subFuture
+	data       []byte
+	sid        string
+
+	token                    string
+	tokenUniquePerConnection bool
+
+	resubscribeAttempts int
+	resubscribeStrategy reconnectStrategy
+
+	resubscribeTimer *time.Timer
+	refreshTimer     *time.Timer
 }
 
 type subFuture struct {
@@ -166,33 +101,11 @@ func newSubFuture(fn func(error)) subFuture {
 	return subFuture{fn: fn, closeCh: make(chan struct{})}
 }
 
-func (c *Client) newSubscription(channel string, config ...SubscriptionConfig) *Subscription {
-	s := &Subscription{
-		centrifuge:          c,
-		channel:             channel,
-		subCloseCh:          make(chan struct{}),
-		events:              newSubscriptionEventHub(),
-		subFutures:          make(map[uint64]subFuture),
-		needResubscribe:     false,
-		resubscribeStrategy: defaultBackoffReconnect,
-	}
-	if len(config) == 1 {
-		s.autoResubscribeErrorCodes = config[0].AutoResubscribeErrorCodes
-		s.data = config[0].Data
-	}
-	return s
-}
-
-// Channel returns subscription channel.
-func (s *Subscription) Channel() string {
-	return s.channel
-}
-
 func (s *Subscription) nextFutureID() uint64 {
 	return atomic.AddUint64(&s.futureID, 1)
 }
 
-// Sub.mu lock must be held outside.
+// Lock must be held outside.
 func (s *Subscription) resolveSubFutures(err error) {
 	for _, fut := range s.subFutures {
 		fut.fn(err)
@@ -201,12 +114,16 @@ func (s *Subscription) resolveSubFutures(err error) {
 	s.subFutures = make(map[uint64]subFuture)
 }
 
-// Publish allows publishing data to subscription channel.
+// Publish allows publishing data to the subscription channel.
 func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 	s.mu.Lock()
-	if s.status == SUBCLOSED {
+	if s.state == SubStateFailed {
 		s.mu.Unlock()
-		return PublishResult{}, ErrSubscriptionClosed
+		return PublishResult{}, ErrSubscriptionFailed
+	}
+	if s.state == SubStateUnsubscribed {
+		s.mu.Unlock()
+		return PublishResult{}, ErrSubscriptionUnsubscribed
 	}
 	s.mu.Unlock()
 
@@ -254,9 +171,13 @@ func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
 		opt(historyOpts)
 	}
 	s.mu.Lock()
-	if s.status == SUBCLOSED {
+	if s.state == SubStateFailed {
 		s.mu.Unlock()
-		return HistoryResult{}, ErrSubscriptionClosed
+		return HistoryResult{}, ErrSubscriptionFailed
+	}
+	if s.state == SubStateUnsubscribed {
+		s.mu.Unlock()
+		return HistoryResult{}, ErrSubscriptionUnsubscribed
 	}
 	s.mu.Unlock()
 
@@ -272,9 +193,13 @@ func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
 // Presence allows extracting channel presence.
 func (s *Subscription) Presence() (PresenceResult, error) {
 	s.mu.Lock()
-	if s.status == SUBCLOSED {
+	if s.state == SubStateFailed {
 		s.mu.Unlock()
-		return PresenceResult{}, ErrSubscriptionClosed
+		return PresenceResult{}, ErrSubscriptionFailed
+	}
+	if s.state == SubStateUnsubscribed {
+		s.mu.Unlock()
+		return PresenceResult{}, ErrSubscriptionUnsubscribed
 	}
 	s.mu.Unlock()
 
@@ -289,6 +214,17 @@ func (s *Subscription) Presence() (PresenceResult, error) {
 
 // PresenceStats allows extracting channel presence stats.
 func (s *Subscription) PresenceStats() (PresenceStatsResult, error) {
+	s.mu.Lock()
+	if s.state == SubStateFailed {
+		s.mu.Unlock()
+		return PresenceStatsResult{}, ErrSubscriptionFailed
+	}
+	if s.state == SubStateUnsubscribed {
+		s.mu.Unlock()
+		return PresenceStatsResult{}, ErrSubscriptionUnsubscribed
+	}
+	s.mu.Unlock()
+
 	resCh := make(chan PresenceStatsResult, 1)
 	errCh := make(chan error, 1)
 	s.presenceStats(func(result PresenceStatsResult, err error) {
@@ -301,10 +237,12 @@ func (s *Subscription) PresenceStats() (PresenceStatsResult, error) {
 func (s *Subscription) onSubscribe(fn func(err error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.status == SUBSCRIBED {
+	if s.state == SubStateSubscribed {
 		go fn(nil)
-	} else if s.status == SUBERROR {
-		go fn(s.err)
+	} else if s.state == SubStateFailed {
+		go fn(ErrSubscriptionFailed)
+	} else if s.state == SubStateUnsubscribed {
+		go fn(ErrSubscriptionUnsubscribed)
 	} else {
 		id := s.nextFutureID()
 		fut := newSubFuture(fn)
@@ -332,7 +270,7 @@ func (s *Subscription) publish(data []byte, fn func(PublishResult, error)) {
 			fn(PublishResult{}, err)
 			return
 		}
-		s.centrifuge.publish(s.channel, data, fn)
+		s.centrifuge.publish(s.Channel, data, fn)
 	})
 }
 
@@ -342,7 +280,7 @@ func (s *Subscription) history(opts HistoryOptions, fn func(HistoryResult, error
 			fn(HistoryResult{}, err)
 			return
 		}
-		s.centrifuge.history(s.channel, opts, fn)
+		s.centrifuge.history(s.Channel, opts, fn)
 	})
 }
 
@@ -352,7 +290,7 @@ func (s *Subscription) presence(fn func(PresenceResult, error)) {
 			fn(PresenceResult{}, err)
 			return
 		}
-		s.centrifuge.presence(s.channel, fn)
+		s.centrifuge.presence(s.Channel, fn)
 	})
 }
 
@@ -362,48 +300,41 @@ func (s *Subscription) presenceStats(fn func(PresenceStatsResult, error)) {
 			fn(PresenceStatsResult{}, err)
 			return
 		}
-		s.centrifuge.presenceStats(s.channel, fn)
+		s.centrifuge.presenceStats(s.Channel, fn)
 	})
 }
 
 // Unsubscribe allows unsubscribing from channel.
 func (s *Subscription) Unsubscribe() error {
 	s.mu.Lock()
-	if s.status == SUBCLOSED {
-		s.mu.Unlock()
-		return ErrSubscriptionClosed
+	defer s.mu.Unlock()
+	return s.unsubscribe(true, false)
+}
+
+// Lock must be held outside.
+func (s *Subscription) unsubscribe(fromClient bool, clearPositionState bool) error {
+	s.moveToUnsubscribed(false, clearPositionState)
+	if fromClient {
+		s.centrifuge.unsubscribe(s.Channel, func(result UnsubscribeResult, err error) {
+			if err != nil {
+				go s.centrifuge.handleDisconnect(&disconnect{Code: 13, Reason: "unsubscribe error", Reconnect: true})
+				return
+			}
+		})
 	}
-	s.mu.Unlock()
-	s.triggerOnUnsubscribe(false, false)
-	s.centrifuge.unsubscribe(s.channel, func(result UnsubscribeResult, err error) {})
 	return nil
 }
 
-// Close unsubscribes from channel and removes Subscription from Client's
-// subscription map.
-func (s *Subscription) Close() error {
-	var needUnsubscribeEvent bool
-	s.mu.Lock()
-	if s.status == SUBCLOSED {
-		s.mu.Unlock()
-		return ErrSubscriptionClosed
+// Lock must be held outside.
+func (s *Subscription) fail(reason SubFailReason, fromClient bool) {
+	_ = s.unsubscribe(fromClient, true)
+	s.state = SubStateFailed
+	if s.events != nil && s.events.onFail != nil {
+		handler := s.events.onFail
+		s.centrifuge.runHandler(func() {
+			handler(SubscriptionFailEvent{Reason: reason})
+		})
 	}
-	if s.status == SUBSCRIBED {
-		needUnsubscribeEvent = true
-	}
-	s.status = SUBCLOSED
-	s.mu.Unlock()
-	s.centrifuge.removeSubscription(s.channel)
-	s.centrifuge.unsubscribe(s.channel, func(result UnsubscribeResult, err error) {})
-	if needUnsubscribeEvent {
-		if s.events != nil && s.events.onUnsubscribe != nil {
-			handler := s.events.onUnsubscribe
-			s.centrifuge.runHandler(func() {
-				handler.OnUnsubscribe(s, UnsubscribeEvent{})
-			})
-		}
-	}
-	return nil
 }
 
 type SubscribeOptions struct {
@@ -425,130 +356,231 @@ func (s *Subscription) Subscribe(opts ...SubscribeOption) error {
 		opt(subscribeOpts)
 	}
 	s.mu.Lock()
-	if s.status == SUBCLOSED {
-		s.mu.Unlock()
-		return ErrSubscriptionClosed
-	}
-	s.needResubscribe = true
+	s.state = SubStateSubscribing
 	s.mu.Unlock()
-	if !s.centrifuge.connected() {
+	if !s.centrifuge.isConnected() {
 		return nil
 	}
-	return s.resubscribe(false, s.centrifuge.clientID(), *subscribeOpts)
+	return s.resubscribe(s.centrifuge.clientID(), *subscribeOpts)
 }
 
-func (s *Subscription) triggerOnUnsubscribe(needResubscribe bool, needRecover bool) {
-	s.mu.Lock()
+// Lock must be held outside.
+func (s *Subscription) moveToUnsubscribed(resubscribe bool, clearPositionState bool) {
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
 		s.resubscribeTimer.Stop()
 	}
-	if s.status != SUBSCRIBED {
-		s.status = UNSUBSCRIBED
-		s.mu.Unlock()
-		return
+	needUnsubscribeEvent := s.state == SubStateSubscribed
+	if resubscribe {
+		s.state = SubStateSubscribing
+	} else {
+		s.state = SubStateUnsubscribed
 	}
-	s.needResubscribe = needResubscribe
-	s.recover = needRecover
-	s.status = UNSUBSCRIBED
-	s.mu.Unlock()
-	if s.events != nil && s.events.onUnsubscribe != nil {
+	if clearPositionState {
+		s.clearPositionState()
+	}
+	s.clearSubscribedState()
+	if needUnsubscribeEvent && s.events != nil && s.events.onUnsubscribe != nil {
 		handler := s.events.onUnsubscribe
 		s.centrifuge.runHandler(func() {
-			handler.OnUnsubscribe(s, UnsubscribeEvent{})
+			handler(UnsubscribeEvent{})
 		})
 	}
 }
 
-func (s *Subscription) subscribeSuccess(isResubscribe bool, res *protocol.SubscribeResult) {
+func (s *Subscription) subscribeSuccess(res *protocol.SubscribeResult) {
 	s.mu.Lock()
-	if s.status != SUBSCRIBING {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.state != SubStateSubscribing {
 		return
 	}
-	closeCh := make(chan struct{})
-	s.subCloseCh = closeCh
-	s.runSubRefresh(res.Ttl, closeCh)
-	s.status = SUBSCRIBED
+	s.state = SubStateSubscribed
+	s.sid = uuid.NewString()
+	if res.Expires {
+		s.scheduleSubRefresh(res.Ttl)
+	}
+	if res.Recoverable {
+		s.recover = true
+	}
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
 		s.resubscribeTimer.Stop()
 	}
 	s.resolveSubFutures(nil)
-	s.mu.Unlock()
-	if s.events != nil && s.events.onSubscribeSuccess != nil {
-		handler := s.events.onSubscribeSuccess
-		ev := SubscribeSuccessEvent{Resubscribed: isResubscribe, Recovered: res.Recovered, Data: res.GetData()}
+	if s.events != nil && s.events.onSubscribe != nil {
+		handler := s.events.onSubscribe
+		ev := SubscribeEvent{Data: res.GetData(), Recovered: res.GetRecovered()}
 		s.centrifuge.runHandler(func() {
-			handler.OnSubscribeSuccess(s, ev)
+			handler(ev)
 		})
 	}
-	s.processRecover(res)
+	s.epoch = res.Epoch
+	if len(res.Publications) > 0 {
+		sid := s.sid
+		s.centrifuge.runHandler(func() {
+			pubs := res.Publications
+			for i := 0; i < len(pubs); i++ {
+				pub := res.Publications[i]
+				var handler PublicationHandler
+				if s.events != nil && s.events.onPublication != nil {
+					handler = s.events.onPublication
+				}
+				if handler != nil {
+					handler(PublicationEvent{Publication: pubFromProto(pub)})
+				}
+				s.mu.Lock()
+				if s.sid != sid {
+					s.mu.Unlock()
+					return
+				}
+				if pub.Offset > 0 {
+					s.offset = pub.Offset
+				}
+				s.mu.Unlock()
+			}
+		})
+	} else {
+		s.offset = res.Offset
+	}
 }
 
-func uintInSlice(s uint32, slice []uint32) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
+// Lock must be held outside.
+func (s *Subscription) clearSubscribedState() {
+	s.sid = ""
+	if s.refreshTimer != nil {
+		s.refreshTimer.Stop()
 	}
-	return false
+}
+
+// Lock must be held outside.
+func (s *Subscription) clearPositionState() {
+	s.recover = false
+	s.offset = 0
+	s.epoch = ""
+}
+
+// Lock must be held outside.
+func (s *Subscription) scheduleResubscribe() {
+	s.resubscribeAttempts++
+	delay := s.resubscribeStrategy.timeBeforeNextAttempt(s.resubscribeAttempts)
+	//fmt.Printf("Retry subscription to %s after %s, attempt %d\n", s.channel, delay, s.resubscribeAttempts)
+	s.resubscribeTimer = time.AfterFunc(delay, func() {
+		s.mu.Lock()
+		if s.state != SubStateSubscribing {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+		_ = s.Subscribe()
+	})
+}
+
+func (s *Subscription) refreshToken() (string, error) {
+	var handler SubscriptionRefreshHandler
+	if s.centrifuge.events != nil && s.centrifuge.events.onSubscriptionRefresh != nil {
+		handler = s.centrifuge.events.onSubscriptionRefresh
+	}
+	if handler == nil {
+		return "", errors.New("RefreshHandler must be set to handle expired token")
+	}
+	return handler(SubscriptionRefreshEvent{
+		ClientID: s.centrifuge.clientID(),
+		Channel:  s.Channel,
+	})
 }
 
 func (s *Subscription) subscribeError(err error) {
 	s.mu.Lock()
-	if s.status != SUBSCRIBING {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.state != SubStateSubscribing {
 		return
 	}
 	if err == ErrTimeout {
-		s.status = UNSUBSCRIBED
-		s.mu.Unlock()
 		go s.centrifuge.handleDisconnect(&disconnect{Code: 10, Reason: "subscribe timeout", Reconnect: true})
 		return
 	}
-	s.err = err
-	s.status = SUBERROR
-	s.resolveSubFutures(err)
+
+	var needCloseEvent bool
+	var closeReason SubFailReason
 	var serverError *Error
-	if errors.As(err, &serverError) && uintInSlice(serverError.Code, s.autoResubscribeErrorCodes) {
-		s.resubscribeAttempts++
-		delay, _ := s.resubscribeStrategy.timeBeforeNextAttempt(s.resubscribeAttempts)
-		//fmt.Printf("Retry subscription to %s after %s, attempt %d\n", s.channel, delay, s.resubscribeAttempts)
-		s.resubscribeTimer = time.AfterFunc(delay, func() {
-			s.mu.Lock()
-			if s.status != SUBERROR {
-				s.mu.Unlock()
-				return
+	if errors.As(err, &serverError) {
+		if serverError.Code == 109 {
+			token, err := s.refreshToken()
+			if err == nil {
+				if token == "" {
+					s.fail(SubFailReasonUnauthorized, true)
+					return
+				}
+				s.token = token
+				if s.state != SubStateSubscribing {
+					return
+				}
 			}
-			s.mu.Unlock()
-			_ = s.Subscribe()
+			s.scheduleResubscribe()
+		} else if serverError.Code == 112 {
+			// Unrecoverable position.
+			s.resolveSubFutures(err)
+			s.state = SubStateFailed
+			needCloseEvent = true
+			closeReason = SubFailReasonUnrecoverable
+			s.clearPositionState()
+		} else if serverError.Temporary {
+			s.scheduleResubscribe()
+		} else {
+			s.resolveSubFutures(err)
+			s.state = SubStateFailed
+			needCloseEvent = true
+			closeReason = SubFailReasonSubscribeFailed
+		}
+	} else {
+		s.scheduleResubscribe()
+	}
+	s.emitError(SubscriptionSubscribeError{Err: err})
+	if needCloseEvent && s.events != nil && s.events.onFail != nil {
+		handler := s.events.onFail
+		s.centrifuge.runHandler(func() {
+			handler(SubscriptionFailEvent{Reason: closeReason})
 		})
 	}
-	s.mu.Unlock()
-	if s.events != nil && s.events.onSubscribeError != nil {
-		handler := s.events.onSubscribeError
+}
+
+// Lock must be held outside.
+func (s *Subscription) emitError(err error) {
+	if s.events != nil && s.events.onError != nil {
+		handler := s.events.onError
 		s.centrifuge.runHandler(func() {
-			handler.OnSubscribeError(s, SubscribeErrorEvent{Error: err.Error()})
+			handler(SubscriptionErrorEvent{Error: err})
 		})
 	}
 }
 
 func (s *Subscription) handlePublication(pub *protocol.Publication) {
-	var handler PublishHandler
-	if s.events != nil && s.events.onPublish != nil {
-		handler = s.events.onPublish
+	var handler PublicationHandler
+	if s.events != nil && s.events.onPublication != nil {
+		handler = s.events.onPublication
 	}
-	if handler != nil {
-		s.centrifuge.runHandler(func() {
-			handler.OnPublish(s, PublishEvent{Publication: pubFromProto(pub)})
-			s.mu.Lock()
-			if pub.Offset > 0 {
-				s.lastOffset = pub.Offset
-			}
+	if handler == nil {
+		return
+	}
+	s.mu.Lock()
+	id := s.sid
+	if id == "" {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	s.centrifuge.runHandler(func() {
+		handler(PublicationEvent{Publication: pubFromProto(pub)})
+		s.mu.Lock()
+		if s.sid != id {
 			s.mu.Unlock()
-		})
-	}
+			return
+		}
+		if pub.Offset > 0 {
+			s.offset = pub.Offset
+		}
+		s.mu.Unlock()
+	})
 }
 
 func (s *Subscription) handleJoin(info *protocol.ClientInfo) {
@@ -558,7 +590,7 @@ func (s *Subscription) handleJoin(info *protocol.ClientInfo) {
 	}
 	if handler != nil {
 		s.centrifuge.runHandler(func() {
-			handler.OnJoin(s, JoinEvent{ClientInfo: infoFromProto(info)})
+			handler(JoinEvent{ClientInfo: infoFromProto(info)})
 		})
 	}
 }
@@ -570,108 +602,145 @@ func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
 	}
 	if handler != nil {
 		s.centrifuge.runHandler(func() {
-			handler.OnLeave(s, LeaveEvent{ClientInfo: infoFromProto(info)})
+			handler(LeaveEvent{ClientInfo: infoFromProto(info)})
 		})
 	}
 }
 
-func (s *Subscription) handleUnsubscribe(_ *protocol.Unsubscribe) {
-	_ = s.Unsubscribe()
+func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
+	switch unsubscribe.Type {
+	case protocol.Unsubscribe_INSUFFICIENT:
+		_ = s.unsubscribe(false, false)
+		_ = s.Subscribe()
+	case protocol.Unsubscribe_UNRECOVERABLE:
+		_ = s.unsubscribe(false, true)
+		s.fail(SubFailReasonUnrecoverable, false)
+	default:
+		_ = s.unsubscribe(false, false)
+	}
 }
 
-func (s *Subscription) resubscribe(isResubscribe bool, clientID string, opts SubscribeOptions) error {
+func (s *Subscription) resubscribe(clientID string, opts SubscribeOptions) error {
 	s.mu.Lock()
-	if s.status == SUBSCRIBED || s.status == SUBSCRIBING {
+	if s.state != SubStateSubscribing {
 		s.mu.Unlock()
 		return nil
 	}
-	needResubscribe := s.needResubscribe
-	if !needResubscribe {
-		s.mu.Unlock()
-		return nil
-	}
-
-	s.status = SUBSCRIBING
+	token := s.token
 	s.mu.Unlock()
 
-	token, err := s.centrifuge.privateSign(s.channel, clientID)
-	if err != nil {
-		s.mu.Lock()
-		s.status = UNSUBSCRIBED
-		s.mu.Unlock()
-		return fmt.Errorf("error subscribing on channel %s: %v", s.channel, err)
+	if token != "" {
+		var err error
+		token, err = s.getSubscriptionToken(s.Channel, clientID)
+		if err != nil {
+			s.subscribeError(err)
+			return nil
+		}
 	}
 
 	s.mu.Lock()
-	if s.status != SUBSCRIBING {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if s.state != SubStateSubscribing {
 		return nil
+	}
+
+	if opts.Since != nil {
+		s.recover = true
+		s.offset = opts.Since.Offset
+		s.epoch = opts.Since.Epoch
 	}
 
 	var isRecover bool
 	var sp StreamPosition
-	if s.recover && isResubscribe {
+	if s.recover {
 		isRecover = true
-		sp.Offset = s.lastOffset
-		sp.Epoch = s.lastEpoch
-	}
-	if opts.Since != nil {
-		s.recover = true
-		isRecover = true
-		sp.Offset = opts.Since.Offset
-		sp.Epoch = opts.Since.Epoch
+		sp.Offset = s.offset
+		sp.Epoch = s.epoch
 	}
 
-	err = s.centrifuge.sendSubscribe(s.channel, s.data, isRecover, sp, token, func(res *protocol.SubscribeResult, err error) {
+	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
 			s.subscribeError(err)
 			return
 		}
-		s.subscribeSuccess(isRecover, res)
+		s.subscribeSuccess(res)
 	})
-	s.mu.Unlock()
 	return err
 }
 
-func (s *Subscription) runSubRefresh(ttl uint32, closeCh chan struct{}) {
-	if s.status != SUBSCRIBED {
-		return
-	}
-	if ttl == 0 {
-		return
-	}
-	go func(interval uint32) {
-		select {
-		case <-closeCh:
-			return
-		case <-time.After(time.Duration(interval) * time.Second):
-			s.centrifuge.sendSubRefresh(s.channel, func(result *protocol.SubRefreshResult, err error) {
-				if err != nil {
-					return
-				}
-				if !result.Expires {
-					return
-				}
-				s.mu.Lock()
-				s.runSubRefresh(result.Ttl, closeCh)
-				s.mu.Unlock()
-			})
+func (s *Subscription) getSubscriptionToken(channel string, clientID string) (string, error) {
+	var token string
+	if strings.HasPrefix(channel, s.centrifuge.config.PrivateChannelPrefix) && s.centrifuge.events != nil {
+		handler := s.centrifuge.events.onSubscriptionRefresh
+		if handler != nil {
+			ev := SubscriptionRefreshEvent{
+				ClientID: clientID,
+				Channel:  channel,
+			}
+			return handler(ev)
+		} else {
+			return "", errors.New("SubscriptionRefreshHandler must be set to handle private Channel subscriptions")
 		}
-	}(ttl)
+	}
+	return token, nil
 }
 
-func (s *Subscription) processRecover(res *protocol.SubscribeResult) {
-	s.mu.Lock()
-	s.lastEpoch = res.Epoch
-	s.mu.Unlock()
-	if len(res.Publications) > 0 {
-		pubs := res.Publications
-		for i := 0; i < len(pubs); i++ {
-			s.handlePublication(res.Publications[i])
-		}
-	} else {
-		s.mu.Lock()
-		s.lastOffset = res.Offset
-		s.mu.Unlock()
+// Lock must be held outside.
+func (s *Subscription) scheduleSubRefresh(ttl uint32) {
+	if s.state != SubStateSubscribed {
+		return
 	}
+	s.refreshTimer = time.AfterFunc(time.Duration(ttl)*time.Second, func() {
+		s.mu.Lock()
+		if s.state != SubStateSubscribed {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+
+		token, err := s.getSubscriptionToken(s.Channel, s.centrifuge.clientID())
+		if err != nil {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.emitError(SubscriptionRefreshError{Err: err})
+			s.scheduleSubRefresh(10)
+			return
+		}
+		if token == "" {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.fail(SubFailReasonUnauthorized, true)
+			return
+		}
+
+		s.centrifuge.sendSubRefresh(s.Channel, token, func(result *protocol.SubRefreshResult, err error) {
+			if err != nil {
+				s.emitError(SubscriptionSubscribeError{Err: err})
+				var serverError *Error
+				if errors.As(err, &serverError) {
+					if serverError.Temporary {
+						s.mu.Lock()
+						defer s.mu.Unlock()
+						s.scheduleSubRefresh(10)
+						return
+					} else {
+						s.mu.Lock()
+						defer s.mu.Unlock()
+						s.fail(SubFailReasonRefreshFailed, true)
+						return
+					}
+				} else {
+					s.mu.Lock()
+					defer s.mu.Unlock()
+					s.scheduleSubRefresh(10)
+					return
+				}
+			}
+			if result.Expires {
+				s.mu.Lock()
+				s.scheduleSubRefresh(result.Ttl)
+				s.mu.Unlock()
+			}
+		})
+	})
 }

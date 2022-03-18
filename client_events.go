@@ -1,8 +1,8 @@
 package centrifuge
 
-// PrivateSubEvent contains info required to create PrivateSign when client
-// wants to subscribe on private channel.
-type PrivateSubEvent struct {
+// SubscriptionRefreshEvent contains info required to get subscription token when
+// client wants to subscribe on private channel.
+type SubscriptionRefreshEvent struct {
 	ClientID string
 	Channel  string
 }
@@ -14,9 +14,9 @@ type ServerPublishEvent struct {
 }
 
 type ServerSubscribeEvent struct {
-	Channel      string
-	Resubscribed bool
-	Recovered    bool
+	Channel   string
+	Recovered bool
+	Data      []byte
 }
 
 // ServerJoinEvent has info about user who left channel.
@@ -45,7 +45,6 @@ type ConnectEvent struct {
 
 // DisconnectEvent is a disconnect event context passed to OnDisconnect callback.
 type DisconnectEvent struct {
-	// Code of disconnect. Only set for protocol v2.
 	Code      uint32
 	Reason    string
 	Reconnect bool
@@ -53,9 +52,12 @@ type DisconnectEvent struct {
 
 // ErrorEvent is an error event context passed to OnError callback.
 type ErrorEvent struct {
-	// TODO: return error type here instead of string
-	// so user code could distinguish various types of possible errors?
-	Message string
+	Error error
+}
+
+// FailEvent ...
+type FailEvent struct {
+	Reason FailReason
 }
 
 // MessageEvent is an event for async message from server to client.
@@ -64,78 +66,59 @@ type MessageEvent struct {
 }
 
 // ConnectHandler is an interface describing how to handle connect event.
-type ConnectHandler interface {
-	OnConnect(*Client, ConnectEvent)
-}
+type ConnectHandler func(ConnectEvent)
 
 // DisconnectHandler is an interface describing how to handle disconnect event.
-type DisconnectHandler interface {
-	OnDisconnect(*Client, DisconnectEvent)
-}
+type DisconnectHandler func(DisconnectEvent)
 
 // MessageHandler is an interface describing how to handle async message from server.
-type MessageHandler interface {
-	OnMessage(*Client, MessageEvent)
-}
+type MessageHandler func(MessageEvent)
 
-// ServerPublishHandler is an interface describing how to handle Publication from
+// ServerPublicationHandler is an interface describing how to handle Publication from
 // server-side subscriptions.
-type ServerPublishHandler interface {
-	OnServerPublish(*Client, ServerPublishEvent)
-}
+type ServerPublicationHandler func(ServerPublishEvent)
 
 // ServerSubscribeHandler is an interface describing how to handle subscribe events from
 // server-side subscriptions.
-type ServerSubscribeHandler interface {
-	OnServerSubscribe(*Client, ServerSubscribeEvent)
-}
+type ServerSubscribeHandler func(ServerSubscribeEvent)
 
 // ServerUnsubscribeHandler is an interface describing how to handle unsubscribe events from
 // server-side subscriptions.
-type ServerUnsubscribeHandler interface {
-	OnServerUnsubscribe(*Client, ServerUnsubscribeEvent)
-}
+type ServerUnsubscribeHandler func(ServerUnsubscribeEvent)
 
 // ServerJoinHandler is an interface describing how to handle Join events from
 // server-side subscriptions.
-type ServerJoinHandler interface {
-	OnServerJoin(*Client, ServerJoinEvent)
-}
+type ServerJoinHandler func(ServerJoinEvent)
 
 // ServerLeaveHandler is an interface describing how to handle Leave events from
 // server-side subscriptions.
-type ServerLeaveHandler interface {
-	OnServerLeave(*Client, ServerLeaveEvent)
-}
+type ServerLeaveHandler func(ServerLeaveEvent)
 
-// PrivateSubHandler is an interface describing how to handle private subscription request.
-type PrivateSubHandler interface {
-	OnPrivateSub(*Client, PrivateSubEvent) (string, error)
-}
+// SubscriptionRefreshHandler is an interface describing how to handle private subscription request.
+type SubscriptionRefreshHandler func(SubscriptionRefreshEvent) (string, error)
 
 // RefreshHandler is an interface describing how to handle token refresh event.
-type RefreshHandler interface {
-	OnRefresh(*Client) (string, error)
-}
+type RefreshHandler func() (string, error)
 
 // ErrorHandler is an interface describing how to handle error event.
-type ErrorHandler interface {
-	OnError(*Client, ErrorEvent)
-}
+type ErrorHandler func(ErrorEvent)
+
+type FailHandler func(FailEvent)
 
 // eventHub has all event handlers for client.
 type eventHub struct {
-	onConnect           ConnectHandler
-	onDisconnect        DisconnectHandler
-	onPrivateSub        PrivateSubHandler
-	onRefresh           RefreshHandler
-	onError             ErrorHandler
-	onMessage           MessageHandler
-	onServerSubscribe   ServerSubscribeHandler
-	onServerPublish     ServerPublishHandler
-	onServerJoin        ServerJoinHandler
-	onServerLeave       ServerLeaveHandler
-	onServerUnsubscribe ServerUnsubscribeHandler
+	onConnect             ConnectHandler
+	onDisconnect          DisconnectHandler
+	onError               ErrorHandler
+	onFail                FailHandler
+	onMessage             MessageHandler
+	onServerSubscribe     ServerSubscribeHandler
+	onServerPublication   ServerPublicationHandler
+	onServerJoin          ServerJoinHandler
+	onServerLeave         ServerLeaveHandler
+	onServerUnsubscribe   ServerUnsubscribeHandler
+	onRefresh             RefreshHandler
+	onSubscriptionRefresh SubscriptionRefreshHandler
 }
 
 // newEventHub initializes new eventHub.
@@ -148,9 +131,39 @@ func (c *Client) OnConnect(handler ConnectHandler) {
 	c.events.onConnect = handler
 }
 
-// OnServerPublish sets function to handle Publications from server-side subscriptions.
-func (c *Client) OnServerPublish(handler ServerPublishHandler) {
-	c.events.onServerPublish = handler
+// OnError is a function that will receive unhandled errors for logging.
+func (c *Client) OnError(handler ErrorHandler) {
+	c.events.onError = handler
+}
+
+// OnDisconnect is a function to handle disconnect event.
+func (c *Client) OnDisconnect(handler DisconnectHandler) {
+	c.events.onDisconnect = handler
+}
+
+// OnFail ...
+func (c *Client) OnFail(handler FailHandler) {
+	c.events.onFail = handler
+}
+
+// OnRefresh handles refresh event when client's credentials expired and must be refreshed.
+func (c *Client) OnRefresh(handler RefreshHandler) {
+	c.events.onRefresh = handler
+}
+
+// OnSubscriptionRefresh needed to handle private channel subscriptions.
+func (c *Client) OnSubscriptionRefresh(handler SubscriptionRefreshHandler) {
+	c.events.onSubscriptionRefresh = handler
+}
+
+// OnMessage allows processing async message from server to client.
+func (c *Client) OnMessage(handler MessageHandler) {
+	c.events.onMessage = handler
+}
+
+// OnServerPublication sets function to handle Publications from server-side subscriptions.
+func (c *Client) OnServerPublication(handler ServerPublicationHandler) {
+	c.events.onServerPublication = handler
 }
 
 // OnServerSubscribe sets function to handle server-side subscription subscribe events.
@@ -171,29 +184,4 @@ func (c *Client) OnServerJoin(handler ServerJoinHandler) {
 // OnServerLeave sets function to handle Leave event from server-side subscriptions.
 func (c *Client) OnServerLeave(handler ServerLeaveHandler) {
 	c.events.onServerLeave = handler
-}
-
-// OnDisconnect is a function to handle disconnect event.
-func (c *Client) OnDisconnect(handler DisconnectHandler) {
-	c.events.onDisconnect = handler
-}
-
-// OnPrivateSub needed to handle private channel subscriptions.
-func (c *Client) OnPrivateSub(handler PrivateSubHandler) {
-	c.events.onPrivateSub = handler
-}
-
-// OnRefresh handles refresh event when client's credentials expired and must be refreshed.
-func (c *Client) OnRefresh(handler RefreshHandler) {
-	c.events.onRefresh = handler
-}
-
-// OnError is a function that will receive unhandled errors for logging.
-func (c *Client) OnError(handler ErrorHandler) {
-	c.events.onError = handler
-}
-
-// OnMessage allows to process async message from server to client.
-func (c *Client) OnMessage(handler MessageHandler) {
-	c.events.onMessage = handler
 }

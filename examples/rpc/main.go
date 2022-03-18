@@ -9,38 +9,27 @@ import (
 	"github.com/centrifugal/centrifuge-go"
 )
 
-type eventHandler struct{}
-
-func (h *eventHandler) OnConnect(_ *centrifuge.Client, _ centrifuge.ConnectEvent) {
-	log.Println("Connected")
-}
-
-func (h *eventHandler) OnError(_ *centrifuge.Client, e centrifuge.ErrorEvent) {
-	log.Println("Error", e.Message)
-}
-
-func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
-	log.Println("Disconnected", e.Reason)
-}
-
-func (h *eventHandler) OnMessage(c *centrifuge.Client, e centrifuge.MessageEvent) {
-	log.Println("Message received", string(e.Data))
-	result, err := c.RPC([]byte("{}"))
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	log.Printf("RPC result 2: %s", string(result.Data))
-}
-
 func newClient() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
-	c := centrifuge.NewJsonClient(wsURL, centrifuge.DefaultConfig())
-	handler := &eventHandler{}
-	c.OnDisconnect(handler)
-	c.OnConnect(handler)
-	c.OnError(handler)
-	c.OnMessage(handler)
+	c := centrifuge.NewJsonClient(wsURL, centrifuge.Config{})
+	c.OnConnect(func(_ centrifuge.ConnectEvent) {
+		log.Println("Connected")
+	})
+	c.OnDisconnect(func(_ centrifuge.DisconnectEvent) {
+		log.Println("Disconnected")
+	})
+	c.OnError(func(e centrifuge.ErrorEvent) {
+		log.Println("Error", e.Error.Error())
+	})
+	c.OnMessage(func(e centrifuge.MessageEvent) {
+		log.Println("Message received", string(e.Data))
+		result, err := c.RPC("method", []byte("{}"))
+		if err != nil {
+			log.Println(err)
+			return
+		}
+		log.Printf("RPC result 2: %s", string(result.Data))
+	})
 	return c
 }
 
@@ -48,7 +37,7 @@ func main() {
 	log.Println("Start program")
 
 	c := newClient()
-	defer func() { _ = c.Close() }()
+	defer c.Close()
 
 	err := c.Connect()
 	if err != nil {
@@ -56,10 +45,10 @@ func main() {
 	}
 
 	go func() {
-		log.Println(http.ListenAndServe(":5000", nil))
+		log.Println(http.ListenAndServe(":6060", nil))
 	}()
 
-	result, err := c.RPC([]byte("{}"))
+	result, err := c.RPC("method", []byte("{}"))
 	if err != nil {
 		log.Fatalln(err)
 		return

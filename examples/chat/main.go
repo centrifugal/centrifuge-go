@@ -36,117 +36,90 @@ type ChatMessage struct {
 	Input string `json:"input"`
 }
 
-type eventHandler struct{}
+func newClient() *centrifuge.Client {
+	wsURL := "ws://localhost:8000/connection/websocket?cf_protocol_version=v2"
+	c := centrifuge.NewJsonClient(wsURL, centrifuge.Config{
+		// Uncomment to make it work with Centrifugo JWT auth.
+		//Token: connToken("49", 0),
+	})
 
-func (h *eventHandler) OnConnect(_ *centrifuge.Client, e centrifuge.ConnectEvent) {
-	log.Printf("Connected to chat with ID %s", e.ClientID)
-}
+	c.OnConnect(func(e centrifuge.ConnectEvent) {
+		log.Printf("Connected to chat with ID %s", e.ClientID)
+	})
+	c.OnDisconnect(func(e centrifuge.DisconnectEvent) {
+		log.Printf("Disconnected from chat: %s", e.Reason)
+	})
 
-func (h *eventHandler) OnError(_ *centrifuge.Client, e centrifuge.ErrorEvent) {
-	log.Printf("Error: %s", e.Message)
-}
+	c.OnFail(func(e centrifuge.FailEvent) {
+		log.Printf("Client failed: %s", e.Reason)
+	})
 
-func (h *eventHandler) OnMessage(_ *centrifuge.Client, e centrifuge.MessageEvent) {
-	log.Printf("Message from server: %s", string(e.Data))
-}
+	c.OnError(func(e centrifuge.ErrorEvent) {
+		log.Printf("Error: %s", e.Error.Error())
+	})
 
-func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
-	log.Printf("Disconnected from chat: %s", e.Reason)
-}
+	c.OnMessage(func(e centrifuge.MessageEvent) {
+		log.Printf("Message from server: %s", string(e.Data))
+	})
 
-func (h *eventHandler) OnServerSubscribe(_ *centrifuge.Client, e centrifuge.ServerSubscribeEvent) {
-	log.Printf("Subscribe to server-side channel %s: (resubscribe: %t, recovered: %t)", e.Channel, e.Resubscribed, e.Recovered)
-}
-
-func (h *eventHandler) OnServerUnsubscribe(_ *centrifuge.Client, e centrifuge.ServerUnsubscribeEvent) {
-	log.Printf("Unsubscribe from server-side channel %s", e.Channel)
-}
-
-func (h *eventHandler) OnServerJoin(_ *centrifuge.Client, e centrifuge.ServerJoinEvent) {
-	log.Printf("Server-side join to channel %s: %s (%s)", e.Channel, e.User, e.Client)
-}
-
-func (h *eventHandler) OnServerLeave(_ *centrifuge.Client, e centrifuge.ServerLeaveEvent) {
-	log.Printf("Server-side leave from channel %s: %s (%s)", e.Channel, e.User, e.Client)
-}
-
-func (h *eventHandler) OnServerPublish(_ *centrifuge.Client, e centrifuge.ServerPublishEvent) {
-	log.Printf("Publication from server-side channel %s: %s", e.Channel, e.Data)
-}
-
-func (h *eventHandler) OnPublish(sub *centrifuge.Subscription, e centrifuge.PublishEvent) {
-	var chatMessage *ChatMessage
-	err := json.Unmarshal(e.Data, &chatMessage)
-	if err != nil {
-		return
-	}
-	log.Printf("Someone says via channel %s: %s", sub.Channel(), chatMessage.Input)
-}
-
-func (h *eventHandler) OnJoin(sub *centrifuge.Subscription, e centrifuge.JoinEvent) {
-	log.Printf("Someone joined %s: user id %s, client id %s", sub.Channel(), e.User, e.Client)
-}
-
-func (h *eventHandler) OnLeave(sub *centrifuge.Subscription, e centrifuge.LeaveEvent) {
-	log.Printf("Someone left %s: user id %s, client id %s", sub.Channel(), e.User, e.Client)
-}
-
-func (h *eventHandler) OnSubscribeSuccess(sub *centrifuge.Subscription, e centrifuge.SubscribeSuccessEvent) {
-	log.Printf("Subscribed on channel %s, resubscribed: %v, recovered: %v", sub.Channel(), e.Resubscribed, e.Recovered)
-}
-
-func (h *eventHandler) OnSubscribeError(sub *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
-	log.Printf("Subscribed on channel %s failed, error: %s", sub.Channel(), e.Error)
-}
-
-func (h *eventHandler) OnUnsubscribe(sub *centrifuge.Subscription, _ centrifuge.UnsubscribeEvent) {
-	log.Printf("Unsubscribed from channel %s", sub.Channel())
-}
-
-func newClient(handler *eventHandler) *centrifuge.Client {
-	wsURL := "ws://localhost:8000/connection/websocket"
-	config := centrifuge.DefaultConfig()
-	//config.ProtocolVersion = centrifuge.ProtocolVersion2
-	c := centrifuge.NewJsonClient(wsURL, config)
-
-	// Uncomment to make it work with Centrifugo and its JWT auth.
-	//c.SetToken(connToken("49", 0))
-
-	c.OnConnect(handler)
-	c.OnDisconnect(handler)
-	c.OnMessage(handler)
-	c.OnError(handler)
-
-	c.OnServerPublish(handler)
-	c.OnServerSubscribe(handler)
-	c.OnServerUnsubscribe(handler)
-	c.OnServerJoin(handler)
-	c.OnServerLeave(handler)
+	c.OnServerPublication(func(e centrifuge.ServerPublishEvent) {
+		log.Printf("Publication from server-side channel %s: %s", e.Channel, e.Data)
+	})
+	c.OnServerSubscribe(func(e centrifuge.ServerSubscribeEvent) {
+		log.Printf("Subscribe to server-side channel %s: (data: %v)", e.Channel, string(e.Data))
+	})
+	c.OnServerUnsubscribe(func(e centrifuge.ServerUnsubscribeEvent) {
+		log.Printf("Unsubscribe from server-side channel %s", e.Channel)
+	})
+	c.OnServerJoin(func(e centrifuge.ServerJoinEvent) {
+		log.Printf("Server-side join to channel %s: %s (%s)", e.Channel, e.User, e.Client)
+	})
+	c.OnServerLeave(func(e centrifuge.ServerLeaveEvent) {
+		log.Printf("Server-side leave from channel %s: %s (%s)", e.Channel, e.User, e.Client)
+	})
 
 	return c
 }
 
 func main() {
 	go func() {
-		log.Println(http.ListenAndServe(":5000", nil))
+		log.Println(http.ListenAndServe(":6060", nil))
 	}()
 
-	handler := &eventHandler{}
-
-	c := newClient(handler)
-	defer func() { _ = c.Close() }()
+	c := newClient()
+	defer c.Close()
 
 	sub, err := c.NewSubscription("chat:index")
 	if err != nil {
 		log.Fatalln(err)
 	}
 
-	sub.OnPublish(handler)
-	sub.OnJoin(handler)
-	sub.OnLeave(handler)
-	sub.OnSubscribeSuccess(handler)
-	sub.OnSubscribeError(handler)
-	sub.OnUnsubscribe(handler)
+	sub.OnPublication(func(e centrifuge.PublicationEvent) {
+		var chatMessage *ChatMessage
+		err := json.Unmarshal(e.Data, &chatMessage)
+		if err != nil {
+			return
+		}
+		log.Printf("Someone says via channel %s: %s", sub.Channel, chatMessage.Input)
+	})
+	sub.OnJoin(func(e centrifuge.JoinEvent) {
+		log.Printf("Someone joined %s: user id %s, client id %s", sub.Channel, e.User, e.Client)
+	})
+	sub.OnLeave(func(e centrifuge.LeaveEvent) {
+		log.Printf("Someone left %s: user id %s, client id %s", sub.Channel, e.User, e.Client)
+	})
+	sub.OnSubscribe(func(e centrifuge.SubscribeEvent) {
+		log.Printf("Subscribed on channel %s, data: %v", sub.Channel, string(e.Data))
+	})
+	sub.OnError(func(e centrifuge.SubscriptionErrorEvent) {
+		log.Printf("Subscription error %s: %s", sub.Channel, e.Error)
+	})
+	sub.OnUnsubscribe(func(_ centrifuge.UnsubscribeEvent) {
+		log.Printf("Unsubscribed from channel %s", sub.Channel)
+	})
+	sub.OnFail(func(e centrifuge.SubscriptionFailEvent) {
+		log.Printf("Subscription failed: %s - %s", sub.Channel, e.Reason)
+	})
 
 	err = sub.Subscribe()
 	if err != nil {
@@ -162,10 +135,10 @@ func main() {
 		return err
 	}
 
-	err = c.Connect()
-	if err != nil {
-		log.Fatalln(err)
-	}
+	_ = c.Connect()
+	//if err != nil {
+	//	log.Fatalln(err)
+	//}
 
 	err = pubText("hello")
 	if err != nil {
