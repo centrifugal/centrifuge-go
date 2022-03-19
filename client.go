@@ -63,7 +63,7 @@ type Client struct {
 	protocolType      protocol.Type
 	config            Config
 	token             string
-	connectData       protocol.Raw
+	data              protocol.Raw
 	transport         transport
 	state             State
 	id                string
@@ -87,6 +87,7 @@ type Client struct {
 	cbQueue           *cbQueue
 	reconnectTimer    *time.Timer
 	refreshTimer      *time.Timer
+	refreshRequired   bool
 }
 
 func (c *Client) nextCmdID() uint32 {
@@ -164,7 +165,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		connectFutures:    make(map[uint64]connectFuture),
 	}
 	c.token = config.Token
-	c.connectData = config.Data
+	c.data = config.Data
 	return c
 }
 
@@ -269,9 +270,6 @@ func (c *Client) sendRPC(method string, data []byte, fn func(RPCResult, error)) 
 // Lock must be held outside.
 func (c *Client) disconnect(d *disconnect) {
 	if c.state == StateDisconnected || c.state == StateFailed {
-		if !d.Reconnect {
-			c.clearConnectedState()
-		}
 		return
 	}
 
@@ -302,14 +300,10 @@ func (c *Client) disconnect(d *disconnect) {
 		c.transport = nil
 	}
 
-	if !d.Reconnect {
-		if d.Code >= 3000 {
-			c.fail(FailReasonServer)
-		}
-		return
-	}
-
 	if c.state != StateConnecting {
+		if d.Code >= 3000 {
+			c.fail(FailReasonServer, d.Code)
+		}
 		return
 	}
 	c.reconnectAttempts++
@@ -319,22 +313,26 @@ func (c *Client) disconnect(d *disconnect) {
 	})
 }
 
-// Close closes Client.
+// Close closes Client. Use this method if you don't want to use client anymore,
+// otherwise prefer Disconnect.
 func (c *Client) Close() {
 	c.Disconnect()
 }
 
 // Lock must be held outside.
-func (c *Client) fail(reason FailReason) {
+func (c *Client) fail(reason FailReason, disconnectCode uint32) {
 	if c.state == StateFailed {
 		return
 	}
 	c.disconnect(&disconnect{
-		Code:      15, // TODO: correct disconnect code?
+		Code:      disconnectCode,
 		Reason:    "fail",
 		Reconnect: false,
 	})
 	c.state = StateFailed
+	if reason == FailReasonUnrecoverable {
+		c.serverSubs = map[string]*serverSub{}
+	}
 	if c.events != nil && c.events.onFail != nil {
 		handler := c.events.onFail
 		if handler != nil {
@@ -715,6 +713,7 @@ func (c *Client) startReconnecting() error {
 		c.mu.Unlock()
 		return nil
 	}
+	refreshRequired := c.refreshRequired
 	c.mu.Unlock()
 
 	wsConfig := websocketConfig{
@@ -745,6 +744,40 @@ func (c *Client) startReconnecting() error {
 		return err
 	}
 
+	if refreshRequired {
+		// Try to refresh token.
+		token, err := c.refreshToken()
+		if err != nil {
+			c.handleError(RefreshError{err})
+			c.mu.Lock()
+			if c.state != StateConnecting {
+				_ = t.Close()
+				c.mu.Unlock()
+				return nil
+			}
+			c.reconnectAttempts++
+			reconnectDelay := c.getReconnectDelay()
+			c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
+				_ = c.startReconnecting()
+			})
+			c.mu.Unlock()
+			return err
+		} else {
+			c.mu.Lock()
+			if token == "" {
+				c.fail(FailReasonUnauthorized, 7)
+				c.mu.Unlock()
+				return nil
+			}
+			c.token = token
+			if c.state != StateConnecting {
+				c.mu.Unlock()
+				return nil
+			}
+			c.mu.Unlock()
+		}
+	}
+
 	c.mu.Lock()
 	if c.state != StateConnecting {
 		_ = t.Close()
@@ -768,50 +801,43 @@ func (c *Client) startReconnecting() error {
 		if err != nil {
 			c.handleError(ConnectError{err})
 			if isTokenExpiredError(err) {
-				// Try to refresh token before next connection attempt.
-				token, err := c.refreshToken()
-				if err == nil {
-					c.mu.Lock()
-					if token == "" {
-						c.fail(FailReasonUnauthorized)
-						c.mu.Unlock()
-						return
-					}
-					c.token = token
-					if c.state != StateConnecting {
-						c.mu.Unlock()
-						return
-					}
-					c.mu.Unlock()
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				if c.state != StateConnecting {
+					return
 				}
+				c.refreshRequired = true
+				c.reconnectAttempts++
+				reconnectDelay := c.getReconnectDelay()
+				c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
+					_ = c.startReconnecting()
+				})
+				return
 			} else if isUnrecoverablePositionError(err) {
 				c.mu.Lock()
-				c.state = StateFailed
-				c.serverSubs = map[string]*serverSub{}
-				c.mu.Unlock()
-				if c.events != nil && c.events.onFail != nil {
-					handler := c.events.onFail
-					ev := FailEvent{
-						Reason: FailReasonUnrecoverable,
-					}
-					c.runHandler(func() {
-						handler(ev)
-					})
+				defer c.mu.Unlock()
+				if c.state != StateConnecting {
+					return
 				}
+				c.fail(FailReasonUnrecoverable, 8)
 				return
 			} else if isServerError(err) && !isTemporaryError(err) {
 				c.mu.Lock()
 				defer c.mu.Unlock()
-				c.fail(FailReasonConnectFailed)
+				c.fail(FailReasonConnectFailed, 5)
 				return
 			} else {
 				c.mu.Lock()
+				defer c.mu.Unlock()
 				if c.state != StateConnecting {
-					c.mu.Unlock()
+					_ = t.Close()
 					return
 				}
-				c.mu.Unlock()
-				go c.handleDisconnect(&disconnect{Code: 6, Reason: "connect error", Reconnect: true})
+				c.reconnectAttempts++
+				reconnectDelay := c.getReconnectDelay()
+				c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
+					_ = c.startReconnecting()
+				})
 				return
 			}
 		}
@@ -996,7 +1022,9 @@ func isTemporaryError(err error) bool {
 
 // Disconnect client from server.
 func (c *Client) Disconnect() {
-	c.handleDisconnect(&disconnect{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disconnect(&disconnect{
 		Code:      0,
 		Reason:    "client",
 		Reconnect: false,
@@ -1051,7 +1079,7 @@ func (c *Client) sendRefresh() {
 			if r.Error.Temporary {
 				c.refreshTimer = time.AfterFunc(10*time.Second, c.sendRefresh)
 			} else {
-				c.fail(FailReasonRefreshFailed)
+				c.fail(FailReasonRefreshFailed, 6)
 			}
 			return
 		}
@@ -1113,13 +1141,13 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 		Id: c.nextCmdID(),
 	}
 
-	if c.token != "" || c.connectData != nil || len(c.serverSubs) > 0 || c.config.Name != "" || c.config.Version != "" {
+	if c.token != "" || c.data != nil || len(c.serverSubs) > 0 || c.config.Name != "" || c.config.Version != "" {
 		params := &protocol.ConnectRequest{}
 		params.Token = c.token
 		params.Name = c.config.Name
 		params.Version = c.config.Version
-		if c.connectData != nil {
-			params.Data = c.connectData
+		if c.data != nil {
+			params.Data = c.data
 		}
 		if len(c.serverSubs) > 0 {
 			subs := make(map[string]*protocol.SubscribeRequest)
