@@ -57,7 +57,7 @@ func main() {
 	c.OnError(func(e centrifuge.ErrorEvent) {
 		log.Println("Error", e.Error.Error())
 	})
-	c.OnSubscriptionRefresh(func(e centrifuge.SubscriptionRefreshEvent) (string, error) {
+	c.OnSubscriptionRefresh(func(e centrifuge.SubscriptionTokenEvent) (string, error) {
 		log.Println("Subscription refresh")
 		token := subscriptionToken(e.Channel, "", time.Now().Unix()+10)
 		return token, nil

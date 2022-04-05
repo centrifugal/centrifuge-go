@@ -341,9 +341,6 @@ func (c *Client) fail(reason FailReason, disconnectCode uint32) {
 			})
 		}
 	}
-	for _, sub := range c.subs {
-		sub.fail(SubFailReasonClientFailed, false)
-	}
 	c.cbQueue.close()
 	c.cbQueue = nil
 }
@@ -401,7 +398,7 @@ func (c *Client) clearConnectedState() {
 
 	for _, s := range subsToUnsubscribe {
 		s.mu.Lock()
-		s.moveToUnsubscribed(true, false)
+		s.moveToUnsubscribed(true)
 		s.mu.Unlock()
 	}
 
@@ -570,6 +567,14 @@ func (c *Client) handlePush(push *protocol.Push) {
 		}
 		c.handleServerSub(channel, push.Subscribe)
 		return
+	case push.Disconnect != nil:
+		code := push.Disconnect.Code
+		reconnect := code < 3500 || code >= 5000 || (code >= 4000 && code < 4500)
+		c.disconnect(&disconnect{
+			Code:      code,
+			Reason:    push.Disconnect.Reason,
+			Reconnect: reconnect,
+		})
 	default:
 	}
 }
@@ -592,7 +597,7 @@ func (c *Client) handleServerPublication(channel string, pub *protocol.Publicati
 	}
 	if handler != nil {
 		c.runHandler(func() {
-			handler(ServerPublishEvent{Channel: channel, Publication: pubFromProto(pub)})
+			handler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
 			c.mu.Lock()
 			if c.id != id {
 				c.mu.Unlock()
@@ -784,7 +789,7 @@ func (c *Client) startReconnecting() error {
 		c.mu.Unlock()
 		return nil
 	}
-
+	c.refreshRequired = false
 	disconnectCh := make(chan struct{})
 	c.receive = make(chan []byte, 64)
 	c.transport = t
@@ -909,7 +914,7 @@ func (c *Client) startReconnecting() error {
 			if publishHandler != nil {
 				c.runHandler(func() {
 					for _, pub := range subRes.Publications {
-						publishHandler(ServerPublishEvent{Channel: channel, Publication: pubFromProto(pub)})
+						publishHandler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
 						c.mu.Lock()
 						if c.id != res.Client {
 							c.mu.Unlock()
@@ -935,7 +940,7 @@ func (c *Client) startReconnecting() error {
 			return
 		}
 
-		err = c.resubscribe(c.id)
+		err = c.resubscribe()
 		if err != nil {
 			// we need just to close the connection and outgoing requests here
 			// but preserve all subscriptions.
@@ -982,9 +987,9 @@ func (c *Client) startConnecting() error {
 	return c.startReconnecting()
 }
 
-func (c *Client) resubscribe(clientID string) error {
+func (c *Client) resubscribe() error {
 	for _, sub := range c.subs {
-		err := sub.resubscribe(clientID, SubscribeOptions{})
+		err := sub.resubscribe()
 		if err != nil {
 			return err
 		}
@@ -1032,12 +1037,12 @@ func (c *Client) Disconnect() {
 }
 
 func (c *Client) refreshToken() (string, error) {
-	var handler RefreshHandler
-	if c.events != nil && c.events.onRefresh != nil {
-		handler = c.events.onRefresh
+	var handler ConnectionTokenHandler
+	if c.events != nil && c.events.onConnectionToken != nil {
+		handler = c.events.onConnectionToken
 	}
 	if handler == nil {
-		return "", errors.New("RefreshHandler must be set to handle expired token")
+		return "", errors.New("ConnectionTokenHandler must be set to handle expired token")
 	}
 	return handler()
 }

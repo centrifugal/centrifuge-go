@@ -62,7 +62,7 @@ func newClient() *centrifuge.Client {
 		log.Printf("Message from server: %s", string(e.Data))
 	})
 
-	c.OnServerPublication(func(e centrifuge.ServerPublishEvent) {
+	c.OnServerPublication(func(e centrifuge.ServerPublicationEvent) {
 		log.Printf("Publication from server-side channel %s: %s", e.Channel, e.Data)
 	})
 	c.OnServerSubscribe(func(e centrifuge.ServerSubscribeEvent) {

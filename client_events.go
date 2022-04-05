@@ -1,14 +1,13 @@
 package centrifuge
 
-// SubscriptionRefreshEvent contains info required to get subscription token when
+// SubscriptionTokenEvent contains info required to get subscription token when
 // client wants to subscribe on private channel.
-type SubscriptionRefreshEvent struct {
-	ClientID string
-	Channel  string
+type SubscriptionTokenEvent struct {
+	Channel string
 }
 
-// ServerPublishEvent has info about received channel Publication.
-type ServerPublishEvent struct {
+// ServerPublicationEvent has info about received channel Publication.
+type ServerPublicationEvent struct {
 	Channel string
 	Publication
 }
@@ -76,7 +75,7 @@ type MessageHandler func(MessageEvent)
 
 // ServerPublicationHandler is an interface describing how to handle Publication from
 // server-side subscriptions.
-type ServerPublicationHandler func(ServerPublishEvent)
+type ServerPublicationHandler func(ServerPublicationEvent)
 
 // ServerSubscribeHandler is an interface describing how to handle subscribe events from
 // server-side subscriptions.
@@ -94,11 +93,11 @@ type ServerJoinHandler func(ServerJoinEvent)
 // server-side subscriptions.
 type ServerLeaveHandler func(ServerLeaveEvent)
 
-// SubscriptionRefreshHandler is an interface describing how to handle private subscription request.
-type SubscriptionRefreshHandler func(SubscriptionRefreshEvent) (string, error)
+// SubscriptionTokenHandler is an interface describing how to handle private subscription request.
+type SubscriptionTokenHandler func(SubscriptionTokenEvent) (string, error)
 
-// RefreshHandler is an interface describing how to handle token refresh event.
-type RefreshHandler func() (string, error)
+// ConnectionTokenHandler is an interface describing how to handle token refresh event.
+type ConnectionTokenHandler func() (string, error)
 
 // ErrorHandler is an interface describing how to handle error event.
 type ErrorHandler func(ErrorEvent)
@@ -107,18 +106,19 @@ type FailHandler func(FailEvent)
 
 // eventHub has all event handlers for client.
 type eventHub struct {
-	onConnect             ConnectHandler
-	onDisconnect          DisconnectHandler
-	onError               ErrorHandler
-	onFail                FailHandler
-	onMessage             MessageHandler
-	onServerSubscribe     ServerSubscribeHandler
-	onServerPublication   ServerPublicationHandler
-	onServerJoin          ServerJoinHandler
-	onServerLeave         ServerLeaveHandler
-	onServerUnsubscribe   ServerUnsubscribeHandler
-	onRefresh             RefreshHandler
-	onSubscriptionRefresh SubscriptionRefreshHandler
+	onConnect           ConnectHandler
+	onDisconnect        DisconnectHandler
+	onError             ErrorHandler
+	onFail              FailHandler
+	onMessage           MessageHandler
+	onConnectionToken   ConnectionTokenHandler
+	onSubscriptionToken SubscriptionTokenHandler
+
+	onServerSubscribe   ServerSubscribeHandler
+	onServerPublication ServerPublicationHandler
+	onServerJoin        ServerJoinHandler
+	onServerLeave       ServerLeaveHandler
+	onServerUnsubscribe ServerUnsubscribeHandler
 }
 
 // newEventHub initializes new eventHub.
@@ -147,13 +147,13 @@ func (c *Client) OnFail(handler FailHandler) {
 }
 
 // OnRefresh handles refresh event when client's credentials expired and must be refreshed.
-func (c *Client) OnRefresh(handler RefreshHandler) {
-	c.events.onRefresh = handler
+func (c *Client) OnRefresh(handler ConnectionTokenHandler) {
+	c.events.onConnectionToken = handler
 }
 
 // OnSubscriptionRefresh needed to handle private channel subscriptions.
-func (c *Client) OnSubscriptionRefresh(handler SubscriptionRefreshHandler) {
-	c.events.onSubscriptionRefresh = handler
+func (c *Client) OnSubscriptionRefresh(handler SubscriptionTokenHandler) {
+	c.events.onSubscriptionToken = handler
 }
 
 // OnMessage allows processing async message from server to client.
