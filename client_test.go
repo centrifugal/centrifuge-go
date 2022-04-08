@@ -11,20 +11,20 @@ import (
 )
 
 type testEventHandler struct {
-	onConnect    func(ConnectEvent)
-	onDisconnect func(DisconnectEvent)
-	onError      func(ErrorEvent)
+	onConnected    func(ConnectedEvent)
+	onDisconnected func(DisconnectedEvent)
+	onError        func(ErrorEvent)
 }
 
-func (h *testEventHandler) OnConnect(e ConnectEvent) {
-	if h.onConnect != nil {
-		h.onConnect(e)
+func (h *testEventHandler) OnConnected(e ConnectedEvent) {
+	if h.onConnected != nil {
+		h.onConnected(e)
 	}
 }
 
-func (h *testEventHandler) OnDisconnect(e DisconnectEvent) {
-	if h.onDisconnect != nil {
-		h.onDisconnect(e)
+func (h *testEventHandler) OnDisconnected(e DisconnectedEvent) {
+	if h.onDisconnected != nil {
+		h.onDisconnected(e)
 	}
 }
 
@@ -35,13 +35,13 @@ func (h *testEventHandler) OnError(e ErrorEvent) {
 }
 
 type testSubscriptionHandler struct {
-	onSubscribe   func(SubscribeEvent)
+	onSubscribe   func(SubscribedEvent)
 	onError       func(SubscriptionErrorEvent)
 	onPublication func(PublicationEvent)
-	onUnsubscribe func(UnsubscribeEvent)
+	onUnsubscribe func(UnsubscribedEvent)
 }
 
-func (h *testSubscriptionHandler) OnSubscribe(e SubscribeEvent) {
+func (h *testSubscriptionHandler) OnSubscribe(e SubscribedEvent) {
 	if h.onSubscribe != nil {
 		h.onSubscribe(e)
 	}
@@ -59,7 +59,7 @@ func (h *testSubscriptionHandler) OnPublication(e PublicationEvent) {
 	}
 }
 
-func (h *testSubscriptionHandler) OnUnsubscribe(e UnsubscribeEvent) {
+func (h *testSubscriptionHandler) OnUnsubscribe(e UnsubscribedEvent) {
 	if h.onUnsubscribe != nil {
 		h.onUnsubscribe(e)
 	}
@@ -96,7 +96,7 @@ func TestSuccessfulConnect(t *testing.T) {
 	client.Close()
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
-		onConnect: func(e ConnectEvent) {
+		onConnected: func(e ConnectedEvent) {
 			if e.ClientID == "" {
 				doneCh <- fmt.Errorf("wrong client ID value")
 				return
@@ -104,7 +104,7 @@ func TestSuccessfulConnect(t *testing.T) {
 			close(doneCh)
 		},
 	}
-	client.OnConnect(handler.OnConnect)
+	client.OnConnected(handler.OnConnected)
 	_ = client.Connect()
 	select {
 	case err := <-doneCh:
@@ -122,19 +122,15 @@ func TestDisconnect(t *testing.T) {
 	connectDoneCh := make(chan error, 1)
 	disconnectDoneCh := make(chan error, 1)
 	handler := &testEventHandler{
-		onConnect: func(e ConnectEvent) {
+		onConnected: func(e ConnectedEvent) {
 			close(connectDoneCh)
 		},
-		onDisconnect: func(e DisconnectEvent) {
-			if e.Reconnect != false {
-				disconnectDoneCh <- fmt.Errorf("wrong reconnect value")
-				return
-			}
+		onDisconnected: func(e DisconnectedEvent) {
 			close(disconnectDoneCh)
 		},
 	}
-	client.OnConnect(handler.OnConnect)
-	client.OnDisconnect(handler.OnDisconnect)
+	client.OnConnected(handler.OnConnected)
+	client.OnDisconnected(handler.OnDisconnected)
 	_ = client.Connect()
 	select {
 	case err := <-connectDoneCh:
@@ -195,11 +191,11 @@ func TestSubscribeSuccess(t *testing.T) {
 		t.Errorf("error on new subscription: %v", err)
 	}
 	subHandler := &testSubscriptionHandler{
-		onSubscribe: func(e SubscribeEvent) {
+		onSubscribe: func(e SubscribedEvent) {
 			close(doneCh)
 		},
 	}
-	sub.OnSubscribe(subHandler.OnSubscribe)
+	sub.OnSubscribed(subHandler.OnSubscribe)
 	_ = sub.Subscribe()
 	select {
 	case err := <-doneCh:
@@ -260,7 +256,7 @@ func TestHandlePublish(t *testing.T) {
 	}
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
 	handler := &testSubscriptionHandler{
-		onSubscribe: func(e SubscribeEvent) {
+		onSubscribe: func(e SubscribedEvent) {
 			_, err := client.Publish("test_handle_publish", msg)
 			if err != nil {
 				t.Fail()
@@ -277,7 +273,7 @@ func TestHandlePublish(t *testing.T) {
 			close(doneCh)
 		},
 	}
-	sub.OnSubscribe(handler.OnSubscribe)
+	sub.OnSubscribed(handler.OnSubscribe)
 	sub.OnPublication(handler.OnPublication)
 	_ = sub.Subscribe()
 	select {
@@ -301,15 +297,15 @@ func TestSubscription_Unsubscribe(t *testing.T) {
 		t.Errorf("error on new subscription: %v", err)
 	}
 	handler := &testSubscriptionHandler{
-		onSubscribe: func(e SubscribeEvent) {
+		onSubscribe: func(e SubscribedEvent) {
 			close(subscribedCh)
 		},
-		onUnsubscribe: func(event UnsubscribeEvent) {
+		onUnsubscribe: func(event UnsubscribedEvent) {
 			close(unsubscribedCh)
 		},
 	}
-	sub.OnUnsubscribe(handler.OnUnsubscribe)
-	sub.OnSubscribe(handler.OnSubscribe)
+	sub.OnUnsubscribed(handler.OnUnsubscribe)
+	sub.OnSubscribed(handler.OnSubscribe)
 	sub.OnPublication(handler.OnPublication)
 	_ = sub.Subscribe()
 	select {

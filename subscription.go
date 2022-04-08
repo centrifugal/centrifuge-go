@@ -19,19 +19,6 @@ const (
 	SubStateUnsubscribed SubState = "unsubscribed"
 	SubStateSubscribing  SubState = "subscribing"
 	SubStateSubscribed   SubState = "subscribed"
-	SubStateFailed       SubState = "failed"
-)
-
-// SubFailReason describes possible reasons of Subscription close.
-type SubFailReason string
-
-// Different Subscription close reasons.
-const (
-	SubFailReasonServer          SubFailReason = "server"
-	SubFailReasonSubscribeFailed SubFailReason = "subscribe failed"
-	SubFailReasonRefreshFailed   SubFailReason = "refresh failed"
-	SubFailReasonUnauthorized    SubFailReason = "unauthorized"
-	SubFailReasonUnrecoverable   SubFailReason = "unrecoverable"
 )
 
 // SubscriptionConfig allows setting Subscription options.
@@ -46,6 +33,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 	s := &Subscription{
 		Channel:             channel,
 		centrifuge:          c,
+		state:               SubStateUnsubscribed,
 		events:              newSubscriptionEventHub(),
 		subFutures:          make(map[uint64]subFuture),
 		resubscribeStrategy: defaultBackoffReconnect,
@@ -61,7 +49,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 // Subscription represents client subscription to channel.
 type Subscription struct {
 	futureID   uint64
-	mu         sync.Mutex
+	mu         sync.RWMutex
 	centrifuge *Client
 
 	// Channel for a subscription.
@@ -85,6 +73,12 @@ type Subscription struct {
 
 	resubscribeTimer *time.Timer
 	refreshTimer     *time.Timer
+}
+
+func (s *Subscription) State() SubState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
 }
 
 type subFuture struct {
@@ -112,14 +106,11 @@ func (s *Subscription) resolveSubFutures(err error) {
 // Publish allows publishing data to the subscription channel.
 func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 	s.mu.Lock()
-	if s.state == SubStateFailed {
-		s.mu.Unlock()
-		return PublishResult{}, ErrSubscriptionFailed
-	}
 	if s.state == SubStateUnsubscribed {
 		s.mu.Unlock()
 		return PublishResult{}, ErrSubscriptionUnsubscribed
 	}
+	println(s.state)
 	s.mu.Unlock()
 
 	resCh := make(chan PublishResult, 1)
@@ -166,10 +157,6 @@ func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
 		opt(historyOpts)
 	}
 	s.mu.Lock()
-	if s.state == SubStateFailed {
-		s.mu.Unlock()
-		return HistoryResult{}, ErrSubscriptionFailed
-	}
 	if s.state == SubStateUnsubscribed {
 		s.mu.Unlock()
 		return HistoryResult{}, ErrSubscriptionUnsubscribed
@@ -188,10 +175,6 @@ func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
 // Presence allows extracting channel presence.
 func (s *Subscription) Presence() (PresenceResult, error) {
 	s.mu.Lock()
-	if s.state == SubStateFailed {
-		s.mu.Unlock()
-		return PresenceResult{}, ErrSubscriptionFailed
-	}
 	if s.state == SubStateUnsubscribed {
 		s.mu.Unlock()
 		return PresenceResult{}, ErrSubscriptionUnsubscribed
@@ -210,10 +193,6 @@ func (s *Subscription) Presence() (PresenceResult, error) {
 // PresenceStats allows extracting channel presence stats.
 func (s *Subscription) PresenceStats() (PresenceStatsResult, error) {
 	s.mu.Lock()
-	if s.state == SubStateFailed {
-		s.mu.Unlock()
-		return PresenceStatsResult{}, ErrSubscriptionFailed
-	}
 	if s.state == SubStateUnsubscribed {
 		s.mu.Unlock()
 		return PresenceStatsResult{}, ErrSubscriptionUnsubscribed
@@ -234,8 +213,6 @@ func (s *Subscription) onSubscribe(fn func(err error)) {
 	defer s.mu.Unlock()
 	if s.state == SubStateSubscribed {
 		go fn(nil)
-	} else if s.state == SubStateFailed {
-		go fn(ErrSubscriptionFailed)
 	} else if s.state == SubStateUnsubscribed {
 		go fn(ErrSubscriptionUnsubscribed)
 	} else {
@@ -301,70 +278,84 @@ func (s *Subscription) presenceStats(fn func(PresenceStatsResult, error)) {
 
 // Unsubscribe allows unsubscribing from channel.
 func (s *Subscription) Unsubscribe() error {
+	if s.centrifuge.isClosed() {
+		return ErrClientClosed
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.unsubscribe(true)
-}
-
-// Lock must be held outside.
-func (s *Subscription) unsubscribe(fromClient bool) error {
-	s.moveToUnsubscribed(false)
-	if fromClient {
-		s.centrifuge.unsubscribe(s.Channel, func(result UnsubscribeResult, err error) {
-			if err != nil {
-				go s.centrifuge.handleDisconnect(&disconnect{Code: 13, Reason: "unsubscribe error", Reconnect: true})
-				return
-			}
-		})
-	}
+	s.unsubscribe(uint32(unsubscribedCodeUnsubscribeCalled), "client", true)
 	return nil
 }
 
 // Lock must be held outside.
-func (s *Subscription) fail(reason SubFailReason, fromClient bool) {
-	_ = s.unsubscribe(fromClient)
-	s.state = SubStateFailed
-	if reason == SubFailReasonUnrecoverable {
-		s.clearPositionState()
-	}
-	if s.events != nil && s.events.onFail != nil {
-		handler := s.events.onFail
-		s.centrifuge.runHandler(func() {
-			handler(SubscriptionFailEvent{Reason: reason})
+func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe bool) {
+	s.moveToUnsubscribed(code, reason, false)
+	if sendUnsubscribe {
+		s.centrifuge.unsubscribe(s.Channel, func(result UnsubscribeResult, err error) {
+			if err != nil {
+				go s.centrifuge.handleDisconnect(&disconnect{Code: uint32(connectingCodeUnsubscribeError), Reason: "unsubscribe error", Reconnect: true})
+				return
+			}
 		})
 	}
 }
 
 // Subscribe allows initiating subscription process.
 func (s *Subscription) Subscribe() error {
+	if s.centrifuge.isClosed() {
+		return ErrClientClosed
+	}
 	s.mu.Lock()
+	if s.state == SubStateSubscribed || s.state == SubStateSubscribing {
+		s.mu.Unlock()
+		return nil
+	}
 	s.state = SubStateSubscribing
+	if s.events != nil && s.events.onSubscribing != nil {
+		handler := s.events.onSubscribing
+		s.centrifuge.runHandler(func() {
+			handler(SubscribingEvent{
+				Code:   uint32(subscribingCodeSubscribeCalled),
+				Reason: "client",
+			})
+		})
+	}
 	s.mu.Unlock()
-	return s.resubscribe()
+	s.resubscribe()
+	return nil
 }
 
 // Lock must be held outside.
-func (s *Subscription) moveToUnsubscribed(resubscribe bool) {
+func (s *Subscription) moveToUnsubscribed(code uint32, reason string, resubscribe bool) {
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
 		s.resubscribeTimer.Stop()
 	}
-	needUnsubscribeEvent := s.state == SubStateSubscribed
+	needEvent := s.state == SubStateSubscribed
 	if resubscribe {
 		s.state = SubStateSubscribing
+		if needEvent && s.events != nil && s.events.onSubscribing != nil {
+			handler := s.events.onSubscribing
+			s.centrifuge.runHandler(func() {
+				handler(SubscribingEvent{
+					Code:   code,
+					Reason: reason,
+				})
+			})
+		}
 	} else {
 		s.state = SubStateUnsubscribed
+		if needEvent && s.events != nil && s.events.onUnsubscribe != nil {
+			handler := s.events.onUnsubscribe
+			s.centrifuge.runHandler(func() {
+				handler(UnsubscribedEvent{
+					Code:   code,
+					Reason: reason,
+				})
+			})
+		}
 	}
 	s.clearSubscribedState()
-	if needUnsubscribeEvent && s.events != nil && s.events.onUnsubscribe != nil {
-		handler := s.events.onUnsubscribe
-		s.centrifuge.runHandler(func() {
-			handler(UnsubscribeEvent{})
-		})
-	}
-	if resubscribe {
-
-	}
 }
 
 func (s *Subscription) subscribeSuccess(res *protocol.SubscribeResult) {
@@ -386,9 +377,9 @@ func (s *Subscription) subscribeSuccess(res *protocol.SubscribeResult) {
 		s.resubscribeTimer.Stop()
 	}
 	s.resolveSubFutures(nil)
-	if s.events != nil && s.events.onSubscribe != nil {
-		handler := s.events.onSubscribe
-		ev := SubscribeEvent{Data: res.GetData(), Recovered: res.GetRecovered()}
+	if s.events != nil && s.events.onSubscribed != nil {
+		handler := s.events.onSubscribed
+		ev := SubscribedEvent{Data: res.GetData(), Recovered: res.GetRecovered()}
 		s.centrifuge.runHandler(func() {
 			handler(ev)
 		})
@@ -440,8 +431,8 @@ func (s *Subscription) clearPositionState() {
 
 // Lock must be held outside.
 func (s *Subscription) scheduleResubscribe() {
-	s.resubscribeAttempts++
 	delay := s.resubscribeStrategy.timeBeforeNextAttempt(s.resubscribeAttempts)
+	s.resubscribeAttempts++
 	s.resubscribeTimer = time.AfterFunc(delay, func() {
 		s.mu.Lock()
 		if s.state != SubStateSubscribing {
@@ -449,7 +440,7 @@ func (s *Subscription) scheduleResubscribe() {
 			return
 		}
 		s.mu.Unlock()
-		_ = s.Subscribe()
+		s.resubscribe()
 	})
 }
 
@@ -473,7 +464,7 @@ func (s *Subscription) subscribeError(err error) {
 		return
 	}
 	if err == ErrTimeout {
-		go s.centrifuge.handleDisconnect(&disconnect{Code: 10, Reason: "subscribe timeout", Reconnect: true})
+		go s.centrifuge.handleDisconnect(&disconnect{Code: uint32(connectingCodeSubscribeTimeout), Reason: "subscribe timeout", Reconnect: true})
 		return
 	}
 
@@ -484,14 +475,11 @@ func (s *Subscription) subscribeError(err error) {
 		if serverError.Code == 109 { // Token expired.
 			s.token = ""
 			s.scheduleResubscribe()
-		} else if serverError.Code == 112 { // Unrecoverable position.
-			s.resolveSubFutures(err)
-			s.fail(SubFailReasonUnrecoverable, false)
 		} else if serverError.Temporary {
 			s.scheduleResubscribe()
 		} else {
 			s.resolveSubFutures(err)
-			s.fail(SubFailReasonSubscribeFailed, false)
+			s.unsubscribe(serverError.Code, serverError.Message, false)
 		}
 	} else {
 		s.scheduleResubscribe()
@@ -561,46 +549,27 @@ func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
 	}
 }
 
-// Known unsubscribe codes.
-const (
-	// unsubscribeCodeServer set when unsubscribe event was initiated
-	// by a server-side unsubscribe call.
-	unsubscribeCodeServer uint32 = 2
-	// unsubscribeCodeInsufficient set when client unsubscribed from
-	// a channel due to insufficient state in a stream.
-	unsubscribeCodeInsufficient uint32 = 3
-	// unsubscribeCodeUnrecoverable set when client unsubscribed from
-	// a channel due to unrecoverable position.
-	unsubscribeCodeUnrecoverable uint32 = 4
-)
-
 func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
-	switch unsubscribe.Code {
-	case unsubscribeCodeServer:
+	if unsubscribe.Code < 2500 {
 		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.fail(SubFailReasonServer, false)
-	case unsubscribeCodeInsufficient:
-		s.mu.Lock()
-		s.moveToUnsubscribed(true)
+		s.moveToUnsubscribed(unsubscribe.Code, "server", true)
 		s.mu.Unlock()
-		_ = s.resubscribe()
-	case unsubscribeCodeUnrecoverable:
+		s.resubscribe()
+	} else {
 		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.fail(SubFailReasonUnrecoverable, false)
-	default:
+		s.moveToUnsubscribed(unsubscribe.Code, "server", false)
+		s.mu.Unlock()
 	}
 }
 
-func (s *Subscription) resubscribe() error {
-	if !s.centrifuge.isConnected() {
-		return nil
+func (s *Subscription) resubscribe() {
+	if s.centrifuge.state != StateConnected {
+		return
 	}
 	s.mu.Lock()
 	if s.state != SubStateSubscribing {
 		s.mu.Unlock()
-		return nil
+		return
 	}
 	token := s.token
 	s.mu.Unlock()
@@ -610,13 +579,13 @@ func (s *Subscription) resubscribe() error {
 		token, err = s.getSubscriptionToken(s.Channel)
 		if err != nil {
 			s.subscribeError(err)
-			return nil
+			return
 		}
 		s.mu.Lock()
 		if token == "" {
-			s.fail(SubFailReasonUnauthorized, true)
+			s.unsubscribe(uint32(unsubscribedCodeUnauthorized), "unauthorized", true)
 			s.mu.Unlock()
-			return nil
+			return
 		}
 		s.token = token
 		s.mu.Unlock()
@@ -625,7 +594,7 @@ func (s *Subscription) resubscribe() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != SubStateSubscribing {
-		return nil
+		return
 	}
 
 	var isRecover bool
@@ -643,7 +612,9 @@ func (s *Subscription) resubscribe() error {
 		}
 		s.subscribeSuccess(res)
 	})
-	return err
+	if err != nil {
+		s.scheduleResubscribe()
+	}
 }
 
 func (s *Subscription) getSubscriptionToken(channel string) (string, error) {
@@ -681,7 +652,7 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 		if token == "" {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			s.fail(SubFailReasonUnauthorized, true)
+			s.unsubscribe(uint32(unsubscribedCodeUnauthorized), "unauthorized", true)
 			return
 		}
 
@@ -698,7 +669,7 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 					} else {
 						s.mu.Lock()
 						defer s.mu.Unlock()
-						s.fail(SubFailReasonRefreshFailed, true)
+						s.unsubscribe(serverError.Code, serverError.Message, true)
 						return
 					}
 				} else {

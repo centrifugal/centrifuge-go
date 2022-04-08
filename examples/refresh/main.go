@@ -31,10 +31,10 @@ func main() {
 	})
 	defer c.Close()
 
-	c.OnConnect(func(_ centrifuge.ConnectEvent) {
+	c.OnConnected(func(_ centrifuge.ConnectedEvent) {
 		log.Println("Connected")
 	})
-	c.OnDisconnect(func(_ centrifuge.DisconnectEvent) {
+	c.OnDisconnected(func(_ centrifuge.DisconnectedEvent) {
 		log.Println("Disconnected")
 	})
 	c.OnError(func(e centrifuge.ErrorEvent) {

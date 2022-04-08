@@ -95,7 +95,7 @@ func newConnection() *centrifuge.Client {
 	} else {
 		c = centrifuge.NewJsonClient(*url, config)
 	}
-	c.OnDisconnect(func(e centrifuge.DisconnectEvent) {
+	c.OnDisconnected(func(e centrifuge.DisconnectedEvent) {
 		if e.Code != 0 {
 			log.Printf("disconnect: %d, %s", e.Code, e.Reason)
 		}
@@ -155,7 +155,7 @@ func (h *subEventHandler) OnPublication(_ centrifuge.PublicationEvent) {
 	}
 }
 
-func (h *subEventHandler) OnSubscribe(_ centrifuge.SubscribeEvent) {
+func (h *subEventHandler) OnSubscribe(_ centrifuge.SubscribedEvent) {
 	h.startWg.Done()
 }
 
@@ -184,7 +184,7 @@ func runSubscriber(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	}
 
 	sub.OnPublication(subEvents.OnPublication)
-	sub.OnSubscribe(subEvents.OnSubscribe)
+	sub.OnSubscribed(subEvents.OnSubscribe)
 	sub.OnError(subEvents.OnError)
 
 	err = c.Connect()

@@ -12,10 +12,10 @@ import (
 func newClient() *centrifuge.Client {
 	wsURL := "ws://localhost:8000/connection/websocket"
 	c := centrifuge.NewJsonClient(wsURL, centrifuge.Config{})
-	c.OnConnect(func(_ centrifuge.ConnectEvent) {
+	c.OnConnected(func(_ centrifuge.ConnectedEvent) {
 		log.Println("Connected")
 	})
-	c.OnDisconnect(func(_ centrifuge.DisconnectEvent) {
+	c.OnDisconnected(func(_ centrifuge.DisconnectedEvent) {
 		log.Println("Disconnected")
 	})
 	c.OnError(func(e centrifuge.ErrorEvent) {

@@ -11,12 +11,10 @@ var (
 	// ErrClientDisconnected can be returned if client goes to
 	// disconnected state while operation in progress.
 	ErrClientDisconnected = errors.New("client disconnected")
-	// ErrClientFailed can be returned if client is failed.
-	ErrClientFailed = errors.New("client failed")
+	// ErrClientClosed can be returned if client is closed.
+	ErrClientClosed = errors.New("client closed")
 	// ErrSubscriptionUnsubscribed returned if Subscription is unsubscribed.
 	ErrSubscriptionUnsubscribed = errors.New("subscription unsubscribed")
-	// ErrSubscriptionFailed returned if Subscription is failed.
-	ErrSubscriptionFailed = errors.New("subscription failed")
 	// ErrDuplicateSubscription returned if subscription to the same channel
 	// already registered in current client instance. This is due to the fact
 	// that server does not allow subscribing to the same channel twice for

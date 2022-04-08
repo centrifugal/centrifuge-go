@@ -1,8 +1,8 @@
 package centrifuge
 
-// SubscribeEvent is an event context passed
+// SubscribedEvent is an event context passed
 // to subscribe success callback.
-type SubscribeEvent struct {
+type SubscribedEvent struct {
 	Recovered bool
 	Data      []byte
 }
@@ -13,11 +13,16 @@ type SubscriptionErrorEvent struct {
 	Error error
 }
 
-// UnsubscribeEvent is an event passed to unsubscribe event handler.
-type UnsubscribeEvent struct{}
+// SubscribingEvent is an event passed to subscribing event handler.
+type SubscribingEvent struct {
+	Code   uint32
+	Reason string
+}
 
-type SubscriptionFailEvent struct {
-	Reason SubFailReason
+// UnsubscribedEvent is an event passed to unsubscribe event handler.
+type UnsubscribedEvent struct {
+	Code   uint32
+	Reason string
 }
 
 // LeaveEvent has info about user who left channel.
@@ -45,27 +50,28 @@ type JoinHandler func(JoinEvent)
 // LeaveHandler is a function to handle leave messages.
 type LeaveHandler func(LeaveEvent)
 
-// UnsubscribeHandler is a function to handle unsubscribe event.
-type UnsubscribeHandler func(UnsubscribeEvent)
+// UnsubscribedHandler is a function to handle unsubscribe event.
+type UnsubscribedHandler func(UnsubscribedEvent)
 
-// SubscribeHandler is a function to handle subscribe success event.
-type SubscribeHandler func(SubscribeEvent)
+// SubscribingHandler is a function to handle subscribe success event.
+type SubscribingHandler func(SubscribingEvent)
+
+// SubscribedHandler is a function to handle subscribe success event.
+type SubscribedHandler func(SubscribedEvent)
 
 // SubscriptionErrorHandler is a function to handle subscribe error event.
 type SubscriptionErrorHandler func(SubscriptionErrorEvent)
 
-type SubscriptionFailHandler func(SubscriptionFailEvent)
-
 // subscriptionEventHub contains callback functions that will be called when
 // corresponding event happens with subscription to channel.
 type subscriptionEventHub struct {
-	onSubscribe   SubscribeHandler
+	onSubscribing SubscribingHandler
+	onSubscribed  SubscribedHandler
+	onUnsubscribe UnsubscribedHandler
 	onError       SubscriptionErrorHandler
 	onPublication PublicationHandler
 	onJoin        JoinHandler
 	onLeave       LeaveHandler
-	onUnsubscribe UnsubscribeHandler
-	onFail        SubscriptionFailHandler
 }
 
 // newSubscriptionEventHub initializes new subscriptionEventHub.
@@ -73,9 +79,19 @@ func newSubscriptionEventHub() *subscriptionEventHub {
 	return &subscriptionEventHub{}
 }
 
-// OnSubscribe allows setting SubscribeHandler to SubEventHandler.
-func (s *Subscription) OnSubscribe(handler SubscribeHandler) {
-	s.events.onSubscribe = handler
+// OnSubscribing allows setting SubscribingHandler to SubEventHandler.
+func (s *Subscription) OnSubscribing(handler SubscribingHandler) {
+	s.events.onSubscribing = handler
+}
+
+// OnSubscribed allows setting SubscribedHandler to SubEventHandler.
+func (s *Subscription) OnSubscribed(handler SubscribedHandler) {
+	s.events.onSubscribed = handler
+}
+
+// OnUnsubscribed allows setting UnsubscribedHandler to SubEventHandler.
+func (s *Subscription) OnUnsubscribed(handler UnsubscribedHandler) {
+	s.events.onUnsubscribe = handler
 }
 
 // OnError allows setting SubscriptionErrorHandler to SubEventHandler.
@@ -96,14 +112,4 @@ func (s *Subscription) OnJoin(handler JoinHandler) {
 // OnLeave allows setting LeaveHandler to SubEventHandler.
 func (s *Subscription) OnLeave(handler LeaveHandler) {
 	s.events.onLeave = handler
-}
-
-// OnUnsubscribe allows setting UnsubscribeHandler to SubEventHandler.
-func (s *Subscription) OnUnsubscribe(handler UnsubscribeHandler) {
-	s.events.onUnsubscribe = handler
-}
-
-// OnFail ...
-func (s *Subscription) OnFail(handler SubscriptionFailHandler) {
-	s.events.onFail = handler
 }

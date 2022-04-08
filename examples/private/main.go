@@ -48,10 +48,10 @@ func main() {
 	})
 	defer c.Close()
 
-	c.OnConnect(func(_ centrifuge.ConnectEvent) {
+	c.OnConnected(func(_ centrifuge.ConnectedEvent) {
 		log.Println("Connected")
 	})
-	c.OnDisconnect(func(_ centrifuge.DisconnectEvent) {
+	c.OnDisconnected(func(_ centrifuge.DisconnectedEvent) {
 		log.Println("Disconnected")
 	})
 	c.OnError(func(e centrifuge.ErrorEvent) {
@@ -75,13 +75,13 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	sub.OnSubscribe(func(e centrifuge.SubscribeEvent) {
+	sub.OnSubscribed(func(e centrifuge.SubscribedEvent) {
 		log.Println(fmt.Sprintf("Successfully subscribed to private channel %s", sub.Channel))
 	})
 	sub.OnError(func(e centrifuge.SubscriptionErrorEvent) {
 		log.Println(fmt.Sprintf("Error subscribing to private channel %s: %v", sub.Channel, e.Error))
 	})
-	sub.OnUnsubscribe(func(e centrifuge.UnsubscribeEvent) {
+	sub.OnUnsubscribed(func(e centrifuge.UnsubscribedEvent) {
 		log.Println(fmt.Sprintf("Unsubscribed from private channel %s", sub.Channel))
 	})
 	sub.OnPublication(func(e centrifuge.PublicationEvent) {
