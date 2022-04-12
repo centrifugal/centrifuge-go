@@ -115,7 +115,7 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 
 	t := &websocketTransport{
 		conn:           conn,
-		replyCh:        make(chan *protocol.Reply, 1280),
+		replyCh:        make(chan *protocol.Reply),
 		config:         config,
 		closeCh:        make(chan struct{}),
 		commandEncoder: newCommandEncoder(protocolType),
@@ -165,10 +165,9 @@ func (t *websocketTransport) reader() {
 				case <-t.closeCh:
 					return
 				case t.replyCh <- reply:
-				default:
-					// Can't keep up with server message rate.
-					t.disconnect = &disconnect{Code: uint32(connectingCodeClientSlow), Reason: "client slow", Reconnect: true}
-					return
+					// Send is blocking here, but slow client will be disconnected
+					// eventually with `no ping` reason – so we will exit from this
+					// goroutine.
 				}
 			}
 		}

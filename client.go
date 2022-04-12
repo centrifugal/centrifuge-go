@@ -300,17 +300,13 @@ type RPCResult struct {
 
 // RPC allows sending data to a server and waiting for a response.
 // RPC handler must be registered on server.
-func (c *Client) RPC(method string, data []byte) (RPCResult, error) {
+// TODO: decide on API.
+func (c *Client) RPC(method string, data []byte, cb func(result RPCResult, err error)) {
 	if c.isClosed() {
-		return RPCResult{}, ErrClientClosed
+		cb(RPCResult{}, ErrClientClosed)
+		return
 	}
-	resCh := make(chan RPCResult, 1)
-	errCh := make(chan error, 1)
-	c.sendRPC(method, data, func(result RPCResult, err error) {
-		resCh <- result
-		errCh <- err
-	})
-	return <-resCh, <-errCh
+	c.sendRPC(method, data, cb)
 }
 
 func (c *Client) sendRPC(method string, data []byte, fn func(RPCResult, error)) {
@@ -520,10 +516,6 @@ func (c *Client) readOnce(t transport) error {
 		go c.handleDisconnect(disconnect)
 		return err
 	}
-	select {
-	case c.delayPing <- struct{}{}:
-	default:
-	}
 	c.handle(reply)
 	return nil
 }
@@ -539,7 +531,8 @@ func (c *Client) reader(t transport, disconnectCh chan struct{}) {
 }
 
 func (c *Client) runHandler(fn func()) {
-	c.cbQueue.push(fn)
+	fn()
+	//c.cbQueue.push(fn)
 }
 
 func (c *Client) handle(reply *protocol.Reply) {
@@ -556,6 +549,10 @@ func (c *Client) handle(reply *protocol.Reply) {
 	} else {
 		if reply.Push == nil {
 			// Ping from server, send pong if needed.
+			select {
+			case c.delayPing <- struct{}{}:
+			default:
+			}
 			c.mu.RLock()
 			sendPong := c.sendPong
 			c.mu.RUnlock()

@@ -110,7 +110,6 @@ func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 		s.mu.Unlock()
 		return PublishResult{}, ErrSubscriptionUnsubscribed
 	}
-	println(s.state)
 	s.mu.Unlock()
 
 	resCh := make(chan PublishResult, 1)

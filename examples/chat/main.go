@@ -3,12 +3,12 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strings"
-
-	_ "net/http/pprof"
 
 	"github.com/centrifugal/centrifuge-go"
 	"github.com/golang-jwt/jwt"
@@ -80,7 +80,14 @@ func main() {
 	})
 
 	client.OnPublication(func(e centrifuge.ServerPublicationEvent) {
-		log.Printf("Publication from server-side channel %s: %s", e.Channel, e.Data)
+		log.Printf("Publication from server-side channel %s: %s (offset %d)", e.Channel, e.Data, e.Offset)
+		client.RPC("test", []byte("{}"), func(result centrifuge.RPCResult, err error) {
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			println("ok")
+		})
 	})
 	client.OnJoin(func(e centrifuge.ServerJoinEvent) {
 		log.Printf("Join to server-side channel %s: %s (%s)", e.Channel, e.User, e.Client)
