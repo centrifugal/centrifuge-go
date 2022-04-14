@@ -141,9 +141,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	client.token = config.Token
 	client.data = config.Data
 
-	// Create the async callback queue. Using a queue allows avoiding
-	// deadlocks caused by issuing blocking protocol operations from
-	// withing callback function.
+	// Queue to run callbacks on.
 	client.cbQueue = &cbQueue{}
 	client.cbQueue.cond = sync.NewCond(&client.cbQueue.mu)
 	go client.cbQueue.dispatch()
@@ -153,7 +151,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 
 // Connect dials to server and sends connect message. Will return an error if first dial
 // with server failed. In case of failure client will automatically reconnect with
-// exponential backoff. To disconnect from a server call Client.Disconnect.
+// exponential backoff. To moveToDisconnected from a server call Client.Disconnect.
 func (c *Client) Connect() error {
 	return c.startConnecting()
 }
@@ -161,35 +159,21 @@ func (c *Client) Connect() error {
 // Disconnect client from server. It's still possible to connect again later. If
 // you don't need Client anymore – use Client.Close.
 func (c *Client) Disconnect() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.state == StateClosed {
+	if c.isClosed() {
 		return ErrClientClosed
 	}
-	c.disconnect(&disconnect{
-		Code:      uint32(disconnectedCodeDisconnectCalled),
-		Reason:    "client",
-		Reconnect: false,
-	}, false)
+	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
 	return nil
 }
 
 // Close closes Client and cleanups resources. Client is unusable after this. Use this
 // method if you don't need client anymore, otherwise look at Client.Disconnect.
 func (c *Client) Close() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.state == StateClosed {
+	if c.isClosed() {
 		return
 	}
-	c.disconnect(&disconnect{
-		Code:      uint32(disconnectedCodeDisconnectCalled),
-		Reason:    "client",
-		Reconnect: false,
-	}, true)
-	c.state = StateClosed
-	c.cbQueue.close()
-	c.cbQueue = nil
+	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
+	c.moveToClosed()
 }
 
 func (c *Client) State() State {
@@ -300,13 +284,17 @@ type RPCResult struct {
 
 // RPC allows sending data to a server and waiting for a response.
 // RPC handler must be registered on server.
-// TODO: decide on API.
-func (c *Client) RPC(method string, data []byte, cb func(result RPCResult, err error)) {
+func (c *Client) RPC(method string, data []byte) (RPCResult, error) {
 	if c.isClosed() {
-		cb(RPCResult{}, ErrClientClosed)
-		return
+		return RPCResult{}, ErrClientClosed
 	}
-	c.sendRPC(method, data, cb)
+	resCh := make(chan RPCResult, 1)
+	errCh := make(chan error, 1)
+	c.sendRPC(method, data, func(result RPCResult, err error) {
+		resCh <- result
+		errCh <- err
+	})
+	return <-resCh, <-errCh
 }
 
 func (c *Client) sendRPC(method string, data []byte, fn func(RPCResult, error)) {
@@ -344,57 +332,185 @@ func (c *Client) sendRPC(method string, data []byte, fn func(RPCResult, error)) 
 	})
 }
 
-// Lock must be held outside.
-func (c *Client) disconnect(d *disconnect, isClose bool) {
+func (c *Client) moveToDisconnected(code uint32, reason string) {
+	c.mu.Lock()
 	if c.state == StateDisconnected || c.state == StateClosed {
+		c.mu.Unlock()
 		return
 	}
-
-	needEvent := c.state == StateConnected
-	if d.Reconnect {
-		c.state = StateConnecting
-		c.clearConnectedState(d.Reconnect, isClose)
-		var handler ConnectingHandler
-		if c.events != nil && c.events.onConnecting != nil {
-			handler = c.events.onConnecting
-		}
-		if needEvent && handler != nil {
-			c.runHandler(func() {
-				event := ConnectingEvent{Code: d.Code, Reason: d.Reason}
-				handler(event)
-			})
-		}
-	} else {
-		c.state = StateDisconnected
-		c.clearConnectedState(d.Reconnect, isClose)
-		c.resolveConnectFutures(ErrClientDisconnected)
-
-		var handler DisconnectHandler
-		if c.events != nil && c.events.onDisconnected != nil {
-			handler = c.events.onDisconnected
-		}
-		if needEvent && handler != nil {
-			c.runHandler(func() {
-				event := DisconnectedEvent{Code: d.Code, Reason: d.Reason}
-				handler(event)
-			})
-		}
-	}
-
+	c.id = ""
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.transport = nil
 	}
 
-	if !d.Reconnect {
-		return
+	prevState := c.state
+	c.state = StateDisconnected
+	c.clearConnectedState()
+	c.resolveConnectFutures(ErrClientDisconnected)
+
+	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
+	for _, s := range c.subs {
+		s.mu.Lock()
+		if s.state == SubStateUnsubscribed {
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
+		subsToUnsubscribe = append(subsToUnsubscribe, s)
+	}
+	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
+	for ch := range c.serverSubs {
+		serverSubsToUnsubscribe = append(serverSubsToUnsubscribe, ch)
+	}
+	c.mu.Unlock()
+
+	for _, s := range subsToUnsubscribe {
+		s.moveToSubscribing(subscribingClientDisconnected, "client disconnected")
 	}
 
+	if prevState == StateConnected {
+		var serverSubscribingHandler ServerSubscribingHandler
+		if c.events != nil && c.events.onServerSubscribing != nil {
+			serverSubscribingHandler = c.events.onServerSubscribing
+		}
+		if serverSubscribingHandler != nil {
+			c.runHandler(func() {
+				for _, ch := range serverSubsToUnsubscribe {
+					serverSubscribingHandler(ServerSubscribingEvent{Channel: ch})
+				}
+			})
+		}
+	}
+
+	var handler DisconnectHandler
+	if c.events != nil && c.events.onDisconnected != nil {
+		handler = c.events.onDisconnected
+	}
+	if handler != nil {
+		c.runHandler(func() {
+			event := DisconnectedEvent{Code: code, Reason: reason}
+			handler(event)
+		})
+	}
+}
+
+func (c *Client) moveToConnecting(code uint32, reason string) {
+	c.mu.Lock()
+	if c.state == StateDisconnected || c.state == StateClosed || c.state == StateConnecting {
+		c.mu.Unlock()
+		return
+	}
+	c.id = ""
+	if c.transport != nil {
+		_ = c.transport.Close()
+		c.transport = nil
+	}
+
+	c.state = StateConnecting
+	c.clearConnectedState()
+	c.resolveConnectFutures(ErrClientDisconnected)
+
+	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
+	for _, s := range c.subs {
+		s.mu.Lock()
+		if s.state == SubStateUnsubscribed {
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
+		subsToUnsubscribe = append(subsToUnsubscribe, s)
+	}
+	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
+	for ch := range c.serverSubs {
+		serverSubsToUnsubscribe = append(serverSubsToUnsubscribe, ch)
+	}
+	c.mu.Unlock()
+
+	for _, s := range subsToUnsubscribe {
+		s.moveToSubscribing(subscribingClientConnecting, "client connecting")
+	}
+
+	var serverSubscribingHandler ServerSubscribingHandler
+	if c.events != nil && c.events.onServerSubscribing != nil {
+		serverSubscribingHandler = c.events.onServerSubscribing
+	}
+	if serverSubscribingHandler != nil {
+		c.runHandler(func() {
+			for _, ch := range serverSubsToUnsubscribe {
+				serverSubscribingHandler(ServerSubscribingEvent{Channel: ch})
+			}
+		})
+	}
+
+	var handler ConnectingHandler
+	if c.events != nil && c.events.onConnecting != nil {
+		handler = c.events.onConnecting
+	}
+	if handler != nil {
+		c.runHandler(func() {
+			event := ConnectingEvent{Code: code, Reason: reason}
+			handler(event)
+		})
+	}
+
+	c.mu.Lock()
+	if c.state != StateConnecting {
+		c.mu.Unlock()
+		return
+	}
 	c.reconnectAttempts++
 	reconnectDelay := c.getReconnectDelay()
 	c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
 		_ = c.startReconnecting()
 	})
+	c.mu.Unlock()
+}
+
+func (c *Client) moveToClosed() {
+	c.mu.Lock()
+	if c.state == StateClosed {
+		c.mu.Unlock()
+		return
+	}
+	c.state = StateClosed
+
+	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
+	for _, s := range c.subs {
+		s.mu.Lock()
+		if s.state == SubStateUnsubscribed {
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Unlock()
+		subsToUnsubscribe = append(subsToUnsubscribe, s)
+	}
+	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
+	for ch := range c.serverSubs {
+		serverSubsToUnsubscribe = append(serverSubsToUnsubscribe, ch)
+	}
+	c.mu.Unlock()
+
+	for _, s := range subsToUnsubscribe {
+		s.moveToUnsubscribed(unsubscribedClientClosed, "client closed")
+	}
+
+	var serverUnsubscribedHandler ServerUnsubscribedHandler
+	if c.events != nil && c.events.onServerUnsubscribed != nil {
+		serverUnsubscribedHandler = c.events.onServerUnsubscribed
+	}
+	if serverUnsubscribedHandler != nil {
+		c.runHandler(func() {
+			for _, ch := range serverSubsToUnsubscribe {
+				serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
+			}
+		})
+	}
+
+	c.mu.Lock()
+	c.cbQueue.close()
+	c.cbQueue = nil
+	c.mu.Unlock()
 }
 
 func (c *Client) handleError(err error) {
@@ -410,7 +526,7 @@ func (c *Client) handleError(err error) {
 }
 
 // Lock must be held outside.
-func (c *Client) clearConnectedState(reconnect bool, isClose bool) {
+func (c *Client) clearConnectedState() {
 	if c.reconnectTimer != nil {
 		c.reconnectTimer.Stop()
 		c.reconnectTimer = nil
@@ -432,69 +548,26 @@ func (c *Client) clearConnectedState(reconnect bool, isClose bool) {
 	c.requests = make(map[uint32]request)
 	c.requestsMu.Unlock()
 
-	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
-	for _, s := range c.subs {
-		subsToUnsubscribe = append(subsToUnsubscribe, s)
-	}
-	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
-	for ch := range c.serverSubs {
-		serverSubsToUnsubscribe = append(serverSubsToUnsubscribe, ch)
-	}
-
 	for _, req := range reqs {
 		if req.cb != nil {
 			go req.cb(nil, ErrClientDisconnected)
 		}
-	}
-
-	for _, s := range subsToUnsubscribe {
-		s.mu.Lock()
-		if s.state == SubStateUnsubscribed {
-			s.mu.Unlock()
-			continue
-		}
-		var code uint32
-		var reason string
-		if isClose {
-			code = uint32(unsubscribedCodeClientClosed)
-			reason = "client closed"
-		} else {
-			if reconnect {
-				code = uint32(subscribingCodeClientConnecting)
-				reason = "client connecting"
-			} else {
-				code = uint32(subscribingCodeClientDisconnected)
-				reason = "client disconnected"
-			}
-		}
-		s.moveToUnsubscribed(code, reason, !isClose)
-		s.mu.Unlock()
-	}
-
-	var serverSubscribingHandler ServerSubscribingHandler
-	if c.events != nil && c.events.onServerSubscribing != nil {
-		serverSubscribingHandler = c.events.onServerSubscribing
-	}
-	if serverSubscribingHandler != nil {
-		c.runHandler(func() {
-			for _, ch := range serverSubsToUnsubscribe {
-				serverSubscribingHandler(ServerSubscribingEvent{Channel: ch})
-			}
-		})
 	}
 }
 
 func (c *Client) handleDisconnect(d *disconnect) {
 	if d == nil {
 		d = &disconnect{
-			Code:      uint32(connectingCodeTransportClosed),
+			Code:      connectingTransportClosed,
 			Reason:    "transport closed",
 			Reconnect: true,
 		}
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.disconnect(d, false)
+	if d.Reconnect {
+		c.moveToConnecting(d.Code, d.Reason)
+	} else {
+		c.moveToDisconnected(d.Code, d.Reason)
+	}
 }
 
 func (c *Client) waitServerPing(disconnectCh chan struct{}, pingInterval uint32) {
@@ -503,7 +576,7 @@ func (c *Client) waitServerPing(disconnectCh chan struct{}, pingInterval uint32)
 		select {
 		case <-c.delayPing:
 		case <-time.After(timeout):
-			go c.handleDisconnect(&disconnect{Code: uint32(connectingCodeNoPing), Reason: "no ping", Reconnect: true})
+			go c.handleDisconnect(&disconnect{Code: connectingNoPing, Reason: "no ping", Reconnect: true})
 		case <-disconnectCh:
 			return
 		}
@@ -531,8 +604,12 @@ func (c *Client) reader(t transport, disconnectCh chan struct{}) {
 }
 
 func (c *Client) runHandler(fn func()) {
-	fn()
-	//c.cbQueue.push(fn)
+	waitCh := make(chan struct{})
+	c.cbQueue.push(func(delay time.Duration) {
+		defer close(waitCh)
+		fn()
+	})
+	<-waitCh
 }
 
 func (c *Client) handle(reply *protocol.Reply) {
@@ -562,6 +639,12 @@ func (c *Client) handle(reply *protocol.Reply) {
 			}
 			return
 		}
+		c.mu.Lock()
+		if c.state != StateConnected {
+			c.mu.Unlock()
+			return
+		}
+		c.mu.Unlock()
 		c.handlePush(reply.Push)
 	}
 }
@@ -586,9 +669,7 @@ func (c *Client) handlePush(push *protocol.Push) {
 		_ = c.handleMessage(push.Message)
 	case push.Unsubscribe != nil:
 		channel := push.Channel
-		c.mu.RLock()
 		sub, ok := c.subs[channel]
-		c.mu.RUnlock()
 		if !ok {
 			c.handleServerUnsub(channel, push.Unsubscribe)
 			return
@@ -596,9 +677,7 @@ func (c *Client) handlePush(push *protocol.Push) {
 		sub.handleUnsubscribe(push.Unsubscribe)
 	case push.Pub != nil:
 		channel := push.Channel
-		c.mu.RLock()
 		sub, ok := c.subs[channel]
-		c.mu.RUnlock()
 		if !ok {
 			c.handleServerPublication(channel, push.Pub)
 			return
@@ -606,9 +685,7 @@ func (c *Client) handlePush(push *protocol.Push) {
 		sub.handlePublication(push.Pub)
 	case push.Join != nil:
 		channel := push.Channel
-		c.mu.RLock()
 		sub, ok := c.subs[channel]
-		c.mu.RUnlock()
 		if !ok {
 			c.handleServerJoin(channel, push.Join)
 			return
@@ -616,9 +693,7 @@ func (c *Client) handlePush(push *protocol.Push) {
 		sub.handleJoin(push.Join.Info)
 	case push.Leave != nil:
 		channel := push.Channel
-		c.mu.RLock()
 		sub, ok := c.subs[channel]
-		c.mu.RUnlock()
 		if !ok {
 			c.handleServerLeave(channel, push.Leave)
 			return
@@ -626,9 +701,7 @@ func (c *Client) handlePush(push *protocol.Push) {
 		sub.handleLeave(push.Leave.Info)
 	case push.Subscribe != nil:
 		channel := push.Channel
-		c.mu.RLock()
 		_, ok := c.subs[channel]
-		c.mu.RUnlock()
 		if ok {
 			// Client-side subscription exists.
 			return
@@ -638,27 +711,27 @@ func (c *Client) handlePush(push *protocol.Push) {
 	case push.Disconnect != nil:
 		code := push.Disconnect.Code
 		reconnect := code < 3500 || code >= 5000 || (code >= 4000 && code < 4500)
-		c.disconnect(&disconnect{
-			Code:      code,
-			Reason:    push.Disconnect.Reason,
-			Reconnect: reconnect,
-		}, false)
+		if reconnect {
+			c.moveToDisconnected(code, push.Disconnect.Reason)
+		} else {
+			c.moveToConnecting(code, push.Disconnect.Reason)
+		}
 	default:
 	}
 }
 
 func (c *Client) handleServerPublication(channel string, pub *protocol.Publication) {
-	c.mu.RLock()
-	_, ok := c.serverSubs[channel]
-	id := c.id
-	if id == "" {
-		c.mu.RUnlock()
-		return
-	}
-	c.mu.RUnlock()
+	c.mu.Lock()
+	serverSub, ok := c.serverSubs[channel]
 	if !ok {
+		c.mu.Unlock()
 		return
 	}
+	if serverSub.Recoverable && pub.Offset > 0 {
+		serverSub.Offset = pub.Offset
+	}
+	c.mu.Unlock()
+
 	var handler ServerPublicationHandler
 	if c.events != nil && c.events.onServerPublication != nil {
 		handler = c.events.onServerPublication
@@ -666,31 +739,18 @@ func (c *Client) handleServerPublication(channel string, pub *protocol.Publicati
 	if handler != nil {
 		c.runHandler(func() {
 			handler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
-			c.mu.Lock()
-			if c.id != id {
-				c.mu.Unlock()
-				return
-			}
-			serverSub, ok := c.serverSubs[channel]
-			if !ok {
-				c.mu.Unlock()
-				return
-			}
-			if serverSub.Recoverable && pub.Offset > 0 {
-				serverSub.Offset = pub.Offset
-			}
-			c.mu.Unlock()
 		})
 	}
 }
 
 func (c *Client) handleServerJoin(channel string, join *protocol.Join) {
-	c.mu.RLock()
+	c.mu.Lock()
 	_, ok := c.serverSubs[channel]
-	c.mu.RUnlock()
 	if !ok {
+		c.mu.Unlock()
 		return
 	}
+	c.mu.Unlock()
 	var handler ServerJoinHandler
 	if c.events != nil && c.events.onServerJoin != nil {
 		handler = c.events.onServerJoin
@@ -703,12 +763,13 @@ func (c *Client) handleServerJoin(channel string, join *protocol.Join) {
 }
 
 func (c *Client) handleServerLeave(channel string, leave *protocol.Leave) {
-	c.mu.RLock()
+	c.mu.Lock()
 	_, ok := c.serverSubs[channel]
-	c.mu.RUnlock()
 	if !ok {
+		c.mu.Unlock()
 		return
 	}
+	c.mu.Unlock()
 
 	var handler ServerLeaveHandler
 	if c.events != nil && c.events.onServerLeave != nil {
@@ -723,9 +784,9 @@ func (c *Client) handleServerLeave(channel string, leave *protocol.Leave) {
 
 func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	_, ok := c.serverSubs[channel]
 	if ok {
+		c.mu.Unlock()
 		return
 	}
 	c.serverSubs[channel] = &serverSub{
@@ -733,6 +794,7 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) {
 		Epoch:       sub.Epoch,
 		Recoverable: sub.Recoverable,
 	}
+	c.mu.Unlock()
 
 	var handler ServerSubscribedHandler
 	if c.events != nil && c.events.onServerSubscribe != nil {
@@ -747,11 +809,11 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) {
 
 func (c *Client) handleServerUnsub(channel string, _ *protocol.Unsubscribe) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	_, ok := c.serverSubs[channel]
 	if ok {
 		delete(c.serverSubs, channel)
 	}
+	c.mu.Unlock()
 	if !ok {
 		return
 	}
@@ -829,12 +891,11 @@ func (c *Client) startReconnecting() error {
 			c.mu.Unlock()
 			return err
 		} else {
-			c.mu.Lock()
 			if token == "" {
-				c.disconnect(&disconnect{Code: uint32(disconnectedCodeUnauthorized), Reason: "unauthorized"}, false)
-				c.mu.Unlock()
+				c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
 				return nil
 			}
+			c.mu.Lock()
 			c.token = token
 			if c.state != StateConnecting {
 				c.mu.Unlock()
@@ -880,11 +941,9 @@ func (c *Client) startReconnecting() error {
 				})
 				return
 			} else if isServerError(err) && !isTemporaryError(err) {
-				c.mu.Lock()
-				defer c.mu.Unlock()
 				var serverError *Error
 				if errors.As(err, &serverError) {
-					c.disconnect(&disconnect{Code: serverError.Code, Reason: serverError.Message, Reconnect: false}, false)
+					c.moveToDisconnected(serverError.Code, serverError.Message)
 				}
 				return
 			} else {
@@ -961,26 +1020,23 @@ func (c *Client) startReconnecting() error {
 			if subscribeHandler != nil {
 				c.runHandler(func() {
 					subscribeHandler(ServerSubscribedEvent{
-						Channel:   channel,
-						Data:      subRes.GetData(),
-						Recovered: subRes.GetRecovered(),
+						Channel:       channel,
+						Data:          subRes.GetData(),
+						Recovered:     subRes.GetRecovered(),
+						WasRecovering: subRes.GetWasRecovering(),
 					})
 				})
 			}
 			if publishHandler != nil {
 				c.runHandler(func() {
 					for _, pub := range subRes.Publications {
-						publishHandler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
 						c.mu.Lock()
-						if c.id != res.Client {
-							c.mu.Unlock()
-							return
-						}
 						if sub, ok := c.serverSubs[channel]; ok {
 							sub.Offset = pub.Offset
 						}
 						c.serverSubs[channel] = sub
 						c.mu.Unlock()
+						publishHandler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
 					}
 				})
 			}
@@ -1002,7 +1058,6 @@ func (c *Client) startReconnecting() error {
 
 		c.mu.Lock()
 		defer c.mu.Unlock()
-
 		// Successfully connected – can reset reconnect attempts.
 		c.reconnectAttempts = 0
 
@@ -1010,12 +1065,11 @@ func (c *Client) startReconnecting() error {
 			return
 		}
 
-		c.resubscribe()
-
 		if res.Ping > 0 {
 			c.sendPong = res.Pong
 			go c.waitServerPing(disconnectCh, res.Ping)
 		}
+		c.resubscribe()
 	})
 	if err != nil {
 		_ = t.Close()
@@ -1051,7 +1105,7 @@ func (c *Client) startConnecting() error {
 	}
 	if handler != nil {
 		c.runHandler(func() {
-			event := ConnectingEvent{Code: uint32(connectingCodeConnectCalled), Reason: "client"}
+			event := ConnectingEvent{Code: connectingConnectCalled, Reason: "connect called"}
 			handler(event)
 		})
 	}
@@ -1126,15 +1180,17 @@ func (c *Client) sendRefresh() {
 		}
 		if r.Error != nil {
 			c.mu.Lock()
-			defer c.mu.Unlock()
 			if c.state != StateConnected {
+				c.mu.Unlock()
 				return
 			}
 			if r.Error.Temporary {
 				c.handleError(RefreshError{err})
 				c.refreshTimer = time.AfterFunc(10*time.Second, c.sendRefresh)
+				c.mu.Unlock()
 			} else {
-				c.disconnect(&disconnect{Code: r.Error.Code, Reason: r.Error.Message}, false)
+				c.mu.Unlock()
+				c.moveToDisconnected(r.Error.Code, r.Error.Message)
 			}
 			return
 		}
@@ -1594,6 +1650,11 @@ func (c *Client) unsubscribe(channel string, fn func(UnsubscribeResult, error)) 
 	if !c.isSubscribed(channel) {
 		return
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != StateConnected {
+		return
+	}
 	c.sendUnsubscribe(channel, fn)
 }
 
@@ -1661,7 +1722,7 @@ func (c *Client) send(cmd *protocol.Command) error {
 	}
 	err := transport.Write(cmd, c.config.WriteTimeout)
 	if err != nil {
-		go c.handleDisconnect(&disconnect{Code: uint32(connectingCodeTransportClosed), Reason: "write error", Reconnect: true})
+		go c.handleDisconnect(&disconnect{Code: connectingTransportClosed, Reason: "write error", Reconnect: true})
 		return io.EOF
 	}
 	return nil

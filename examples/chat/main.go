@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -52,13 +51,13 @@ func main() {
 	defer client.Close()
 
 	client.OnConnecting(func(e centrifuge.ConnectingEvent) {
-		log.Printf("Connecting to chat - %d (%s)", e.Code, e.Reason)
+		log.Printf("Connecting - %d (%s)", e.Code, e.Reason)
 	})
 	client.OnConnected(func(e centrifuge.ConnectedEvent) {
-		log.Printf("Connected to chat with ID %s", e.ClientID)
+		log.Printf("Connected with ID %s", e.ClientID)
 	})
 	client.OnDisconnected(func(e centrifuge.DisconnectedEvent) {
-		log.Printf("Disconnected from chat: %d (%s)", e.Code, e.Reason)
+		log.Printf("Disconnected: %d (%s)", e.Code, e.Reason)
 	})
 
 	client.OnError(func(e centrifuge.ErrorEvent) {
@@ -70,7 +69,7 @@ func main() {
 	})
 
 	client.OnSubscribed(func(e centrifuge.ServerSubscribedEvent) {
-		log.Printf("Subscribed to server-side channel %s: (data: %v)", e.Channel, string(e.Data))
+		log.Printf("Subscribed to server-side channel %s: (was recovering: %v, recovered: %v)", e.Channel, e.WasRecovering, e.Recovered)
 	})
 	client.OnSubscribing(func(e centrifuge.ServerSubscribingEvent) {
 		log.Printf("Subscribing to server-side channel %s", e.Channel)
@@ -81,13 +80,6 @@ func main() {
 
 	client.OnPublication(func(e centrifuge.ServerPublicationEvent) {
 		log.Printf("Publication from server-side channel %s: %s (offset %d)", e.Channel, e.Data, e.Offset)
-		client.RPC("test", []byte("{}"), func(result centrifuge.RPCResult, err error) {
-			if err != nil {
-				fmt.Println(err)
-				return
-			}
-			println("ok")
-		})
 	})
 	client.OnJoin(func(e centrifuge.ServerJoinEvent) {
 		log.Printf("Join to server-side channel %s: %s (%s)", e.Channel, e.User, e.Client)
@@ -105,7 +97,7 @@ func main() {
 		log.Printf("Subscribing on channel %s - %d (%s)", sub.Channel, e.Code, e.Reason)
 	})
 	sub.OnSubscribed(func(e centrifuge.SubscribedEvent) {
-		log.Printf("Subscribed on channel %s, data: %v", sub.Channel, string(e.Data))
+		log.Printf("Subscribed on channel %s, (was recovering: %v, recovered: %v)", sub.Channel, e.WasRecovering, e.Recovered)
 	})
 	sub.OnUnsubscribed(func(e centrifuge.UnsubscribedEvent) {
 		log.Printf("Unsubscribed from channel %s - %d (%s)", sub.Channel, e.Code, e.Reason)
@@ -115,13 +107,18 @@ func main() {
 		log.Printf("Subscription error %s: %s", sub.Channel, e.Error)
 	})
 
+	var offset uint64
 	sub.OnPublication(func(e centrifuge.PublicationEvent) {
 		var chatMessage *ChatMessage
 		err := json.Unmarshal(e.Data, &chatMessage)
 		if err != nil {
 			return
 		}
-		log.Printf("Someone says via channel %s: %s", sub.Channel, chatMessage.Input)
+		log.Printf("Someone says via channel %s: %s (offset %d)", sub.Channel, chatMessage.Input, e.Offset)
+		if offset > 0 && offset != e.Offset-1 {
+			panic(e.Offset)
+		}
+		offset = e.Offset
 	})
 	sub.OnJoin(func(e centrifuge.JoinEvent) {
 		log.Printf("Someone joined %s: user id %s, client id %s", sub.Channel, e.User, e.Client)
@@ -161,13 +158,25 @@ func main() {
 			text = strings.TrimSpace(text)
 			switch text {
 			case "#subscribe":
-				_ = sub.Subscribe()
+				err := sub.Subscribe()
+				if err != nil {
+					log.Println(err)
+				}
 			case "#unsubscribe":
-				_ = sub.Unsubscribe()
+				err := sub.Unsubscribe()
+				if err != nil {
+					log.Println(err)
+				}
 			case "#disconnect":
-				_ = client.Disconnect()
+				err := client.Disconnect()
+				if err != nil {
+					log.Println(err)
+				}
 			case "#connect":
-				_ = client.Connect()
+				err := client.Connect()
+				if err != nil {
+					log.Println(err)
+				}
 			case "#close":
 				client.Close()
 			default:

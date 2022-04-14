@@ -13,9 +13,10 @@ type ServerPublicationEvent struct {
 }
 
 type ServerSubscribedEvent struct {
-	Channel   string
-	Recovered bool
-	Data      []byte
+	Channel       string
+	WasRecovering bool
+	Recovered     bool
+	Data          []byte
 }
 
 // ServerJoinEvent has info about user who left channel.
@@ -47,7 +48,7 @@ type ConnectedEvent struct {
 	Data     []byte
 }
 
-// DisconnectedEvent is a disconnect event context passed to OnDisconnected callback.
+// DisconnectedEvent is a moveToDisconnected event context passed to OnDisconnected callback.
 type DisconnectedEvent struct {
 	Code   uint32
 	Reason string
@@ -75,7 +76,7 @@ type ConnectingHandler func(ConnectingEvent)
 // ConnectedHandler is an interface describing how to handle connect event.
 type ConnectedHandler func(ConnectedEvent)
 
-// DisconnectHandler is an interface describing how to handle disconnect event.
+// DisconnectHandler is an interface describing how to handle moveToDisconnected event.
 type DisconnectHandler func(DisconnectedEvent)
 
 // MessageHandler is an interface describing how to handle async message from server.
@@ -147,7 +148,7 @@ func (c *Client) OnConnecting(handler ConnectingHandler) {
 	c.events.onConnecting = handler
 }
 
-// OnDisconnected is a function to handle disconnect event.
+// OnDisconnected is a function to handle moveToDisconnected event.
 func (c *Client) OnDisconnected(handler DisconnectHandler) {
 	c.events.onDisconnected = handler
 }

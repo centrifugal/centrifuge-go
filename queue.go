@@ -1,6 +1,9 @@
 package centrifuge
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // cbQueue allows processing callbacks in separate goroutine with
 // preserved order.
@@ -15,7 +18,8 @@ type cbQueue struct {
 }
 
 type asyncCB struct {
-	fn   func()
+	fn   func(delay time.Duration)
+	tm   time.Time
 	next *asyncCB
 }
 
@@ -41,13 +45,13 @@ func (q *cbQueue) dispatch() {
 		if curr.fn == nil {
 			return
 		}
-		curr.fn()
+		curr.fn(time.Since(curr.tm))
 	}
 }
 
 // Push adds the given function to the tail of the list and
 // signals the dispatcher.
-func (q *cbQueue) push(f func()) {
+func (q *cbQueue) push(f func(duration time.Duration)) {
 	q.pushOrClose(f, false)
 }
 
@@ -56,7 +60,7 @@ func (q *cbQueue) close() {
 	q.pushOrClose(nil, true)
 }
 
-func (q *cbQueue) pushOrClose(f func(), close bool) {
+func (q *cbQueue) pushOrClose(f func(time.Duration), close bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	// Make sure that library is not calling push with nil function,
@@ -64,7 +68,7 @@ func (q *cbQueue) pushOrClose(f func(), close bool) {
 	if !close && f == nil {
 		panic("pushing a nil callback with false close")
 	}
-	cb := &asyncCB{fn: f}
+	cb := &asyncCB{fn: f, tm: time.Now()}
 	if q.tail != nil {
 		q.tail.next = cb
 	} else {

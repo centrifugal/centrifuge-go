@@ -1,31 +1,28 @@
 package centrifuge
 
-type code uint32
-
 const (
-	disconnectedCodeDisconnectCalled code = 0
-	disconnectedCodeUnauthorized     code = 1
-	disconnectCodeBadProtocol        code = 2
-	disconnectCodeMessageSizeLimit   code = 3
+	disconnectedDisconnectCalled uint32 = 0
+	disconnectedUnauthorized     uint32 = 1
+	disconnectBadProtocol        uint32 = 2
+	disconnectMessageSizeLimit   uint32 = 3
 )
 
 const (
-	connectingCodeConnectCalled    code = 0
-	connectingCodeTransportClosed  code = 1
-	connectingCodeNoPing           code = 2
-	connectingCodeSubscribeTimeout code = 3
-	connectingCodeUnsubscribeError code = 4
-	connectingCodeClientSlow       code = 5
+	connectingConnectCalled    uint32 = 0
+	connectingTransportClosed  uint32 = 1
+	connectingNoPing           uint32 = 2
+	connectingSubscribeTimeout uint32 = 3
+	connectingUnsubscribeError uint32 = 4
 )
 
 const (
-	subscribingCodeSubscribeCalled    code = 0
-	subscribingCodeClientConnecting   code = 1
-	subscribingCodeClientDisconnected code = 2
+	subscribingSubscribeCalled    uint32 = 0
+	subscribingClientConnecting   uint32 = 1
+	subscribingClientDisconnected uint32 = 2
 )
 
 const (
-	unsubscribedCodeUnsubscribeCalled code = 0
-	unsubscribedCodeUnauthorized      code = 1
-	unsubscribedCodeClientClosed      code = 2
+	unsubscribedUnsubscribeCalled uint32 = 0
+	unsubscribedUnauthorized      uint32 = 1
+	unsubscribedClientClosed      uint32 = 2
 )

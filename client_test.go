@@ -87,7 +87,7 @@ func TestConnectWrongAddress(t *testing.T) {
 			t.Errorf("finish with error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Errorf("expecting disconnect due to malformed address")
+		t.Errorf("expecting moveToDisconnected due to malformed address")
 	}
 }
 
@@ -147,7 +147,7 @@ func TestDisconnect(t *testing.T) {
 			t.Errorf("finish with error: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Errorf("expecting successful disconnect")
+		t.Errorf("expecting successful moveToDisconnected")
 	}
 }
 

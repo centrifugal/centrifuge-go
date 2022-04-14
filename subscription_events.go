@@ -3,8 +3,9 @@ package centrifuge
 // SubscribedEvent is an event context passed
 // to subscribe success callback.
 type SubscribedEvent struct {
-	Recovered bool
-	Data      []byte
+	WasRecovering bool
+	Recovered     bool
+	Data          []byte
 }
 
 // SubscriptionErrorEvent is a subscribe error event context passed to

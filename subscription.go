@@ -280,19 +280,17 @@ func (s *Subscription) Unsubscribe() error {
 	if s.centrifuge.isClosed() {
 		return ErrClientClosed
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.unsubscribe(uint32(unsubscribedCodeUnsubscribeCalled), "client", true)
+	s.unsubscribe(unsubscribedUnsubscribeCalled, "unsubscribe called", true)
 	return nil
 }
 
 // Lock must be held outside.
 func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe bool) {
-	s.moveToUnsubscribed(code, reason, false)
+	s.moveToUnsubscribed(code, reason)
 	if sendUnsubscribe {
 		s.centrifuge.unsubscribe(s.Channel, func(result UnsubscribeResult, err error) {
 			if err != nil {
-				go s.centrifuge.handleDisconnect(&disconnect{Code: uint32(connectingCodeUnsubscribeError), Reason: "unsubscribe error", Reconnect: true})
+				go s.centrifuge.handleDisconnect(&disconnect{Code: connectingUnsubscribeError, Reason: "unsubscribe error", Reconnect: true})
 				return
 			}
 		})
@@ -310,57 +308,77 @@ func (s *Subscription) Subscribe() error {
 		return nil
 	}
 	s.state = SubStateSubscribing
+	s.mu.Unlock()
+
 	if s.events != nil && s.events.onSubscribing != nil {
 		handler := s.events.onSubscribing
 		s.centrifuge.runHandler(func() {
 			handler(SubscribingEvent{
-				Code:   uint32(subscribingCodeSubscribeCalled),
-				Reason: "client",
+				Code:   subscribingSubscribeCalled,
+				Reason: "subscribe called",
 			})
 		})
 	}
-	s.mu.Unlock()
+
 	s.resubscribe()
 	return nil
 }
 
-// Lock must be held outside.
-func (s *Subscription) moveToUnsubscribed(code uint32, reason string, resubscribe bool) {
+func (s *Subscription) moveToUnsubscribed(code uint32, reason string) {
+	s.mu.Lock()
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
 		s.resubscribeTimer.Stop()
 	}
-	needEvent := s.state == SubStateSubscribed
-	if resubscribe {
-		s.state = SubStateSubscribing
-		if needEvent && s.events != nil && s.events.onSubscribing != nil {
-			handler := s.events.onSubscribing
-			s.centrifuge.runHandler(func() {
-				handler(SubscribingEvent{
-					Code:   code,
-					Reason: reason,
-				})
-			})
-		}
-	} else {
-		s.state = SubStateUnsubscribed
-		if needEvent && s.events != nil && s.events.onUnsubscribe != nil {
-			handler := s.events.onUnsubscribe
-			s.centrifuge.runHandler(func() {
-				handler(UnsubscribedEvent{
-					Code:   code,
-					Reason: reason,
-				})
-			})
-		}
+	s.sid = ""
+	if s.refreshTimer != nil {
+		s.refreshTimer.Stop()
 	}
-	s.clearSubscribedState()
+
+	needEvent := s.state != SubStateUnsubscribed
+	s.state = SubStateUnsubscribed
+	s.mu.Unlock()
+
+	if needEvent && s.events != nil && s.events.onUnsubscribe != nil {
+		handler := s.events.onUnsubscribe
+		s.centrifuge.runHandler(func() {
+			handler(UnsubscribedEvent{
+				Code:   code,
+				Reason: reason,
+			})
+		})
+	}
 }
 
-func (s *Subscription) subscribeSuccess(res *protocol.SubscribeResult) {
+func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.resubscribeAttempts = 0
+	if s.resubscribeTimer != nil {
+		s.resubscribeTimer.Stop()
+	}
+	s.sid = ""
+	if s.refreshTimer != nil {
+		s.refreshTimer.Stop()
+	}
+	needEvent := s.state != SubStateSubscribing
+	s.state = SubStateSubscribing
+	s.mu.Unlock()
+
+	if needEvent && s.events != nil && s.events.onSubscribing != nil {
+		handler := s.events.onSubscribing
+		s.centrifuge.runHandler(func() {
+			handler(SubscribingEvent{
+				Code:   code,
+				Reason: reason,
+			})
+		})
+	}
+}
+
+func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
+	s.mu.Lock()
 	if s.state != SubStateSubscribing {
+		s.mu.Unlock()
 		return
 	}
 	s.state = SubStateSubscribed
@@ -376,27 +394,25 @@ func (s *Subscription) subscribeSuccess(res *protocol.SubscribeResult) {
 		s.resubscribeTimer.Stop()
 	}
 	s.resolveSubFutures(nil)
+	s.epoch = res.Epoch
+	s.mu.Unlock()
+
 	if s.events != nil && s.events.onSubscribed != nil {
 		handler := s.events.onSubscribed
-		ev := SubscribedEvent{Data: res.GetData(), Recovered: res.GetRecovered()}
+		ev := SubscribedEvent{Data: res.GetData(), Recovered: res.GetRecovered(), WasRecovering: res.GetWasRecovering()}
 		s.centrifuge.runHandler(func() {
 			handler(ev)
 		})
 	}
-	s.epoch = res.Epoch
+
 	if len(res.Publications) > 0 {
+		s.mu.Lock()
 		sid := s.sid
+		s.mu.Unlock()
 		s.centrifuge.runHandler(func() {
 			pubs := res.Publications
 			for i := 0; i < len(pubs); i++ {
 				pub := res.Publications[i]
-				var handler PublicationHandler
-				if s.events != nil && s.events.onPublication != nil {
-					handler = s.events.onPublication
-				}
-				if handler != nil {
-					handler(PublicationEvent{Publication: pubFromProto(pub)})
-				}
 				s.mu.Lock()
 				if s.sid != sid {
 					s.mu.Unlock()
@@ -406,18 +422,19 @@ func (s *Subscription) subscribeSuccess(res *protocol.SubscribeResult) {
 					s.offset = pub.Offset
 				}
 				s.mu.Unlock()
+				var handler PublicationHandler
+				if s.events != nil && s.events.onPublication != nil {
+					handler = s.events.onPublication
+				}
+				if handler != nil {
+					handler(PublicationEvent{Publication: pubFromProto(pub)})
+				}
 			}
 		})
 	} else {
+		s.mu.Lock()
 		s.offset = res.Offset
-	}
-}
-
-// Lock must be held outside.
-func (s *Subscription) clearSubscribedState() {
-	s.sid = ""
-	if s.refreshTimer != nil {
-		s.refreshTimer.Stop()
+		s.mu.Unlock()
 	}
 }
 
@@ -458,17 +475,21 @@ func (s *Subscription) refreshToken() (string, error) {
 
 func (s *Subscription) subscribeError(err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.state != SubStateSubscribing {
+		s.mu.Unlock()
 		return
 	}
+	s.mu.Unlock()
+
 	if err == ErrTimeout {
-		go s.centrifuge.handleDisconnect(&disconnect{Code: uint32(connectingCodeSubscribeTimeout), Reason: "subscribe timeout", Reconnect: true})
+		go s.centrifuge.handleDisconnect(&disconnect{Code: connectingSubscribeTimeout, Reason: "subscribe timeout", Reconnect: true})
 		return
 	}
 
 	s.emitError(SubscriptionSubscribeError{Err: err})
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var serverError *Error
 	if errors.As(err, &serverError) {
 		if serverError.Code == 109 { // Token expired.
@@ -496,6 +517,16 @@ func (s *Subscription) emitError(err error) {
 }
 
 func (s *Subscription) handlePublication(pub *protocol.Publication) {
+	s.mu.Lock()
+	if s.state != SubStateSubscribed {
+		s.mu.Unlock()
+		return
+	}
+	if pub.Offset > 0 {
+		s.offset = pub.Offset
+	}
+	s.mu.Unlock()
+
 	var handler PublicationHandler
 	if s.events != nil && s.events.onPublication != nil {
 		handler = s.events.onPublication
@@ -503,24 +534,8 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 	if handler == nil {
 		return
 	}
-	s.mu.Lock()
-	id := s.sid
-	if id == "" {
-		s.mu.Unlock()
-		return
-	}
-	s.mu.Unlock()
 	s.centrifuge.runHandler(func() {
 		handler(PublicationEvent{Publication: pubFromProto(pub)})
-		s.mu.Lock()
-		if s.sid != id {
-			s.mu.Unlock()
-			return
-		}
-		if pub.Offset > 0 {
-			s.offset = pub.Offset
-		}
-		s.mu.Unlock()
 	})
 }
 
@@ -550,14 +565,10 @@ func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
 
 func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
 	if unsubscribe.Code < 2500 {
-		s.mu.Lock()
-		s.moveToUnsubscribed(unsubscribe.Code, "server", true)
-		s.mu.Unlock()
+		s.moveToSubscribing(unsubscribe.Code, "server")
 		s.resubscribe()
 	} else {
-		s.mu.Lock()
-		s.moveToUnsubscribed(unsubscribe.Code, "server", false)
-		s.mu.Unlock()
+		s.moveToUnsubscribed(unsubscribe.Code, "server")
 	}
 }
 
@@ -582,7 +593,7 @@ func (s *Subscription) resubscribe() {
 		}
 		s.mu.Lock()
 		if token == "" {
-			s.unsubscribe(uint32(unsubscribedCodeUnauthorized), "unauthorized", true)
+			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
 			s.mu.Unlock()
 			return
 		}
@@ -609,7 +620,7 @@ func (s *Subscription) resubscribe() {
 			s.subscribeError(err)
 			return
 		}
-		s.subscribeSuccess(res)
+		s.moveToSubscribed(res)
 	})
 	if err != nil {
 		s.scheduleResubscribe()
@@ -651,7 +662,7 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 		if token == "" {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			s.unsubscribe(uint32(unsubscribedCodeUnauthorized), "unauthorized", true)
+			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
 			return
 		}
 

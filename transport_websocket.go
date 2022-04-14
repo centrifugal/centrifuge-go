@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -30,12 +29,12 @@ func extractDisconnectWebsocket(err error) *disconnect {
 				if code < 3000 {
 					switch code {
 					case websocket.CloseMessageTooBig:
-						code = uint32(disconnectCodeMessageSizeLimit)
+						code = uint32(disconnectMessageSizeLimit)
 					default:
 						// We expose codes defined by Centrifuge protocol, hiding
 						// details about transport-specific error codes. We may have extra
 						// optional transportCode field in the future.
-						code = uint32(connectingCodeTransportClosed)
+						code = uint32(connectingTransportClosed)
 					}
 				}
 				return &disconnect{
@@ -148,7 +147,7 @@ func (t *websocketTransport) reader() {
 			t.disconnect = disconnect
 			return
 		}
-		println("<----", strings.Trim(string(data), "\n"))
+		//println("<----", strings.Trim(string(data), "\n"))
 	loop:
 		for {
 			decoder := newReplyDecoder(t.protocolType, data)
@@ -158,7 +157,7 @@ func (t *websocketTransport) reader() {
 					if err == io.EOF {
 						break loop
 					}
-					t.disconnect = &disconnect{Code: uint32(disconnectCodeBadProtocol), Reason: "decode error", Reconnect: false}
+					t.disconnect = &disconnect{Code: uint32(disconnectBadProtocol), Reason: "decode error", Reconnect: false}
 					return
 				}
 				select {
@@ -188,7 +187,7 @@ func (t *websocketTransport) writeData(data []byte, timeout time.Duration) error
 	if timeout > 0 {
 		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
-	println("---->", strings.Trim(string(data), "\n"))
+	//println("---->", strings.Trim(string(data), "\n"))
 	var err error
 	if t.protocolType == protocol.TypeJSON {
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
