@@ -6,42 +6,30 @@ There is no v1 release of this library yet – API still evolves. At the moment 
 
 ## Feature matrix
 
-- [x] connect to server using JSON protocol format
-- [x] connect to server using Protobuf protocol format
+- [x] connect to server (both JSON and Protobuf supported)
 - [x] connect with token (JWT)
 - [x] connect with custom header
+- [x] connect with custom data
 - [x] automatic reconnect in case of errors, network problems etc
 - [x] an exponential backoff for reconnect
-- [x] connect and disconnect events
-- [x] handle disconnect reason
-- [x] subscribe on a channel and handle asynchronous Publications
-- [x] handle Join and Leave messages
-- [x] handle Unsubscribe notifications
-- [x] reconnect on subscribe timeout
-- [x] publish method of Subscription
-- [x] unsubscribe method of Subscription
-- [x] presence method of Subscription
-- [x] presence stats method of Subscription
-- [x] history method of Subscription
-- [x] top-level publish method
-- [x] top-level presence method
-- [x] top-level presence stats method
-- [x] top-level history method
-- [ ] top-level unsubscribe method
+- [x] client connection state events (connecting, connected, disconnected)
+- [x] receive client-scope asynchronous messages
 - [x] send asynchronous messages to server
-- [x] handle asynchronous messages from server
-- [x] send RPC commands
-- [x] publish to channel without being subscribed
+- [x] client request-response methods: rpc, publish, presence, presence stats, history
+- [x] subscribe to a channel
+- [x] subscription state events (subscribing, subscribed, unsubscribed)
+- [x] subscription asynchronous messages
+- [x] subscription methods: publish, presence, presence stats, history
+- [x] reconnect on subscribe timeout and unsubscribe error
 - [x] subscribe to private channels with token (JWT)
 - [x] connection token (JWT) refresh
-- [ ] private channel subscription token (JWT) refresh
-- [x] handle connection expired error
-- [ ] handle subscription expired error
+- [x] handle connection expiration
+- [x] private channel subscription token (JWT) refresh
+- [x] handle subscription expiration
 - [x] ping/pong to find broken connection
 - [x] message recovery mechanism for client-side subscriptions
 - [x] server-side subscriptions
 - [x] message recovery mechanism for server-side subscriptions
-- [ ] history stream pagination
 
 ## Run tests
 

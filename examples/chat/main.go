@@ -88,6 +88,11 @@ func main() {
 		log.Printf("Leave from server-side channel %s: %s (%s)", e.Channel, e.User, e.Client)
 	})
 
+	err := client.Connect()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
 	sub, err := client.NewSubscription("chat:index")
 	if err != nil {
 		log.Fatalln(err)
@@ -135,8 +140,6 @@ func main() {
 		_, err := sub.Publish(data)
 		return err
 	}
-
-	_ = client.Connect()
 
 	err = pubText("hello")
 	if err != nil {

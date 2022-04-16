@@ -148,9 +148,9 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	return client
 }
 
-// Connect dials to server and sends connect message. Will return an error if first dial
-// with server failed. In case of failure client will automatically reconnect with
-// exponential backoff. To moveToDisconnected from a server call Client.Disconnect.
+// Connect dials to server and sends connect message. Will return an error if first
+// dial with a server failed. In case of failure client will automatically reconnect.
+// To temporary disconnect from a server call Client.Disconnect.
 func (c *Client) Connect() error {
 	return c.startConnecting()
 }
@@ -231,29 +231,6 @@ func (c *Client) Subscriptions() map[string]*Subscription {
 	return subs
 }
 
-func (c *Client) nextCmdID() uint32 {
-	return atomic.AddUint32(&c.cmdID, 1)
-}
-
-func (c *Client) isConnected() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.state == StateConnected
-}
-
-func (c *Client) isClosed() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.state == StateClosed
-}
-
-func (c *Client) isSubscribed(channel string) bool {
-	c.mu.RLock()
-	_, ok := c.subs[channel]
-	c.mu.RUnlock()
-	return ok
-}
-
 // Send message to server without waiting for response.
 // Message handler must be registered on server.
 func (c *Client) Send(data []byte) error {
@@ -294,6 +271,29 @@ func (c *Client) RPC(method string, data []byte) (RPCResult, error) {
 		errCh <- err
 	})
 	return <-resCh, <-errCh
+}
+
+func (c *Client) nextCmdID() uint32 {
+	return atomic.AddUint32(&c.cmdID, 1)
+}
+
+func (c *Client) isConnected() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.state == StateConnected
+}
+
+func (c *Client) isClosed() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.state == StateClosed
+}
+
+func (c *Client) isSubscribed(channel string) bool {
+	c.mu.RLock()
+	_, ok := c.subs[channel]
+	c.mu.RUnlock()
+	return ok
 }
 
 func (c *Client) sendRPC(method string, data []byte, fn func(RPCResult, error)) {
