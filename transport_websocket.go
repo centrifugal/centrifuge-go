@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -147,7 +148,7 @@ func (t *websocketTransport) reader() {
 			t.disconnect = disconnect
 			return
 		}
-		//println("<----", strings.Trim(string(data), "\n"))
+		println("<----", strings.Trim(string(data), "\n"))
 	loop:
 		for {
 			decoder := newReplyDecoder(t.protocolType, data)
@@ -187,7 +188,7 @@ func (t *websocketTransport) writeData(data []byte, timeout time.Duration) error
 	if timeout > 0 {
 		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
-	//println("---->", strings.Trim(string(data), "\n"))
+	println("---->", strings.Trim(string(data), "\n"))
 	var err error
 	if t.protocolType == protocol.TypeJSON {
 		err = t.conn.WriteMessage(websocket.TextMessage, data)

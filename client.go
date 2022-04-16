@@ -42,7 +42,6 @@ type Client struct {
 	data              protocol.Raw
 	transport         transport
 	state             State
-	id                string
 	subs              map[string]*Subscription
 	serverSubs        map[string]*serverSub
 	requestsMu        sync.RWMutex
@@ -338,7 +337,6 @@ func (c *Client) moveToDisconnected(code uint32, reason string) {
 		c.mu.Unlock()
 		return
 	}
-	c.id = ""
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.transport = nil
@@ -375,7 +373,7 @@ func (c *Client) moveToDisconnected(code uint32, reason string) {
 			serverSubscribingHandler = c.events.onServerSubscribing
 		}
 		if serverSubscribingHandler != nil {
-			c.runHandler(func() {
+			c.runHandlerAsync(func() {
 				for _, ch := range serverSubsToUnsubscribe {
 					serverSubscribingHandler(ServerSubscribingEvent{Channel: ch})
 				}
@@ -388,7 +386,7 @@ func (c *Client) moveToDisconnected(code uint32, reason string) {
 		handler = c.events.onDisconnected
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerAsync(func() {
 			event := DisconnectedEvent{Code: code, Reason: reason}
 			handler(event)
 		})
@@ -401,7 +399,6 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 		c.mu.Unlock()
 		return
 	}
-	c.id = ""
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.transport = nil
@@ -436,7 +433,7 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 		serverSubscribingHandler = c.events.onServerSubscribing
 	}
 	if serverSubscribingHandler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			for _, ch := range serverSubsToUnsubscribe {
 				serverSubscribingHandler(ServerSubscribingEvent{Channel: ch})
 			}
@@ -448,7 +445,7 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 		handler = c.events.onConnecting
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			event := ConnectingEvent{Code: code, Reason: reason}
 			handler(event)
 		})
@@ -500,7 +497,7 @@ func (c *Client) moveToClosed() {
 		serverUnsubscribedHandler = c.events.onServerUnsubscribed
 	}
 	if serverUnsubscribedHandler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			for _, ch := range serverSubsToUnsubscribe {
 				serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
 			}
@@ -519,7 +516,7 @@ func (c *Client) handleError(err error) {
 		handler = c.events.onError
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			handler(ErrorEvent{Error: err})
 		})
 	}
@@ -603,13 +600,19 @@ func (c *Client) reader(t transport, disconnectCh chan struct{}) {
 	}
 }
 
-func (c *Client) runHandler(fn func()) {
+func (c *Client) runHandlerSync(fn func()) {
 	waitCh := make(chan struct{})
 	c.cbQueue.push(func(delay time.Duration) {
 		defer close(waitCh)
 		fn()
 	})
 	<-waitCh
+}
+
+func (c *Client) runHandlerAsync(fn func()) {
+	c.cbQueue.push(func(delay time.Duration) {
+		fn()
+	})
 }
 
 func (c *Client) handle(reply *protocol.Reply) {
@@ -656,7 +659,7 @@ func (c *Client) handleMessage(msg *protocol.Message) error {
 	}
 	if handler != nil {
 		event := MessageEvent{Data: msg.Data}
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			handler(event)
 		})
 	}
@@ -737,7 +740,7 @@ func (c *Client) handleServerPublication(channel string, pub *protocol.Publicati
 		handler = c.events.onServerPublication
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			handler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
 		})
 	}
@@ -756,7 +759,7 @@ func (c *Client) handleServerJoin(channel string, join *protocol.Join) {
 		handler = c.events.onServerJoin
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			handler(ServerJoinEvent{Channel: channel, ClientInfo: infoFromProto(join.Info)})
 		})
 	}
@@ -776,7 +779,7 @@ func (c *Client) handleServerLeave(channel string, leave *protocol.Leave) {
 		handler = c.events.onServerLeave
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			handler(ServerLeaveEvent{Channel: channel, ClientInfo: infoFromProto(leave.Info)})
 		})
 	}
@@ -801,7 +804,7 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) {
 		handler = c.events.onServerSubscribe
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			handler(ServerSubscribedEvent{Channel: channel})
 		})
 	}
@@ -823,7 +826,7 @@ func (c *Client) handleServerUnsub(channel string, _ *protocol.Unsubscribe) {
 		handler = c.events.onServerUnsubscribed
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			handler(ServerUnsubscribedEvent{Channel: channel})
 		})
 	}
@@ -967,7 +970,6 @@ func (c *Client) startReconnecting() error {
 			c.mu.Unlock()
 			return
 		}
-		c.id = res.Client
 		c.state = StateConnected
 
 		if res.Expires {
@@ -983,7 +985,7 @@ func (c *Client) startReconnecting() error {
 				Version:  res.Version,
 				Data:     res.Data,
 			}
-			c.runHandler(func() {
+			c.runHandlerSync(func() {
 				handler(ev)
 			})
 		}
@@ -1018,7 +1020,7 @@ func (c *Client) startReconnecting() error {
 			c.mu.Unlock()
 
 			if subscribeHandler != nil {
-				c.runHandler(func() {
+				c.runHandlerSync(func() {
 					subscribeHandler(ServerSubscribedEvent{
 						Channel:       channel,
 						Data:          subRes.GetData(),
@@ -1028,7 +1030,7 @@ func (c *Client) startReconnecting() error {
 				})
 			}
 			if publishHandler != nil {
-				c.runHandler(func() {
+				c.runHandlerSync(func() {
 					for _, pub := range subRes.Publications {
 						c.mu.Lock()
 						if sub, ok := c.serverSubs[channel]; ok {
@@ -1049,7 +1051,7 @@ func (c *Client) startReconnecting() error {
 					serverUnsubscribedHandler = c.events.onServerUnsubscribed
 				}
 				if serverUnsubscribedHandler != nil {
-					c.runHandler(func() {
+					c.runHandlerSync(func() {
 						serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
 					})
 				}
@@ -1104,7 +1106,7 @@ func (c *Client) startConnecting() error {
 		handler = c.events.onConnecting
 	}
 	if handler != nil {
-		c.runHandler(func() {
+		c.runHandlerSync(func() {
 			event := ConnectingEvent{Code: connectingConnectCalled, Reason: "connect called"}
 			handler(event)
 		})
@@ -1217,14 +1219,6 @@ func (c *Client) handleRefreshError(err error) {
 }
 
 func (c *Client) sendSubRefresh(channel string, token string, fn func(*protocol.SubRefreshResult, error)) {
-	c.mu.RLock()
-	clientID := c.id
-	if c.id != clientID {
-		c.mu.RUnlock()
-		return
-	}
-	c.mu.RUnlock()
-
 	cmd := &protocol.Command{
 		Id: c.nextCmdID(),
 	}

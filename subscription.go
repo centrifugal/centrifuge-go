@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/centrifugal/protocol"
-	"github.com/google/uuid"
 )
 
 // SubState represents state of Subscription.
@@ -64,7 +63,6 @@ type Subscription struct {
 	err        error
 	subFutures map[uint64]subFuture
 	data       []byte
-	sid        string
 
 	token string
 
@@ -312,7 +310,7 @@ func (s *Subscription) Subscribe() error {
 
 	if s.events != nil && s.events.onSubscribing != nil {
 		handler := s.events.onSubscribing
-		s.centrifuge.runHandler(func() {
+		s.centrifuge.runHandlerAsync(func() {
 			handler(SubscribingEvent{
 				Code:   subscribingSubscribeCalled,
 				Reason: "subscribe called",
@@ -330,7 +328,6 @@ func (s *Subscription) moveToUnsubscribed(code uint32, reason string) {
 	if s.resubscribeTimer != nil {
 		s.resubscribeTimer.Stop()
 	}
-	s.sid = ""
 	if s.refreshTimer != nil {
 		s.refreshTimer.Stop()
 	}
@@ -341,7 +338,7 @@ func (s *Subscription) moveToUnsubscribed(code uint32, reason string) {
 
 	if needEvent && s.events != nil && s.events.onUnsubscribe != nil {
 		handler := s.events.onUnsubscribe
-		s.centrifuge.runHandler(func() {
+		s.centrifuge.runHandlerAsync(func() {
 			handler(UnsubscribedEvent{
 				Code:   code,
 				Reason: reason,
@@ -356,7 +353,6 @@ func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 	if s.resubscribeTimer != nil {
 		s.resubscribeTimer.Stop()
 	}
-	s.sid = ""
 	if s.refreshTimer != nil {
 		s.refreshTimer.Stop()
 	}
@@ -366,7 +362,7 @@ func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 
 	if needEvent && s.events != nil && s.events.onSubscribing != nil {
 		handler := s.events.onSubscribing
-		s.centrifuge.runHandler(func() {
+		s.centrifuge.runHandlerAsync(func() {
 			handler(SubscribingEvent{
 				Code:   code,
 				Reason: reason,
@@ -382,7 +378,6 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 		return
 	}
 	s.state = SubStateSubscribed
-	s.sid = uuid.NewString()
 	if res.Expires {
 		s.scheduleSubRefresh(res.Ttl)
 	}
@@ -400,21 +395,18 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 	if s.events != nil && s.events.onSubscribed != nil {
 		handler := s.events.onSubscribed
 		ev := SubscribedEvent{Data: res.GetData(), Recovered: res.GetRecovered(), WasRecovering: res.GetWasRecovering()}
-		s.centrifuge.runHandler(func() {
+		s.centrifuge.runHandlerAsync(func() {
 			handler(ev)
 		})
 	}
 
 	if len(res.Publications) > 0 {
-		s.mu.Lock()
-		sid := s.sid
-		s.mu.Unlock()
-		s.centrifuge.runHandler(func() {
+		s.centrifuge.runHandlerSync(func() {
 			pubs := res.Publications
 			for i := 0; i < len(pubs); i++ {
 				pub := res.Publications[i]
 				s.mu.Lock()
-				if s.sid != sid {
+				if s.state != SubStateSubscribed {
 					s.mu.Unlock()
 					return
 				}
@@ -427,7 +419,9 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 					handler = s.events.onPublication
 				}
 				if handler != nil {
-					handler(PublicationEvent{Publication: pubFromProto(pub)})
+					s.centrifuge.runHandlerSync(func() {
+						handler(PublicationEvent{Publication: pubFromProto(pub)})
+					})
 				}
 			}
 		})
@@ -457,19 +451,6 @@ func (s *Subscription) scheduleResubscribe() {
 		}
 		s.mu.Unlock()
 		s.resubscribe()
-	})
-}
-
-func (s *Subscription) refreshToken() (string, error) {
-	var handler SubscriptionTokenHandler
-	if s.centrifuge.events != nil && s.centrifuge.events.onSubscriptionToken != nil {
-		handler = s.centrifuge.events.onSubscriptionToken
-	}
-	if handler == nil {
-		return "", errors.New("ConnectionTokenHandler must be set to handle expired token")
-	}
-	return handler(SubscriptionTokenEvent{
-		Channel: s.Channel,
 	})
 }
 
@@ -510,7 +491,7 @@ func (s *Subscription) subscribeError(err error) {
 func (s *Subscription) emitError(err error) {
 	if s.events != nil && s.events.onError != nil {
 		handler := s.events.onError
-		s.centrifuge.runHandler(func() {
+		s.centrifuge.runHandlerSync(func() {
 			handler(SubscriptionErrorEvent{Error: err})
 		})
 	}
@@ -534,7 +515,7 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 	if handler == nil {
 		return
 	}
-	s.centrifuge.runHandler(func() {
+	s.centrifuge.runHandlerSync(func() {
 		handler(PublicationEvent{Publication: pubFromProto(pub)})
 	})
 }
@@ -545,7 +526,7 @@ func (s *Subscription) handleJoin(info *protocol.ClientInfo) {
 		handler = s.events.onJoin
 	}
 	if handler != nil {
-		s.centrifuge.runHandler(func() {
+		s.centrifuge.runHandlerSync(func() {
 			handler(JoinEvent{ClientInfo: infoFromProto(info)})
 		})
 	}
@@ -557,7 +538,7 @@ func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
 		handler = s.events.onLeave
 	}
 	if handler != nil {
-		s.centrifuge.runHandler(func() {
+		s.centrifuge.runHandlerSync(func() {
 			handler(LeaveEvent{ClientInfo: infoFromProto(info)})
 		})
 	}
