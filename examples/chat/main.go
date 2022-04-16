@@ -107,7 +107,6 @@ func main() {
 		log.Printf("Subscription error %s: %s", sub.Channel, e.Error)
 	})
 
-	var offset uint64
 	sub.OnPublication(func(e centrifuge.PublicationEvent) {
 		var chatMessage *ChatMessage
 		err := json.Unmarshal(e.Data, &chatMessage)
@@ -115,10 +114,6 @@ func main() {
 			return
 		}
 		log.Printf("Someone says via channel %s: %s (offset %d)", sub.Channel, chatMessage.Input, e.Offset)
-		if offset > 0 && offset != e.Offset-1 {
-			panic(e.Offset)
-		}
-		offset = e.Offset
 	})
 	sub.OnJoin(func(e centrifuge.JoinEvent) {
 		log.Printf("Someone joined %s: user id %s, client id %s", sub.Channel, e.User, e.Client)

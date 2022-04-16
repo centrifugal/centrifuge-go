@@ -364,7 +364,7 @@ func (c *Client) moveToDisconnected(code uint32, reason string) {
 	c.mu.Unlock()
 
 	for _, s := range subsToUnsubscribe {
-		s.moveToSubscribing(subscribingClientDisconnected, "client disconnected")
+		s.moveToSubscribing(subscribingTransportClosed, "transport closed")
 	}
 
 	if prevState == StateConnected {
@@ -425,7 +425,7 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 	c.mu.Unlock()
 
 	for _, s := range subsToUnsubscribe {
-		s.moveToSubscribing(subscribingClientConnecting, "client connecting")
+		s.moveToSubscribing(subscribingTransportClosed, "transport closed")
 	}
 
 	var serverSubscribingHandler ServerSubscribingHandler
@@ -497,7 +497,7 @@ func (c *Client) moveToClosed() {
 		serverUnsubscribedHandler = c.events.onServerUnsubscribed
 	}
 	if serverUnsubscribedHandler != nil {
-		c.runHandlerSync(func() {
+		c.runHandlerAsync(func() {
 			for _, ch := range serverSubsToUnsubscribe {
 				serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
 			}
@@ -754,6 +754,7 @@ func (c *Client) handleServerJoin(channel string, join *protocol.Join) {
 		return
 	}
 	c.mu.Unlock()
+
 	var handler ServerJoinHandler
 	if c.events != nil && c.events.onServerJoin != nil {
 		handler = c.events.onServerJoin
@@ -862,7 +863,6 @@ func (c *Client) startReconnecting() error {
 		c.handleError(TransportError{err})
 		c.mu.Lock()
 		if c.state != StateConnecting {
-			_ = t.Close()
 			c.mu.Unlock()
 			return nil
 		}
@@ -1101,6 +1101,8 @@ func (c *Client) startConnecting() error {
 		c.closeCh = make(chan struct{})
 	}
 	c.state = StateConnecting
+	c.mu.Unlock()
+
 	var handler ConnectingHandler
 	if c.events != nil && c.events.onConnecting != nil {
 		handler = c.events.onConnecting
@@ -1111,7 +1113,7 @@ func (c *Client) startConnecting() error {
 			handler(event)
 		})
 	}
-	c.mu.Unlock()
+
 	return c.startReconnecting()
 }
 

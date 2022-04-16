@@ -395,7 +395,7 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 	if s.events != nil && s.events.onSubscribed != nil {
 		handler := s.events.onSubscribed
 		ev := SubscribedEvent{Data: res.GetData(), Recovered: res.GetRecovered(), WasRecovering: res.GetWasRecovering()}
-		s.centrifuge.runHandlerAsync(func() {
+		s.centrifuge.runHandlerSync(func() {
 			handler(ev)
 		})
 	}
@@ -419,9 +419,7 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 					handler = s.events.onPublication
 				}
 				if handler != nil {
-					s.centrifuge.runHandlerSync(func() {
-						handler(PublicationEvent{Publication: pubFromProto(pub)})
-					})
+					handler(PublicationEvent{Publication: pubFromProto(pub)})
 				}
 			}
 		})

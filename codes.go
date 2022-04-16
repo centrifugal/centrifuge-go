@@ -16,9 +16,8 @@ const (
 )
 
 const (
-	subscribingSubscribeCalled    uint32 = 0
-	subscribingClientConnecting   uint32 = 1
-	subscribingClientDisconnected uint32 = 2
+	subscribingSubscribeCalled uint32 = 0
+	subscribingTransportClosed uint32 = 1
 )
 
 const (
