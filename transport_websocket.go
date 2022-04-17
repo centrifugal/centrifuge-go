@@ -29,12 +29,12 @@ func extractDisconnectWebsocket(err error) *disconnect {
 				if code < 3000 {
 					switch code {
 					case websocket.CloseMessageTooBig:
-						code = uint32(disconnectMessageSizeLimit)
+						code = disconnectMessageSizeLimit
 					default:
 						// We expose codes defined by Centrifuge protocol, hiding
 						// details about transport-specific error codes. We may have extra
 						// optional transportCode field in the future.
-						code = uint32(connectingTransportClosed)
+						code = connectingTransportClosed
 					}
 				}
 				return &disconnect{
@@ -157,7 +157,7 @@ func (t *websocketTransport) reader() {
 					if err == io.EOF {
 						break loop
 					}
-					t.disconnect = &disconnect{Code: uint32(disconnectBadProtocol), Reason: "decode error", Reconnect: false}
+					t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
 					return
 				}
 				select {
