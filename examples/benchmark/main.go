@@ -31,10 +31,10 @@ func usage() {
 }
 
 var url = flag.String("s", "ws://localhost:8000/connection/websocket", "Connection URI")
-var useProtobuf = flag.Bool("p", false, "Use protobuf format")
-var numPubs = flag.Int("np", DefaultNumPubs, "Number of Concurrent Publishers")
-var numSubs = flag.Int("ns", DefaultNumSubs, "Number of Concurrent Subscribers")
-var numMsg = flag.Int("n", DefaultNumMsg, "Number of Messages to Publish")
+var useProtobuf = flag.Bool("p", false, "Use protobuf format (by default JSON is used)")
+var numPubs = flag.Int("np", DefaultNumPubs, "Number of concurrent publishers")
+var numSubs = flag.Int("ns", DefaultNumSubs, "Number of concurrent subscribers")
+var numMsg = flag.Int("n", DefaultNumMsg, "Number of messages to publish")
 var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message")
 
 var benchmark *Benchmark

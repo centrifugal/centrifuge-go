@@ -41,21 +41,21 @@ type ServerSubscribingEvent struct {
 	Channel string
 }
 
-// ConnectedEvent is a connect event context passed to OnConnected callback.
+// ConnectedEvent is a connected event context passed to OnConnected callback.
 type ConnectedEvent struct {
 	ClientID string
 	Version  string
 	Data     []byte
 }
 
-// DisconnectedEvent is a moveToDisconnected event context passed to OnDisconnected callback.
-type DisconnectedEvent struct {
+// ConnectingEvent is a connecting event context passed to OnConnecting callback.
+type ConnectingEvent struct {
 	Code   uint32
 	Reason string
 }
 
-// ConnectingEvent is a connecting event context passed to OnConnecting callback.
-type ConnectingEvent struct {
+// DisconnectedEvent is a disconnected event context passed to OnDisconnected callback.
+type DisconnectedEvent struct {
 	Code   uint32
 	Reason string
 }
@@ -158,13 +158,13 @@ func (c *Client) OnError(handler ErrorHandler) {
 	c.events.onError = handler
 }
 
-// OnRefresh handles refresh event when client's credentials expired and must be refreshed.
-func (c *Client) OnRefresh(handler ConnectionTokenHandler) {
+// OnConnectionToken handles refresh event when client's credentials expired and must be refreshed.
+func (c *Client) OnConnectionToken(handler ConnectionTokenHandler) {
 	c.events.onConnectionToken = handler
 }
 
-// OnSubscriptionRefresh needed to handle private channel subscriptions.
-func (c *Client) OnSubscriptionRefresh(handler SubscriptionTokenHandler) {
+// OnSubscriptionToken needed to handle private channel subscriptions.
+func (c *Client) OnSubscriptionToken(handler SubscriptionTokenHandler) {
 	c.events.onSubscriptionToken = handler
 }
 

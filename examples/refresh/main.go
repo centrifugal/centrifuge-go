@@ -34,14 +34,20 @@ func main() {
 	c.OnConnected(func(_ centrifuge.ConnectedEvent) {
 		log.Println("Connected")
 	})
+	c.OnConnecting(func(_ centrifuge.ConnectingEvent) {
+		log.Println("Connecting")
+	})
 	c.OnDisconnected(func(_ centrifuge.DisconnectedEvent) {
 		log.Println("Disconnected")
 	})
 	c.OnError(func(e centrifuge.ErrorEvent) {
 		log.Println("Error", e.Error.Error())
 	})
-	c.OnRefresh(func() (string, error) {
-		log.Println("Refresh")
+
+	// OnConnectionToken will be called to get new connection token when
+	// original token set in Config above expires.
+	c.OnConnectionToken(func() (string, error) {
+		log.Println("Refresh connection token")
 		token := connToken("113", time.Now().Unix()+10)
 		return token, nil
 	})
