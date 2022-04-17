@@ -1,10 +1,8 @@
 module github.com/centrifugal/centrifuge-go/examples
 
-go 1.14
+go 1.16
 
 replace github.com/centrifugal/centrifuge-go => ../
-
-replace github.com/centrifugal/protocol => ../../protocol
 
 require (
 	github.com/centrifugal/centrifuge-go v0.3.0
