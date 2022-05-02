@@ -93,18 +93,18 @@ func TestConnectWrongAddress(t *testing.T) {
 
 func TestSuccessfulConnect(t *testing.T) {
 	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	client.Close()
+	defer client.Close()
 	doneCh := make(chan error, 1)
-	handler := &testEventHandler{
-		onConnected: func(e ConnectedEvent) {
-			if e.ClientID == "" {
-				doneCh <- fmt.Errorf("wrong client ID value")
-				return
-			}
-			close(doneCh)
-		},
-	}
-	client.OnConnected(handler.OnConnected)
+	client.OnConnected(func(e ConnectedEvent) {
+		if e.ClientID == "" {
+			doneCh <- fmt.Errorf("wrong client ID value")
+			return
+		}
+		close(doneCh)
+	})
+	client.OnError(func(e ErrorEvent) {
+		t.Log(e.Error)
+	})
 	_ = client.Connect()
 	select {
 	case err := <-doneCh:
@@ -118,7 +118,7 @@ func TestSuccessfulConnect(t *testing.T) {
 
 func TestDisconnect(t *testing.T) {
 	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	client.Close()
+	defer client.Close()
 	connectDoneCh := make(chan error, 1)
 	disconnectDoneCh := make(chan error, 1)
 	handler := &testEventHandler{
@@ -140,7 +140,7 @@ func TestDisconnect(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Errorf("expecting successful connect")
 	}
-	client.Disconnect()
+	_ = client.Disconnect()
 	select {
 	case err := <-disconnectDoneCh:
 		if err != nil {
@@ -153,7 +153,7 @@ func TestDisconnect(t *testing.T) {
 
 func TestPublishProtobuf(t *testing.T) {
 	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	client.Close()
+	defer client.Close()
 	_ = client.Connect()
 	_, err := client.Publish("test", []byte("boom"))
 	if err != nil {
@@ -255,26 +255,26 @@ func TestHandlePublish(t *testing.T) {
 		t.Errorf("error on new subscription: %v", err)
 	}
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
-	handler := &testSubscriptionHandler{
-		onSubscribe: func(e SubscribedEvent) {
+
+	sub.OnSubscribed(func(e SubscribedEvent) {
+		go func() {
 			_, err := client.Publish("test_handle_publish", msg)
 			if err != nil {
 				t.Fail()
 			}
-		},
-		onPublication: func(e PublicationEvent) {
-			if !bytes.Equal(e.Data, msg) {
-				return
-			}
-			if e.Info == nil {
-				doneCh <- fmt.Errorf("expecting non nil publication info")
-				return
-			}
-			close(doneCh)
-		},
-	}
-	sub.OnSubscribed(handler.OnSubscribe)
-	sub.OnPublication(handler.OnPublication)
+		}()
+	})
+	sub.OnPublication(func(e PublicationEvent) {
+		if !bytes.Equal(e.Data, msg) {
+			return
+		}
+		if e.Info == nil {
+			doneCh <- fmt.Errorf("expecting non nil publication info")
+			return
+		}
+		close(doneCh)
+	})
+
 	_ = sub.Subscribe()
 	select {
 	case err := <-doneCh:

@@ -282,7 +282,6 @@ func (s *Subscription) Unsubscribe() error {
 	return nil
 }
 
-// Lock must be held outside.
 func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe bool) {
 	s.moveToUnsubscribed(code, reason)
 	if sendUnsubscribe {
@@ -467,21 +466,27 @@ func (s *Subscription) subscribeError(err error) {
 
 	s.emitError(SubscriptionSubscribeError{Err: err})
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	var serverError *Error
 	if errors.As(err, &serverError) {
 		if serverError.Code == 109 { // Token expired.
+			s.mu.Lock()
 			s.token = ""
 			s.scheduleResubscribe()
+			s.mu.Unlock()
 		} else if serverError.Temporary {
+			s.mu.Lock()
 			s.scheduleResubscribe()
+			s.mu.Unlock()
 		} else {
+			s.mu.Lock()
 			s.resolveSubFutures(err)
+			s.mu.Unlock()
 			s.unsubscribe(serverError.Code, serverError.Message, false)
 		}
 	} else {
+		s.mu.Lock()
 		s.scheduleResubscribe()
+		s.mu.Unlock()
 	}
 }
 
