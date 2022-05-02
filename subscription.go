@@ -60,7 +60,6 @@ type Subscription struct {
 	offset     uint64
 	epoch      string
 	recover    bool
-	err        error
 	subFutures map[uint64]subFuture
 	data       []byte
 
@@ -430,13 +429,6 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 		s.offset = res.Offset
 		s.mu.Unlock()
 	}
-}
-
-// Lock must be held outside.
-func (s *Subscription) clearPositionState() {
-	s.recover = false
-	s.offset = 0
-	s.epoch = ""
 }
 
 // Lock must be held outside.

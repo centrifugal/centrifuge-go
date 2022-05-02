@@ -1217,7 +1217,6 @@ func (c *Client) handleRefreshError(err error) {
 	}
 	c.handleError(RefreshError{err})
 	c.refreshTimer = time.AfterFunc(10*time.Second, c.sendRefresh)
-	return
 }
 
 func (c *Client) sendSubRefresh(channel string, token string, fn func(*protocol.SubRefreshResult, error)) {
