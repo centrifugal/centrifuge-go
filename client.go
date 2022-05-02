@@ -1688,6 +1688,9 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 		return err
 	}
 	go func() {
+		c.mu.Lock()
+		closeCh := c.closeCh
+		c.mu.Unlock()
 		defer c.removeRequest(cmd.Id)
 		select {
 		case <-time.After(c.config.ReadTimeout):
@@ -1698,7 +1701,7 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 				return
 			}
 			req.cb(nil, ErrTimeout)
-		case <-c.closeCh:
+		case <-closeCh:
 			c.requestsMu.RLock()
 			req, ok := c.requests[cmd.Id]
 			c.requestsMu.RUnlock()

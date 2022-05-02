@@ -317,6 +317,9 @@ func (s *Subscription) Subscribe() error {
 		})
 	}
 
+	if !s.centrifuge.isConnected() {
+		return nil
+	}
 	s.resubscribe()
 	return nil
 }
@@ -557,9 +560,6 @@ func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
 }
 
 func (s *Subscription) resubscribe() {
-	if s.centrifuge.state != StateConnected {
-		return
-	}
 	s.mu.Lock()
 	if s.state != SubStateSubscribing {
 		s.mu.Unlock()

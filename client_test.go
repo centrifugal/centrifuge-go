@@ -256,12 +256,15 @@ func TestHandlePublish(t *testing.T) {
 	}
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
 
+	publishOkCh := make(chan struct{})
+
 	sub.OnSubscribed(func(e SubscribedEvent) {
 		go func() {
 			_, err := client.Publish("test_handle_publish", msg)
 			if err != nil {
 				t.Fail()
 			}
+			close(publishOkCh)
 		}()
 	})
 	sub.OnPublication(func(e PublicationEvent) {
@@ -276,6 +279,13 @@ func TestHandlePublish(t *testing.T) {
 	})
 
 	_ = sub.Subscribe()
+
+	select {
+	case <-publishOkCh:
+	case <-time.After(5 * time.Second):
+		t.Errorf("expecting publication to be successful")
+	}
+
 	select {
 	case err := <-doneCh:
 		if err != nil {
