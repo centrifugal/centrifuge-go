@@ -1145,12 +1145,9 @@ func isTemporaryError(err error) bool {
 }
 
 func (c *Client) refreshToken() (string, error) {
-	var handler ConnectionTokenHandler
-	if c.events != nil && c.events.onConnectionToken != nil {
-		handler = c.events.onConnectionToken
-	}
+	handler := c.config.GetConnectionToken
 	if handler == nil {
-		return "", errors.New("ConnectionTokenHandler must be set to handle expired token")
+		return "", errors.New("GetConnectionToken must be set to handle expired token")
 	}
 	return handler()
 }
@@ -1290,7 +1287,7 @@ type StreamPosition struct {
 	Epoch  string
 }
 
-func (c *Client) sendSubscribe(channel string, data []byte, recover bool, streamPos StreamPosition, token string, fn func(res *protocol.SubscribeResult, err error)) error {
+func (c *Client) sendSubscribe(channel string, data []byte, recover bool, streamPos StreamPosition, token string, positioned bool, recoverable bool, fn func(res *protocol.SubscribeResult, err error)) error {
 	params := &protocol.SubscribeRequest{
 		Channel: channel,
 	}
@@ -1306,6 +1303,8 @@ func (c *Client) sendSubscribe(channel string, data []byte, recover bool, stream
 		params.Token = token
 	}
 	params.Data = data
+	params.Positioned = positioned
+	params.Recoverable = recoverable
 
 	cmd := &protocol.Command{
 		Id: c.nextCmdID(),

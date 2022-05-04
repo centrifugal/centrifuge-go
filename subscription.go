@@ -26,6 +26,12 @@ type SubscriptionConfig struct {
 	Data []byte
 	// Token for Subscription.
 	Token string
+	// Positioned flag asks server to make Subscription positioned. Only makes sense
+	// in channels with history stream on.
+	Positioned bool
+	// Recoverable flag asks server to make Subscription recoverable. Only makes sense
+	// in channels with history stream on.
+	Recoverable bool
 }
 
 func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *Subscription {
@@ -41,13 +47,16 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 		cfg := config[0]
 		s.token = cfg.Token
 		s.data = cfg.Data
+		s.positioned = cfg.Positioned
+		s.recoverable = cfg.Recoverable
 	}
 	return s
 }
 
 // Subscription represents client subscription to channel.
 type Subscription struct {
-	futureID   uint64
+	futureID uint64 // Keep atomic on top!
+
 	mu         sync.RWMutex
 	centrifuge *Client
 
@@ -62,6 +71,9 @@ type Subscription struct {
 	recover    bool
 	subFutures map[uint64]subFuture
 	data       []byte
+
+	positioned  bool
+	recoverable bool
 
 	token string
 
@@ -591,7 +603,7 @@ func (s *Subscription) resubscribe() {
 		sp.Epoch = s.epoch
 	}
 
-	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, func(res *protocol.SubscribeResult, err error) {
+	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
 			s.subscribeError(err)
 			return
@@ -604,14 +616,14 @@ func (s *Subscription) resubscribe() {
 }
 
 func (s *Subscription) getSubscriptionToken(channel string) (string, error) {
-	if s.centrifuge.events != nil && s.centrifuge.events.onSubscriptionToken != nil {
-		handler := s.centrifuge.events.onSubscriptionToken
+	handler := s.centrifuge.config.GetSubscriptionToken
+	if handler != nil {
 		ev := SubscriptionTokenEvent{
 			Channel: channel,
 		}
 		return handler(ev)
 	}
-	return "", errors.New("SubscriptionTokenHandler must be set to handle private Channel subscriptions")
+	return "", errors.New("GetSubscriptionToken must be set to handle private Channel subscriptions")
 }
 
 // Lock must be held outside.

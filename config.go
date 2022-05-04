@@ -56,4 +56,8 @@ type Config struct {
 	CookieJar http.CookieJar
 	// Header specifies custom HTTP Header to send.
 	Header http.Header
+	// GetConnectionToken called to get or refresh connection token.
+	GetConnectionToken func() (string, error)
+	// GetSubscriptionToken called to get or refresh private channel subscription token.
+	GetSubscriptionToken func(SubscriptionTokenEvent) (string, error)
 }

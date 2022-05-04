@@ -381,7 +381,8 @@ func TestClient_History(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
 	defer client.Close()
 	_ = client.Connect()
-	_, err := client.History("test")
+	_, err := client.History(
+		"test", WithHistoryReverse(false), WithHistoryLimit(100), WithHistorySince(nil))
 	var e *Error
 	if !errors.As(err, &e) {
 		t.Fatal("expected protocol error")

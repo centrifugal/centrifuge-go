@@ -106,25 +106,16 @@ type ServerJoinHandler func(ServerJoinEvent)
 // server-side subscriptions.
 type ServerLeaveHandler func(ServerLeaveEvent)
 
-// SubscriptionTokenHandler is an interface describing how to handle private subscription request.
-type SubscriptionTokenHandler func(SubscriptionTokenEvent) (string, error)
-
-// ConnectionTokenHandler is an interface describing how to handle token refresh event.
-type ConnectionTokenHandler func() (string, error)
-
 // ErrorHandler is an interface describing how to handle error event.
 type ErrorHandler func(ErrorEvent)
 
 // eventHub has all event handlers for client.
 type eventHub struct {
-	onConnected         ConnectedHandler
-	onDisconnected      DisconnectHandler
-	onConnecting        ConnectingHandler
-	onError             ErrorHandler
-	onMessage           MessageHandler
-	onConnectionToken   ConnectionTokenHandler
-	onSubscriptionToken SubscriptionTokenHandler
-
+	onConnected          ConnectedHandler
+	onDisconnected       DisconnectHandler
+	onConnecting         ConnectingHandler
+	onError              ErrorHandler
+	onMessage            MessageHandler
 	onServerSubscribe    ServerSubscribedHandler
 	onServerSubscribing  ServerSubscribingHandler
 	onServerUnsubscribed ServerUnsubscribedHandler
@@ -156,16 +147,6 @@ func (c *Client) OnDisconnected(handler DisconnectHandler) {
 // OnError is a function that will receive unhandled errors for logging.
 func (c *Client) OnError(handler ErrorHandler) {
 	c.events.onError = handler
-}
-
-// OnConnectionToken handles refresh event when client's credentials expired and must be refreshed.
-func (c *Client) OnConnectionToken(handler ConnectionTokenHandler) {
-	c.events.onConnectionToken = handler
-}
-
-// OnSubscriptionToken needed to handle private channel subscriptions.
-func (c *Client) OnSubscriptionToken(handler SubscriptionTokenHandler) {
-	c.events.onSubscriptionToken = handler
 }
 
 // OnMessage allows processing async message from server to client.

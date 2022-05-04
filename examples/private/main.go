@@ -45,6 +45,11 @@ func main() {
 	wsURL := "ws://localhost:8000/connection/websocket?cf_protocol_version=v2"
 	c := centrifuge.NewJsonClient(wsURL, centrifuge.Config{
 		Token: connToken("112", 0),
+		GetSubscriptionToken: func(e centrifuge.SubscriptionTokenEvent) (string, error) {
+			log.Println("Subscription refresh")
+			token := subscriptionToken(e.Channel, "", time.Now().Unix()+10)
+			return token, nil
+		},
 	})
 	defer c.Close()
 
@@ -56,11 +61,6 @@ func main() {
 	})
 	c.OnError(func(e centrifuge.ErrorEvent) {
 		log.Println("Error", e.Error.Error())
-	})
-	c.OnSubscriptionToken(func(e centrifuge.SubscriptionTokenEvent) (string, error) {
-		log.Println("Subscription refresh")
-		token := subscriptionToken(e.Channel, "", time.Now().Unix()+10)
-		return token, nil
 	})
 
 	err := c.Connect()
