@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"strings"
+
+	_ "net/http/pprof"
 
 	"github.com/centrifugal/centrifuge-go"
 	"github.com/golang-jwt/jwt"
@@ -93,7 +94,9 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	sub, err := client.NewSubscription("chat:index")
+	sub, err := client.NewSubscription("chat:index", centrifuge.SubscriptionConfig{
+		Recoverable: true,
+	})
 	if err != nil {
 		log.Fatalln(err)
 	}
