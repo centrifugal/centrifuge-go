@@ -1,5 +1,10 @@
 package centrifuge
 
+// ConnectionTokenEvent may contain some useful contextual information in the future.
+// For now, it's empty.
+type ConnectionTokenEvent struct {
+}
+
 // SubscriptionTokenEvent contains info required to get subscription token when
 // client wants to subscribe on private channel.
 type SubscriptionTokenEvent struct {
@@ -13,10 +18,13 @@ type ServerPublicationEvent struct {
 }
 
 type ServerSubscribedEvent struct {
-	Channel       string
-	WasRecovering bool
-	Recovered     bool
-	Data          []byte
+	Channel        string
+	WasRecovering  bool
+	Recovered      bool
+	Recoverable    bool
+	Positioned     bool
+	StreamPosition *StreamPosition
+	Data           []byte
 }
 
 // ServerJoinEvent has info about user who left channel.

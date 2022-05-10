@@ -402,12 +402,25 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 		s.resubscribeTimer.Stop()
 	}
 	s.resolveSubFutures(nil)
+	s.offset = res.Offset
 	s.epoch = res.Epoch
 	s.mu.Unlock()
 
 	if s.events != nil && s.events.onSubscribed != nil {
 		handler := s.events.onSubscribed
-		ev := SubscribedEvent{Data: res.GetData(), Recovered: res.GetRecovered(), WasRecovering: res.GetWasRecovering()}
+		ev := SubscribedEvent{
+			Data:          res.GetData(),
+			Recovered:     res.GetRecovered(),
+			WasRecovering: res.GetWasRecovering(),
+			Recoverable:   res.GetRecoverable(),
+			Positioned:    res.GetPositioned(),
+		}
+		if ev.Positioned || ev.Recoverable {
+			ev.StreamPosition = &StreamPosition{
+				Epoch:  res.GetEpoch(),
+				Offset: res.GetOffset(),
+			}
+		}
 		s.centrifuge.runHandlerSync(func() {
 			handler(ev)
 		})
@@ -436,10 +449,6 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 				}
 			}
 		})
-	} else {
-		s.mu.Lock()
-		s.offset = res.Offset
-		s.mu.Unlock()
 	}
 }
 

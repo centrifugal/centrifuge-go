@@ -32,7 +32,7 @@ func main() {
 		// original token set above expires. You can also skip setting initial
 		// token – in this case client will call GetConnectionToken before connecting
 		// to a server.
-		GetConnectionToken: func() (string, error) {
+		GetConnectionToken: func(_ centrifuge.ConnectionTokenEvent) (string, error) {
 			log.Println("Refresh connection token")
 			token := connToken("113", time.Now().Unix()+10)
 			return token, nil

@@ -806,7 +806,19 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) {
 	}
 	if handler != nil {
 		c.runHandlerSync(func() {
-			handler(ServerSubscribedEvent{Channel: channel})
+			ev := ServerSubscribedEvent{
+				Channel:     channel,
+				Positioned:  sub.GetPositioned(),
+				Recoverable: sub.GetRecoverable(),
+				Data:        sub.GetData(),
+			}
+			if ev.Positioned || ev.Recoverable {
+				ev.StreamPosition = &StreamPosition{
+					Epoch:  sub.GetEpoch(),
+					Offset: sub.GetOffset(),
+				}
+			}
+			handler(ev)
 		})
 	}
 }
@@ -1021,12 +1033,21 @@ func (c *Client) startReconnecting() error {
 
 			if subscribeHandler != nil {
 				c.runHandlerSync(func() {
-					subscribeHandler(ServerSubscribedEvent{
+					ev := ServerSubscribedEvent{
 						Channel:       channel,
 						Data:          subRes.GetData(),
 						Recovered:     subRes.GetRecovered(),
 						WasRecovering: subRes.GetWasRecovering(),
-					})
+						Positioned:    subRes.GetPositioned(),
+						Recoverable:   subRes.GetRecoverable(),
+					}
+					if ev.Positioned || ev.Recoverable {
+						ev.StreamPosition = &StreamPosition{
+							Epoch:  subRes.GetEpoch(),
+							Offset: subRes.GetOffset(),
+						}
+					}
+					subscribeHandler(ev)
 				})
 			}
 			if publishHandler != nil {
@@ -1149,7 +1170,7 @@ func (c *Client) refreshToken() (string, error) {
 	if handler == nil {
 		return "", errors.New("GetConnectionToken must be set to handle expired token")
 	}
-	return handler()
+	return handler(ConnectionTokenEvent{})
 }
 
 func (c *Client) sendRefresh() {
