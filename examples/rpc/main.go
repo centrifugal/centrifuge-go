@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -30,7 +31,7 @@ func newClient() *centrifuge.Client {
 		// When issue blocking requests from inside event handler we must use
 		// a goroutine. Otherwise, connection read loop will be blocked.
 		go func() {
-			result, err := c.RPC("method", []byte("{}"))
+			result, err := c.RPC(context.Background(), "method", []byte("{}"))
 			if err != nil {
 				log.Println(err)
 				return
@@ -56,7 +57,7 @@ func main() {
 		log.Fatalln(err)
 	}
 
-	result, err := c.RPC("method", []byte("{}"))
+	result, err := c.RPC(context.Background(), "method", []byte("{}"))
 	if err != nil {
 		log.Fatalln(err)
 		return

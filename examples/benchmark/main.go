@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -64,7 +65,7 @@ func main() {
 	// Run Subscribers first
 	startWg.Add(*numSubs)
 	for i := 0; i < *numSubs; i++ {
-		time.Sleep(1 * time.Millisecond)
+		time.Sleep(500 * time.Microsecond)
 		go runSubscriber(&startWg, &doneWg, *numMsg, *msgSize)
 	}
 	startWg.Wait()
@@ -95,6 +96,14 @@ func newConnection() *centrifuge.Client {
 	} else {
 		c = centrifuge.NewJsonClient(*url, config)
 	}
+	c.OnError(func(e centrifuge.ErrorEvent) {
+		log.Println(e.Error)
+	})
+	c.OnConnecting(func(e centrifuge.ConnectingEvent) {
+		if e.Code != 0 {
+			log.Printf("connecting: %d, %s", e.Code, e.Reason)
+		}
+	})
 	c.OnDisconnected(func(e centrifuge.DisconnectedEvent) {
 		if e.Code != 0 {
 			log.Printf("disconnect: %d, %s", e.Code, e.Reason)
@@ -126,7 +135,7 @@ func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	startWg.Done()
 
 	for i := 0; i < numMsg; i++ {
-		_, err := c.Publish(subj, payload)
+		_, err := c.Publish(context.Background(), subj, payload)
 		if err != nil {
 			log.Fatalf("error publish: %v", err)
 		}

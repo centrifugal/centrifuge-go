@@ -1,6 +1,7 @@
 package centrifuge
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -91,9 +92,6 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	}
 	if config.MaxServerPingDelay == 0 {
 		config.MaxServerPingDelay = 10 * time.Second
-	}
-	if config.PrivateChannelPrefix == "" {
-		config.PrivateChannelPrefix = "$"
 	}
 	if config.Header == nil {
 		config.Header = http.Header{}
@@ -233,7 +231,7 @@ func (c *Client) Subscriptions() map[string]*Subscription {
 
 // Send message to server without waiting for response.
 // Message handler must be registered on server.
-func (c *Client) Send(data []byte) error {
+func (c *Client) Send(ctx context.Context, data []byte) error {
 	if c.isClosed() {
 		return ErrClientClosed
 	}
@@ -243,6 +241,12 @@ func (c *Client) Send(data []byte) error {
 			errCh <- err
 			return
 		}
+		select {
+		case <-ctx.Done():
+			errCh <- ctx.Err()
+			return
+		default:
+		}
 		cmd := &protocol.Command{}
 		params := &protocol.SendRequest{
 			Data: data,
@@ -250,7 +254,13 @@ func (c *Client) Send(data []byte) error {
 		cmd.Send = params
 		errCh <- c.send(cmd)
 	})
-	return <-errCh
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	}
 }
 
 // RPCResult contains data returned from server as RPC result.
@@ -260,17 +270,23 @@ type RPCResult struct {
 
 // RPC allows sending data to a server and waiting for a response.
 // RPC handler must be registered on server.
-func (c *Client) RPC(method string, data []byte) (RPCResult, error) {
+func (c *Client) RPC(ctx context.Context, method string, data []byte) (RPCResult, error) {
 	if c.isClosed() {
 		return RPCResult{}, ErrClientClosed
 	}
 	resCh := make(chan RPCResult, 1)
 	errCh := make(chan error, 1)
-	c.sendRPC(method, data, func(result RPCResult, err error) {
+	c.sendRPC(ctx, method, data, func(result RPCResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+
+	select {
+	case <-ctx.Done():
+		return RPCResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
 func (c *Client) nextCmdID() uint32 {
@@ -296,8 +312,14 @@ func (c *Client) isSubscribed(channel string) bool {
 	return ok
 }
 
-func (c *Client) sendRPC(method string, data []byte, fn func(RPCResult, error)) {
+func (c *Client) sendRPC(ctx context.Context, method string, data []byte, fn func(RPCResult, error)) {
 	c.onConnect(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(RPCResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(RPCResult{}, err)
 			return
@@ -1166,9 +1188,9 @@ func isTemporaryError(err error) bool {
 }
 
 func (c *Client) refreshToken() (string, error) {
-	handler := c.config.GetConnectionToken
+	handler := c.config.GetToken
 	if handler == nil {
-		return "", errors.New("GetConnectionToken must be set to handle expired token")
+		return "", errors.New("GetToken must be set to handle expired token")
 	}
 	return handler(ConnectionTokenEvent{})
 }
@@ -1401,21 +1423,32 @@ func (c *Client) onConnect(fn func(err error)) {
 type PublishResult struct{}
 
 // Publish data into channel.
-func (c *Client) Publish(channel string, data []byte) (PublishResult, error) {
+func (c *Client) Publish(ctx context.Context, channel string, data []byte) (PublishResult, error) {
 	if c.isClosed() {
 		return PublishResult{}, ErrClientClosed
 	}
 	resCh := make(chan PublishResult, 1)
 	errCh := make(chan error, 1)
-	c.publish(channel, data, func(result PublishResult, err error) {
+	c.publish(ctx, channel, data, func(result PublishResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+	select {
+	case <-ctx.Done():
+		return PublishResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
-func (c *Client) publish(channel string, data []byte, fn func(PublishResult, error)) {
+func (c *Client) publish(ctx context.Context, channel string, data []byte, fn func(PublishResult, error)) {
 	c.onConnect(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(PublishResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(PublishResult{}, err)
 			return
@@ -1458,7 +1491,7 @@ type HistoryResult struct {
 }
 
 // History for a channel without being subscribed.
-func (c *Client) History(channel string, opts ...HistoryOption) (HistoryResult, error) {
+func (c *Client) History(ctx context.Context, channel string, opts ...HistoryOption) (HistoryResult, error) {
 	if c.isClosed() {
 		return HistoryResult{}, ErrClientClosed
 	}
@@ -1468,15 +1501,26 @@ func (c *Client) History(channel string, opts ...HistoryOption) (HistoryResult, 
 	for _, opt := range opts {
 		opt(historyOpts)
 	}
-	c.history(channel, *historyOpts, func(result HistoryResult, err error) {
+	c.history(ctx, channel, *historyOpts, func(result HistoryResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+	select {
+	case <-ctx.Done():
+		return HistoryResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
-func (c *Client) history(channel string, opts HistoryOptions, fn func(HistoryResult, error)) {
+func (c *Client) history(ctx context.Context, channel string, opts HistoryOptions, fn func(HistoryResult, error)) {
 	c.onConnect(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(HistoryResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(HistoryResult{}, err)
 			return
@@ -1539,21 +1583,32 @@ type PresenceResult struct {
 }
 
 // Presence for a channel without being subscribed.
-func (c *Client) Presence(channel string) (PresenceResult, error) {
+func (c *Client) Presence(ctx context.Context, channel string) (PresenceResult, error) {
 	if c.isClosed() {
 		return PresenceResult{}, ErrClientClosed
 	}
 	resCh := make(chan PresenceResult, 1)
 	errCh := make(chan error, 1)
-	c.presence(channel, func(result PresenceResult, err error) {
+	c.presence(ctx, channel, func(result PresenceResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+	select {
+	case <-ctx.Done():
+		return PresenceResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
-func (c *Client) presence(channel string, fn func(PresenceResult, error)) {
+func (c *Client) presence(ctx context.Context, channel string, fn func(PresenceResult, error)) {
 	c.onConnect(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(PresenceResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(PresenceResult{}, err)
 			return
@@ -1606,21 +1661,32 @@ type PresenceStatsResult struct {
 }
 
 // PresenceStats for a channel without being subscribed.
-func (c *Client) PresenceStats(channel string) (PresenceStatsResult, error) {
+func (c *Client) PresenceStats(ctx context.Context, channel string) (PresenceStatsResult, error) {
 	if c.isClosed() {
 		return PresenceStatsResult{}, ErrClientClosed
 	}
 	resCh := make(chan PresenceStatsResult, 1)
 	errCh := make(chan error, 1)
-	c.presenceStats(channel, func(result PresenceStatsResult, err error) {
+	c.presenceStats(ctx, channel, func(result PresenceStatsResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+	select {
+	case <-ctx.Done():
+		return PresenceStatsResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
-func (c *Client) presenceStats(channel string, fn func(PresenceStatsResult, error)) {
+func (c *Client) presenceStats(ctx context.Context, channel string, fn func(PresenceStatsResult, error)) {
 	c.onConnect(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(PresenceStatsResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(PresenceStatsResult{}, err)
 			return

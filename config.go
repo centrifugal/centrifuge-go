@@ -12,6 +12,8 @@ import (
 type Config struct {
 	// Token for a connection authentication.
 	Token string
+	// GetToken called to get or refresh connection token.
+	GetToken func(ConnectionTokenEvent) (string, error)
 	// Data is an arbitrary data which can be sent to a server in a Connect command.
 	// Make sure it's a valid JSON when using JSON protocol client.
 	Data []byte
@@ -27,9 +29,6 @@ type Config struct {
 	// NetDialContext specifies the dial function for creating TCP connections. If
 	// NetDialContext is nil, net.DialContext is used.
 	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
-	// PrivateChannelPrefix is private channel prefix.
-	// Zero value means $.
-	PrivateChannelPrefix string
 	// ReadTimeout is how long to wait read operations to complete.
 	// Zero value means 5 * time.Second.
 	ReadTimeout time.Duration
@@ -56,8 +55,4 @@ type Config struct {
 	CookieJar http.CookieJar
 	// Header specifies custom HTTP Header to send.
 	Header http.Header
-	// GetConnectionToken called to get or refresh connection token.
-	GetConnectionToken func(ConnectionTokenEvent) (string, error)
-	// GetSubscriptionToken called to get or refresh private channel subscription token.
-	GetSubscriptionToken func(SubscriptionTokenEvent) (string, error)
 }

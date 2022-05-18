@@ -28,11 +28,11 @@ func main() {
 	wsURL := "ws://localhost:8000/connection/websocket?cf_protocol_version=v2"
 	c := centrifuge.NewJsonClient(wsURL, centrifuge.Config{
 		Token: connToken("113", time.Now().Unix()+10),
-		// GetConnectionToken will be called to get new connection token when
+		// GetToken will be called to get new connection token when
 		// original token set above expires. You can also skip setting initial
-		// token – in this case client will call GetConnectionToken before connecting
+		// token – in this case client will call GetToken before connecting
 		// to a server.
-		GetConnectionToken: func(_ centrifuge.ConnectionTokenEvent) (string, error) {
+		GetToken: func(_ centrifuge.ConnectionTokenEvent) (string, error) {
 			log.Println("Refresh connection token")
 			token := connToken("113", time.Now().Unix()+10)
 			return token, nil

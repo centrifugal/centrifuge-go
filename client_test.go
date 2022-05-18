@@ -2,6 +2,7 @@ package centrifuge
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -155,7 +156,7 @@ func TestPublishProtobuf(t *testing.T) {
 	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
 	defer client.Close()
 	_ = client.Connect()
-	_, err := client.Publish("test", []byte("boom"))
+	_, err := client.Publish(context.Background(), "test", []byte("boom"))
 	if err != nil {
 		t.Errorf("error publish: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestPublishJSON(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
 	defer client.Close()
 	_ = client.Connect()
-	_, err := client.Publish("test", []byte("{}"))
+	_, err := client.Publish(context.Background(), "test", []byte("{}"))
 	if err != nil {
 		t.Errorf("error publish: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestPublishInvalidJSON(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
 	defer client.Close()
 	_ = client.Connect()
-	_, err := client.Publish("test", []byte("boom"))
+	_, err := client.Publish(context.Background(), "test", []byte("boom"))
 	if err == nil {
 		t.Errorf("error expected on publish invalid JSON")
 	}
@@ -260,7 +261,7 @@ func TestHandlePublish(t *testing.T) {
 
 	sub.OnSubscribed(func(e SubscribedEvent) {
 		go func() {
-			_, err := client.Publish("test_handle_publish", msg)
+			_, err := client.Publish(context.Background(), "test_handle_publish", msg)
 			if err != nil {
 				t.Fail()
 			}
@@ -342,7 +343,7 @@ func TestClient_Publish(t *testing.T) {
 	defer client.Close()
 	_ = client.Connect()
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
-	_, err := client.Publish("test", msg)
+	_, err := client.Publish(context.Background(), "test", msg)
 	if err != nil {
 		// Publish should be allowed since we are using Centrifugo in insecure mode in tests.
 		t.Fatal(err)
@@ -353,7 +354,7 @@ func TestClient_Presence(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
 	defer client.Close()
 	_ = client.Connect()
-	_, err := client.Presence("test")
+	_, err := client.Presence(context.Background(), "test")
 	var e *Error
 	if !errors.As(err, &e) {
 		t.Fatal("expected protocol error")
@@ -367,7 +368,7 @@ func TestClient_PresenceStats(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
 	defer client.Close()
 	_ = client.Connect()
-	_, err := client.PresenceStats("test")
+	_, err := client.PresenceStats(context.Background(), "test")
 	var e *Error
 	if !errors.As(err, &e) {
 		t.Fatal("expected protocol error")
@@ -382,7 +383,7 @@ func TestClient_History(t *testing.T) {
 	defer client.Close()
 	_ = client.Connect()
 	_, err := client.History(
-		"test", WithHistoryReverse(false), WithHistoryLimit(100), WithHistorySince(nil))
+		context.Background(), "test", WithHistoryReverse(false), WithHistoryLimit(100), WithHistorySince(nil))
 	var e *Error
 	if !errors.As(err, &e) {
 		t.Fatal("expected protocol error")

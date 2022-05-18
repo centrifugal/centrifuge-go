@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -140,7 +141,7 @@ func main() {
 			Input: text,
 		}
 		data, _ := json.Marshal(msg)
-		_, err := sub.Publish(data)
+		_, err := sub.Publish(context.Background(), data)
 		return err
 	}
 

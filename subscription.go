@@ -1,8 +1,8 @@
 package centrifuge
 
 import (
+	"context"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +26,8 @@ type SubscriptionConfig struct {
 	Data []byte
 	// Token for Subscription.
 	Token string
+	// GetToken called to get or refresh private channel subscription token.
+	GetToken func(SubscriptionTokenEvent) (string, error)
 	// Positioned flag asks server to make Subscription positioned. Only makes sense
 	// in channels with history stream on.
 	Positioned bool
@@ -75,7 +77,8 @@ type Subscription struct {
 	positioned  bool
 	recoverable bool
 
-	token string
+	token    string
+	getToken func(SubscriptionTokenEvent) (string, error)
 
 	resubscribeAttempts int
 	resubscribeStrategy reconnectStrategy
@@ -113,7 +116,7 @@ func (s *Subscription) resolveSubFutures(err error) {
 }
 
 // Publish allows publishing data to the subscription channel.
-func (s *Subscription) Publish(data []byte) (PublishResult, error) {
+func (s *Subscription) Publish(ctx context.Context, data []byte) (PublishResult, error) {
 	s.mu.Lock()
 	if s.state == SubStateUnsubscribed {
 		s.mu.Unlock()
@@ -123,11 +126,16 @@ func (s *Subscription) Publish(data []byte) (PublishResult, error) {
 
 	resCh := make(chan PublishResult, 1)
 	errCh := make(chan error, 1)
-	s.publish(data, func(result PublishResult, err error) {
+	s.publish(ctx, data, func(result PublishResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+	select {
+	case <-ctx.Done():
+		return PublishResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
 type HistoryOptions struct {
@@ -159,7 +167,7 @@ func WithHistoryReverse(reverse bool) HistoryOption {
 // History allows extracting channel history. By default, it returns current stream top
 // position without publications. Use WithHistoryLimit with a value > 0 to make this func
 // to return publications.
-func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
+func (s *Subscription) History(ctx context.Context, opts ...HistoryOption) (HistoryResult, error) {
 	historyOpts := &HistoryOptions{}
 	for _, opt := range opts {
 		opt(historyOpts)
@@ -173,15 +181,20 @@ func (s *Subscription) History(opts ...HistoryOption) (HistoryResult, error) {
 
 	resCh := make(chan HistoryResult, 1)
 	errCh := make(chan error, 1)
-	s.history(*historyOpts, func(result HistoryResult, err error) {
+	s.history(ctx, *historyOpts, func(result HistoryResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+	select {
+	case <-ctx.Done():
+		return HistoryResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
 // Presence allows extracting channel presence.
-func (s *Subscription) Presence() (PresenceResult, error) {
+func (s *Subscription) Presence(ctx context.Context) (PresenceResult, error) {
 	s.mu.Lock()
 	if s.state == SubStateUnsubscribed {
 		s.mu.Unlock()
@@ -191,15 +204,20 @@ func (s *Subscription) Presence() (PresenceResult, error) {
 
 	resCh := make(chan PresenceResult, 1)
 	errCh := make(chan error, 1)
-	s.presence(func(result PresenceResult, err error) {
+	s.presence(ctx, func(result PresenceResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+	select {
+	case <-ctx.Done():
+		return PresenceResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
 // PresenceStats allows extracting channel presence stats.
-func (s *Subscription) PresenceStats() (PresenceStatsResult, error) {
+func (s *Subscription) PresenceStats(ctx context.Context) (PresenceStatsResult, error) {
 	s.mu.Lock()
 	if s.state == SubStateUnsubscribed {
 		s.mu.Unlock()
@@ -209,11 +227,16 @@ func (s *Subscription) PresenceStats() (PresenceStatsResult, error) {
 
 	resCh := make(chan PresenceStatsResult, 1)
 	errCh := make(chan error, 1)
-	s.presenceStats(func(result PresenceStatsResult, err error) {
+	s.presenceStats(ctx, func(result PresenceStatsResult, err error) {
 		resCh <- result
 		errCh <- err
 	})
-	return <-resCh, <-errCh
+	select {
+	case <-ctx.Done():
+		return PresenceStatsResult{}, ctx.Err()
+	case res := <-resCh:
+		return res, <-errCh
+	}
 }
 
 func (s *Subscription) onSubscribe(fn func(err error)) {
@@ -244,43 +267,67 @@ func (s *Subscription) onSubscribe(fn func(err error)) {
 	}
 }
 
-func (s *Subscription) publish(data []byte, fn func(PublishResult, error)) {
+func (s *Subscription) publish(ctx context.Context, data []byte, fn func(PublishResult, error)) {
 	s.onSubscribe(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(PublishResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(PublishResult{}, err)
 			return
 		}
-		s.centrifuge.publish(s.Channel, data, fn)
+		s.centrifuge.publish(ctx, s.Channel, data, fn)
 	})
 }
 
-func (s *Subscription) history(opts HistoryOptions, fn func(HistoryResult, error)) {
+func (s *Subscription) history(ctx context.Context, opts HistoryOptions, fn func(HistoryResult, error)) {
 	s.onSubscribe(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(HistoryResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(HistoryResult{}, err)
 			return
 		}
-		s.centrifuge.history(s.Channel, opts, fn)
+		s.centrifuge.history(ctx, s.Channel, opts, fn)
 	})
 }
 
-func (s *Subscription) presence(fn func(PresenceResult, error)) {
+func (s *Subscription) presence(ctx context.Context, fn func(PresenceResult, error)) {
 	s.onSubscribe(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(PresenceResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(PresenceResult{}, err)
 			return
 		}
-		s.centrifuge.presence(s.Channel, fn)
+		s.centrifuge.presence(ctx, s.Channel, fn)
 	})
 }
 
-func (s *Subscription) presenceStats(fn func(PresenceStatsResult, error)) {
+func (s *Subscription) presenceStats(ctx context.Context, fn func(PresenceStatsResult, error)) {
 	s.onSubscribe(func(err error) {
+		select {
+		case <-ctx.Done():
+			fn(PresenceStatsResult{}, ctx.Err())
+			return
+		default:
+		}
 		if err != nil {
 			fn(PresenceStatsResult{}, err)
 			return
 		}
-		s.centrifuge.presenceStats(s.Channel, fn)
+		s.centrifuge.presenceStats(ctx, s.Channel, fn)
 	})
 }
 
@@ -581,7 +628,7 @@ func (s *Subscription) resubscribe() {
 	token := s.token
 	s.mu.Unlock()
 
-	if strings.HasPrefix(s.Channel, s.centrifuge.config.PrivateChannelPrefix) && token == "" {
+	if token == "" && s.getToken != nil {
 		var err error
 		token, err = s.getSubscriptionToken(s.Channel)
 		if err != nil {
@@ -625,14 +672,14 @@ func (s *Subscription) resubscribe() {
 }
 
 func (s *Subscription) getSubscriptionToken(channel string) (string, error) {
-	handler := s.centrifuge.config.GetSubscriptionToken
+	handler := s.getToken
 	if handler != nil {
 		ev := SubscriptionTokenEvent{
 			Channel: channel,
 		}
 		return handler(ev)
 	}
-	return "", errors.New("GetSubscriptionToken must be set to handle private Channel subscriptions")
+	return "", errors.New("GetToken must be set to get subscription token")
 }
 
 // Lock must be held outside.
