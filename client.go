@@ -679,9 +679,6 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) error 
 		Recoverable: sub.Recoverable,
 	}
 	c.mu.Unlock()
-	if !ok {
-		return nil
-	}
 
 	var handler ServerSubscribeHandler
 	if c.events != nil && c.events.onServerSubscribe != nil {
@@ -702,9 +699,6 @@ func (c *Client) handleServerUnsub(channel string, _ *protocol.Unsubscribe) erro
 		delete(c.serverSubs, channel)
 	}
 	c.mu.Unlock()
-	if !ok {
-		return nil
-	}
 
 	var handler ServerUnsubscribeHandler
 	if c.events != nil && c.events.onServerUnsubscribe != nil {
