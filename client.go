@@ -671,6 +671,7 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) error 
 	c.mu.Lock()
 	_, ok := c.serverSubs[channel]
 	if ok {
+		c.mu.Unlock()
 		return nil
 	}
 	c.serverSubs[channel] = &serverSub{
@@ -699,6 +700,9 @@ func (c *Client) handleServerUnsub(channel string, _ *protocol.Unsubscribe) erro
 		delete(c.serverSubs, channel)
 	}
 	c.mu.Unlock()
+	if !ok {
+		return nil
+	}
 
 	var handler ServerUnsubscribeHandler
 	if c.events != nil && c.events.onServerUnsubscribe != nil {
