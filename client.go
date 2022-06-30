@@ -671,6 +671,7 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) error 
 	c.mu.Lock()
 	_, ok := c.serverSubs[channel]
 	if ok {
+		c.mu.Unlock()
 		return nil
 	}
 	c.serverSubs[channel] = &serverSub{
@@ -679,9 +680,6 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) error 
 		Recoverable: sub.Recoverable,
 	}
 	c.mu.Unlock()
-	if !ok {
-		return nil
-	}
 
 	var handler ServerSubscribeHandler
 	if c.events != nil && c.events.onServerSubscribe != nil {
