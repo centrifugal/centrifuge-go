@@ -1,3 +1,8 @@
+v0.8.3
+======
+
+* Call OnServerSubscribe handler correctly for dynamic server subscriptions (happening after initial connect), see [#64](https://github.com/centrifugal/centrifuge-go/pull/64).
+
 v0.8.2
 ======
 
