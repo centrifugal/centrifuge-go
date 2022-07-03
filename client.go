@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"strings"
 	"sync"
@@ -106,6 +107,9 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	if len(endpoints) == 0 {
 		panic("connection endpoint required")
 	}
+	rand.Shuffle(len(endpoints), func(i, j int) {
+		endpoints[i], endpoints[j] = endpoints[j], endpoints[i]
+	})
 	for _, e := range endpoints {
 		if !strings.HasPrefix(e, "ws") {
 			panic(fmt.Sprintf("unsupported connection endpoint: %s", e))
