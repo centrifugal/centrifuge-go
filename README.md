@@ -1,35 +1,12 @@
 [![GoDoc](https://pkg.go.dev/badge/centrifugal/centrifuge-go)](https://pkg.go.dev/github.com/centrifugal/centrifuge-go)
 
-Websocket client for [Centrifuge](https://github.com/centrifugal/centrifuge) library and [Centrifugo](https://github.com/centrifugal/centrifugo) server.
+Websocket client for [Centrifugo](https://github.com/centrifugal/centrifugo) server and [Centrifuge](https://github.com/centrifugal/centrifuge) library.
 
 There is no v1 release of this library yet – API still evolves. At the moment patch version updates only contain backwards compatible changes, minor version updates can have backwards incompatible API changes.
 
-## Feature matrix
+Check out [client SDK API specification](https://centrifugal.dev/docs/transports/client_api) to learn how this SDK behaves. It's recommended to read that before starting to work with this SDK as the spec covers common SDK behavior - describes client and subscription state transitions, main options and methods. Also check out examples folder.
 
-- [x] connect to server (both JSON and Protobuf supported)
-- [x] connect with token (JWT)
-- [x] connect with custom header
-- [x] connect with custom data
-- [x] automatic reconnect in case of errors, network problems etc
-- [x] an exponential backoff for reconnect
-- [x] client connection state events (connecting, connected, disconnected)
-- [x] receive client-scope asynchronous messages
-- [x] send asynchronous messages to server
-- [x] client request-response methods: rpc, publish, presence, presence stats, history
-- [x] subscribe to a channel
-- [x] subscription state events (subscribing, subscribed, unsubscribed)
-- [x] subscription asynchronous messages
-- [x] subscription methods: publish, presence, presence stats, history
-- [x] reconnect on subscribe timeout and unsubscribe error
-- [x] subscribe to private channels with token (JWT)
-- [x] connection token (JWT) refresh
-- [x] handle connection expiration
-- [x] private channel subscription token (JWT) refresh
-- [x] handle subscription expiration
-- [x] ping/pong to find broken connection
-- [x] message recovery mechanism for client-side subscriptions
-- [x] server-side subscriptions
-- [x] message recovery mechanism for server-side subscriptions
+The features implemented by this SDK can be found in [SDK feature matrix](https://centrifugal.dev/docs/transports/client_sdk#sdk-feature-matrix).
 
 ## Run tests
 
