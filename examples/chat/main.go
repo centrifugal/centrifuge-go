@@ -44,7 +44,7 @@ func main() {
 	}()
 
 	client := centrifuge.NewJsonClient(
-		"ws://localhost:8000/connection/websocket?cf_protocol_version=v2",
+		"ws://localhost:8000/connection/websocket",
 		centrifuge.Config{
 			// Uncomment to make it work with Centrifugo JWT auth.
 			//Token: connToken("49", 0),
