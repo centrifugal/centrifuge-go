@@ -102,8 +102,6 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 
 	if protocolType == protocol.TypeProtobuf {
 		dialer.Subprotocols = []string{"centrifuge-protobuf"}
-	} else {
-		dialer.Subprotocols = []string{"centrifuge-json"}
 	}
 
 	conn, resp, err := dialer.Dial(url, wsHeaders)
