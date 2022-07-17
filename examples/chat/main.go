@@ -97,6 +97,7 @@ func main() {
 
 	sub, err := client.NewSubscription("chat:index", centrifuge.SubscriptionConfig{
 		Recoverable: true,
+		JoinLeave:   true,
 	})
 	if err != nil {
 		log.Fatalln(err)
