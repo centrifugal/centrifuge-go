@@ -22,7 +22,7 @@ client.OnMessage(func(e centrifuge.MessageEvent) {
         return
     }
     // Will never be called.
-    log.Printf("RPC result 2: %s", string(result.Data))
+    log.Printf("RPC result: %s", string(result.Data))
 })
 ```
 
@@ -39,14 +39,14 @@ client.OnMessage(func(e centrifuge.MessageEvent) {
             log.Println(err)
             return
         }
-        log.Printf("RPC result 2: %s", string(result.Data))
+        log.Printf("RPC result: %s", string(result.Data))
     }()
 })
 ```
 
 You can find similar limitations in [eclipse/paho.mqtt.golang](https://github.com/eclipse/paho.mqtt.golang#common-problems). In short, this is caused by a challenging mix of asynchronous protocol, Go and callback approach. In the previous versions of this SDK we allowed blocking requests from within event handlers – but it contradicts with the real-time nature of Centrifugal ecosystem, because we had to use separate  callback queue, and that queue could grow huge without a reasonable way to backpressure (which we were not able to find).
 
-If you are calling `Publish`, `RPC`, `History`, `Presence`, `PresenceStats` from the outside of event handler – you should not do any special care.
+If you are calling `Publish`, `RPC`, `History`, `Presence`, `PresenceStats` from the outside of event handler – you should not do any special care. Also, if you are calling your own blocking APIs from inside Centrifuge event handlers – you won't get the deadlock, but the read loop of the underlying connection will not proceed till the event handler returns.
 
 ## Run tests
 
