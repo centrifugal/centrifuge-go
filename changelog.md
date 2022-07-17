@@ -9,6 +9,8 @@ New release only works with Centrifugo >= v4.0.0 and [Centrifuge](https://github
 
 Note, that Centrifugo v4 supports clients working over the previous protocol iteration, so you can update Centrifugo to v4 without any changes on the client side (but you need to turn on `use_client_protocol_v1_by_default` option in the configuration of Centrifugo, see Centrifugo v4 migration guide for details).
 
+Important change is that `centrifuge-go` **does not allow blocking calls from inside event handlers now**. See [a description in README](https://github.com/centrifugal/centrifuge-go/tree/master#callbacks-should-not-block).
+
 v0.8.3
 ======
 
