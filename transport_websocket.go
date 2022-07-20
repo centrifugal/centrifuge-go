@@ -18,10 +18,30 @@ import (
 func extractDisconnectWebsocket(err error) *disconnect {
 	if err != nil {
 		if closeErr, ok := err.(*websocket.CloseError); ok {
-			var disconnect disconnect
-			err := json.Unmarshal([]byte(closeErr.Text), &disconnect)
+			var d disconnect
+			err := json.Unmarshal([]byte(closeErr.Text), &d)
 			if err == nil {
-				return &disconnect
+				return &d
+			} else {
+				code := uint32(closeErr.Code)
+				reason := closeErr.Text
+				reconnect := code < 3500 || code >= 5000 || (code >= 4000 && code < 4500)
+				if code < 3000 {
+					switch code {
+					case websocket.CloseMessageTooBig:
+						code = disconnectMessageSizeLimit
+					default:
+						// We expose codes defined by Centrifuge protocol, hiding
+						// details about transport-specific error codes. We may have extra
+						// optional transportCode field in the future.
+						code = connectingTransportClosed
+					}
+				}
+				return &disconnect{
+					Code:      code,
+					Reason:    reason,
+					Reconnect: reconnect,
+				}
 			}
 		}
 	}
@@ -94,7 +114,7 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 
 	t := &websocketTransport{
 		conn:           conn,
-		replyCh:        make(chan *protocol.Reply, 128),
+		replyCh:        make(chan *protocol.Reply),
 		config:         config,
 		closeCh:        make(chan struct{}),
 		commandEncoder: newCommandEncoder(protocolType),
@@ -137,17 +157,16 @@ func (t *websocketTransport) reader() {
 					if err == io.EOF {
 						break loop
 					}
-					t.disconnect = &disconnect{Reason: "decode error", Reconnect: false}
+					t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
 					return
 				}
 				select {
 				case <-t.closeCh:
 					return
 				case t.replyCh <- reply:
-				default:
-					// Can't keep up with server message rate.
-					t.disconnect = &disconnect{Reason: "client slow", Reconnect: true}
-					return
+					// Send is blocking here, but slow client will be disconnected
+					// eventually with `no ping` reason – so we will exit from this
+					// goroutine.
 				}
 			}
 		}
@@ -159,12 +178,17 @@ func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration)
 	if err != nil {
 		return err
 	}
+	return t.writeData(data, timeout)
+}
+
+func (t *websocketTransport) writeData(data []byte, timeout time.Duration) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if timeout > 0 {
 		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
 	//println("---->", strings.Trim(string(data), "\n"))
+	var err error
 	if t.protocolType == protocol.TypeJSON {
 		err = t.conn.WriteMessage(websocket.TextMessage, data)
 	} else {

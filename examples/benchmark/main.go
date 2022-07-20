@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -31,10 +32,10 @@ func usage() {
 }
 
 var url = flag.String("s", "ws://localhost:8000/connection/websocket", "Connection URI")
-var useProtobuf = flag.Bool("p", false, "Use protobuf format")
-var numPubs = flag.Int("np", DefaultNumPubs, "Number of Concurrent Publishers")
-var numSubs = flag.Int("ns", DefaultNumSubs, "Number of Concurrent Subscribers")
-var numMsg = flag.Int("n", DefaultNumMsg, "Number of Messages to Publish")
+var useProtobuf = flag.Bool("p", false, "Use protobuf format (by default JSON is used)")
+var numPubs = flag.Int("np", DefaultNumPubs, "Number of concurrent publishers")
+var numSubs = flag.Int("ns", DefaultNumSubs, "Number of concurrent subscribers")
+var numMsg = flag.Int("n", DefaultNumMsg, "Number of messages to publish")
 var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message")
 
 var benchmark *Benchmark
@@ -64,6 +65,7 @@ func main() {
 	// Run Subscribers first
 	startWg.Add(*numSubs)
 	for i := 0; i < *numSubs; i++ {
+		time.Sleep(500 * time.Microsecond)
 		go runSubscriber(&startWg, &doneWg, *numMsg, *msgSize)
 	}
 	startWg.Wait()
@@ -72,6 +74,7 @@ func main() {
 	startWg.Add(*numPubs)
 	pubCounts := MsgPerClient(*numMsg, *numPubs)
 	for i := 0; i < *numPubs; i++ {
+		time.Sleep(1 * time.Millisecond)
 		go runPublisher(&startWg, &doneWg, pubCounts[i], *msgSize)
 	}
 
@@ -87,31 +90,31 @@ func main() {
 
 func newConnection() *centrifuge.Client {
 	var c *centrifuge.Client
+	config := centrifuge.Config{}
 	if *useProtobuf {
-		c = centrifuge.NewProtobufClient(*url, centrifuge.DefaultConfig())
+		c = centrifuge.NewProtobufClient(*url, config)
 	} else {
-		c = centrifuge.NewJsonClient(*url, centrifuge.DefaultConfig())
+		c = centrifuge.NewJsonClient(*url, config)
 	}
-
-	events := &eventHandler{}
-	c.OnError(events)
-	c.OnDisconnect(events)
+	c.OnError(func(e centrifuge.ErrorEvent) {
+		log.Println(e.Error)
+	})
+	c.OnConnecting(func(e centrifuge.ConnectingEvent) {
+		if e.Code != 0 {
+			log.Printf("connecting: %d, %s", e.Code, e.Reason)
+		}
+	})
+	c.OnDisconnected(func(e centrifuge.DisconnectedEvent) {
+		if e.Code != 0 {
+			log.Printf("disconnect: %d, %s", e.Code, e.Reason)
+		}
+	})
 	return c
-}
-
-type eventHandler struct{}
-
-func (h *eventHandler) OnError(_ *centrifuge.Client, _ centrifuge.ErrorEvent) {}
-
-func (h *eventHandler) OnDisconnect(_ *centrifuge.Client, e centrifuge.DisconnectEvent) {
-	if e.Reason != "clean disconnect" {
-		log.Printf("disconnect: %s", e.Reason)
-	}
 }
 
 func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	c := newConnection()
-	defer func() { _ = c.Close() }()
+	defer c.Close()
 
 	args := flag.Args()
 	subj := args[0]
@@ -132,7 +135,7 @@ func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	startWg.Done()
 
 	for i := 0; i < numMsg; i++ {
-		_, err := c.Publish(subj, payload)
+		_, err := c.Publish(context.Background(), subj, payload)
 		if err != nil {
 			log.Fatalf("error publish: %v", err)
 		}
@@ -152,20 +155,20 @@ type subEventHandler struct {
 	start    time.Time
 }
 
-func (h *subEventHandler) OnPublish(_ *centrifuge.Subscription, _ centrifuge.PublishEvent) {
+func (h *subEventHandler) OnPublication(_ centrifuge.PublicationEvent) {
 	h.received++
 	if h.received >= h.numMsg {
 		benchmark.AddSubSample(NewSample(h.numMsg, h.msgSize, h.start, time.Now()))
 		h.doneWg.Done()
-		_ = h.client.Close()
+		h.client.Close()
 	}
 }
 
-func (h *subEventHandler) OnSubscribeSuccess(_ *centrifuge.Subscription, _ centrifuge.SubscribeSuccessEvent) {
+func (h *subEventHandler) OnSubscribe(_ centrifuge.SubscribedEvent) {
 	h.startWg.Done()
 }
 
-func (h *subEventHandler) OnSubscribeError(_ *centrifuge.Subscription, e centrifuge.SubscribeErrorEvent) {
+func (h *subEventHandler) OnError(e centrifuge.SubscriptionErrorEvent) {
 	log.Fatalf("subscribe error: %v", e.Error)
 }
 
@@ -174,6 +177,11 @@ func runSubscriber(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 
 	args := flag.Args()
 	subj := args[0]
+
+	sub, err := c.NewSubscription(subj)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	subEvents := &subEventHandler{
 		numMsg:  numMsg,
@@ -184,18 +192,16 @@ func runSubscriber(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 		start:   time.Now(),
 	}
 
-	sub, err := c.NewSubscription(subj)
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	sub.OnPublish(subEvents)
-	sub.OnSubscribeSuccess(subEvents)
-	sub.OnSubscribeError(subEvents)
+	sub.OnPublication(subEvents.OnPublication)
+	sub.OnSubscribed(subEvents.OnSubscribe)
+	sub.OnError(subEvents.OnError)
 
 	err = c.Connect()
 	if err != nil {
-		log.Fatalf("Can't connect: %v\n", err)
+		err = c.Connect()
+		if err != nil {
+			log.Fatalf("Can't connect: %v\n", err)
+		}
 	}
 
 	_ = sub.Subscribe()
@@ -416,10 +422,6 @@ func (bm *Benchmark) Report() string {
 		return "No publisher or subscribers. Nothing to report."
 	}
 
-	if bm.Pubs.HasSamples() && bm.Subs.HasSamples() {
-		buffer.WriteString(fmt.Sprintf("%s Pub/Sub stats: %s\n", bm.Name, bm))
-		indent += " "
-	}
 	if bm.Pubs.HasSamples() {
 		buffer.WriteString(fmt.Sprintf("%sPub stats: %s\n", indent, bm.Pubs))
 		if len(bm.Pubs.Samples) > 1 {
@@ -439,6 +441,11 @@ func (bm *Benchmark) Report() string {
 			buffer.WriteString(fmt.Sprintf("%s %s\n", indent, bm.Subs.Statistics()))
 		}
 	}
+
+	if bm.Pubs.HasSamples() && bm.Subs.HasSamples() {
+		buffer.WriteString(fmt.Sprintf("%s Pub/Sub stats: %s\n", bm.Name, bm))
+	}
+
 	return buffer.String()
 }
 

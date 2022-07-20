@@ -13,9 +13,11 @@ type Publication struct {
 	Offset uint64
 	// Data published to channel.
 	Data []byte
-	// Info is an optional information about client connection published
+	// Info is optional information about client connection published
 	// this data to channel.
 	Info *ClientInfo
+	// Tags contain custom key-value pairs attached to Publication.
+	Tags map[string]string
 }
 
 // ClientInfo contains information about client connection.
@@ -24,21 +26,22 @@ type ClientInfo struct {
 	Client string
 	// User is an ID of authenticated user. Zero value means anonymous user.
 	User string
-	// ConnInfo is an additional information about connection.
+	// ConnInfo is additional information about connection.
 	ConnInfo []byte
-	// ChanInfo is an additional information about connection in context of
+	// ChanInfo is additional information about connection in context of
 	// channel subscription.
 	ChanInfo []byte
 }
 
 // Error represents protocol-level error.
 type Error struct {
-	Code    uint32
-	Message string
+	Code      uint32
+	Message   string
+	Temporary bool
 }
 
 func errorFromProto(err *protocol.Error) *Error {
-	return &Error{Code: err.Code, Message: err.Message}
+	return &Error{Code: err.Code, Message: err.Message, Temporary: err.Temporary}
 }
 
 func (e Error) Error() string {
@@ -105,6 +108,7 @@ func pubFromProto(pub *protocol.Publication) Publication {
 	p := Publication{
 		Offset: pub.GetOffset(),
 		Data:   pub.Data,
+		Tags:   pub.GetTags(),
 	}
 	if pub.GetInfo() != nil {
 		info := infoFromProto(pub.GetInfo())
