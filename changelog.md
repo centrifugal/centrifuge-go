@@ -1,3 +1,8 @@
+v0.9.1
+======
+
+* Fix setting `SubscriptionConfig.GetToken` - [#66](https://github.com/centrifugal/centrifuge-go/pull/66)
+
 v0.9.0
 ======
 
