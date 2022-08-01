@@ -50,6 +50,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 	if len(config) == 1 {
 		cfg := config[0]
 		s.token = cfg.Token
+		s.getToken = cfg.GetToken
 		s.data = cfg.Data
 		s.positioned = cfg.Positioned
 		s.recoverable = cfg.Recoverable
