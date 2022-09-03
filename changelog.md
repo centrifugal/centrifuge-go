@@ -1,3 +1,8 @@
+v0.9.2
+======
+
+* Fix Unlock of unlocked RWMutex panic when sending connect command and getting an error from it.
+
 v0.9.1
 ======
 
