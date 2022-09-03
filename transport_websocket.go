@@ -75,12 +75,12 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 }
 
 func (t *websocketTransport) Close() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.closed {
+	t.websocketTransportCommon.mu.Lock()
+	defer t.websocketTransportCommon.mu.Unlock()
+	if t.websocketTransportCommon.closed {
 		return nil
 	}
-	t.closed = true
+	t.websocketTransportCommon.closed = true
 	close(t.closeCh)
 	_ = t.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
 	return t.conn.Close()
@@ -94,7 +94,7 @@ func (t *websocketTransport) reader() {
 		_, data, err := t.conn.ReadMessage()
 		if err != nil {
 			disconnect := extractDisconnectWebsocket(err)
-			t.disconnect = disconnect
+			t.websocketTransportCommon.disconnect = disconnect
 			return
 		}
 		//println("<----", strings.Trim(string(data), "\n"))
@@ -106,7 +106,7 @@ func (t *websocketTransport) reader() {
 				if err == io.EOF {
 					break LOOP
 				}
-				t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
+				t.websocketTransportCommon.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
 				return
 			}
 			select {
@@ -130,8 +130,8 @@ func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration)
 }
 
 func (t *websocketTransport) writeData(data []byte, timeout time.Duration) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	t.websocketTransportCommon.mu.Lock()
+	defer t.websocketTransportCommon.mu.Unlock()
 	if timeout > 0 {
 		_ = t.conn.SetWriteDeadline(time.Now().Add(timeout))
 	}
@@ -151,7 +151,7 @@ func (t *websocketTransport) writeData(data []byte, timeout time.Duration) error
 func (t *websocketTransport) Read() (*protocol.Reply, *disconnect, error) {
 	reply, ok := <-t.replyCh
 	if !ok {
-		return nil, t.disconnect, io.EOF
+		return nil, t.websocketTransportCommon.disconnect, io.EOF
 	}
 	return reply, nil, nil
 }
