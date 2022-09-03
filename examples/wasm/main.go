@@ -32,10 +32,7 @@ func main() {
 		log.Printf("Connect error: %v", err)
 	}
 
-	sub, err := client.NewSubscription("chat:index", centrifuge.SubscriptionConfig{
-		Recoverable: true,
-		JoinLeave:   true,
-	})
+	sub, err := client.NewSubscription("chat:index", centrifuge.SubscriptionConfig{})
 	if err != nil {
 		log.Printf("Subscription create error: %v", err)
 	}

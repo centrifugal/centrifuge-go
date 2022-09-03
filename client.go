@@ -991,6 +991,9 @@ func (c *Client) startReconnecting() error {
 			} else {
 				c.mu.Lock()
 				defer c.mu.Unlock()
+				if c.state != StateConnecting {
+					return
+				}
 				c.reconnectAttempts++
 				reconnectDelay := c.getReconnectDelay()
 				c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
