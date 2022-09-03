@@ -9,10 +9,7 @@ import (
 func main() {
 	client := centrifuge.NewJsonClient(
 		"ws://localhost:8000/connection/websocket",
-		centrifuge.Config{
-			// Uncomment to make it work with Centrifugo JWT auth.
-			//Token: connToken("49", 0),
-		},
+		centrifuge.Config{},
 	)
 	defer client.Close()
 
@@ -32,7 +29,7 @@ func main() {
 
 	err := client.Connect()
 	if err != nil {
-		log.Println(err)
+		log.Printf("Connect error: %v", err)
 	}
 
 	sub, err := client.NewSubscription("chat:index", centrifuge.SubscriptionConfig{
@@ -40,7 +37,7 @@ func main() {
 		JoinLeave:   true,
 	})
 	if err != nil {
-		log.Fatalln(err)
+		log.Printf("Subscription create error: %v", err)
 	}
 
 	sub.OnSubscribing(func(e centrifuge.SubscribingEvent) {
@@ -52,18 +49,16 @@ func main() {
 	sub.OnUnsubscribed(func(e centrifuge.UnsubscribedEvent) {
 		log.Printf("Unsubscribed from channel %s - %d (%s)", sub.Channel, e.Code, e.Reason)
 	})
-
 	sub.OnError(func(e centrifuge.SubscriptionErrorEvent) {
 		log.Printf("Subscription error %s: %s", sub.Channel, e.Error)
 	})
-
 	sub.OnPublication(func(e centrifuge.PublicationEvent) {
 		log.Printf("Someone says via channel %s: %s (offset %d)", sub.Channel, e.Data, e.Offset)
 	})
 
 	err = sub.Subscribe()
 	if err != nil {
-		log.Fatalln(err)
+		log.Printf("Subscribe error: %v", err)
 	}
 
 	select {}

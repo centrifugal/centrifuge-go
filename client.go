@@ -89,7 +89,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		config.WriteTimeout = time.Second
 	}
 	if config.HandshakeTimeout == 0 {
-		config.HandshakeTimeout = time.Second
+		config.HandshakeTimeout = 5 * time.Second
 	}
 	if config.MaxServerPingDelay == 0 {
 		config.MaxServerPingDelay = 10 * time.Second
@@ -876,8 +876,6 @@ func (c *Client) getReconnectDelay() time.Duration {
 }
 
 func (c *Client) startReconnecting() error {
-	println(1)
-
 	c.mu.Lock()
 	c.round++
 	round := c.round
@@ -887,8 +885,6 @@ func (c *Client) startReconnecting() error {
 	}
 	refreshRequired := c.refreshRequired
 	c.mu.Unlock()
-
-	println(2)
 
 	wsConfig := websocketConfig{
 		NetDialContext:    c.config.NetDialContext,
@@ -916,8 +912,6 @@ func (c *Client) startReconnecting() error {
 		c.mu.Unlock()
 		return err
 	}
-
-	println(3)
 
 	if refreshRequired {
 		// Try to refresh token.
@@ -952,8 +946,6 @@ func (c *Client) startReconnecting() error {
 		}
 	}
 
-	println(4)
-
 	c.mu.Lock()
 	if c.state != StateConnecting {
 		_ = t.Close()
@@ -976,6 +968,7 @@ func (c *Client) startReconnecting() error {
 		c.mu.Unlock()
 		if err != nil {
 			c.handleError(ConnectError{err})
+			_ = t.Close()
 			if isTokenExpiredError(err) {
 				c.mu.Lock()
 				defer c.mu.Unlock()
@@ -998,10 +991,6 @@ func (c *Client) startReconnecting() error {
 			} else {
 				c.mu.Lock()
 				defer c.mu.Unlock()
-				if c.state != StateConnecting {
-					_ = t.Close()
-					return
-				}
 				c.reconnectAttempts++
 				reconnectDelay := c.getReconnectDelay()
 				c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
@@ -1128,8 +1117,6 @@ func (c *Client) startReconnecting() error {
 		}
 		c.resubscribe()
 	})
-
-	println(6, err.Error())
 
 	if err != nil {
 		_ = t.Close()

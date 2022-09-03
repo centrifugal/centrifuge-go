@@ -4,12 +4,8 @@
 package centrifuge
 
 import (
-	"context"
-	"crypto/tls"
-	"fmt"
 	"io"
-	"net"
-	"net/http"
+	"reflect"
 	"sync"
 	"syscall/js"
 	"time"
@@ -17,65 +13,15 @@ import (
 	"github.com/centrifugal/protocol"
 )
 
-func handleJSError(err *error, onErr func()) {
-	r := recover()
-
-	if jsErr, ok := r.(js.Error); ok {
-		*err = jsErr
-
-		if onErr != nil {
-			onErr()
-		}
-		return
-	}
-
-	if r != nil {
-		panic(r)
-	}
-}
-
-func extractDisconnectWebsocket(err error) *disconnect {
-	return nil
-}
-
 type websocketTransport struct {
-	mu             sync.Mutex
-	ws             js.Value
-	protocolType   protocol.Type
-	commandEncoder protocol.CommandEncoder
-	replyCh        chan *protocol.Reply
-	config         websocketConfig
-	disconnect     *disconnect
-	closed         bool
-	closeCh        chan struct{}
-}
+	websocketTransportCommon
 
-// websocketConfig configures Websocket transport.
-type websocketConfig struct {
-	// NetDialContext specifies the dial function for creating TCP connections. If
-	// NetDialContext is nil, net.DialContext is used.
-	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
-
-	// TLSConfig specifies the TLS configuration to use with tls.Client.
-	// If nil, the default configuration is used.
-	TLSConfig *tls.Config
-
-	// HandshakeTimeout specifies the duration for the handshake to complete.
-	HandshakeTimeout time.Duration
-
-	// EnableCompression specifies if the client should attempt to negotiate
-	// per message compression (RFC 7692). Setting this value to true does not
-	// guarantee that compression will be supported. Currently only "no context
-	// takeover" modes are supported.
-	EnableCompression bool
-
-	// CookieJar specifies the cookie jar.
-	// If CookieJar is nil, cookies are not sent in requests and ignored
-	// in responses.
-	CookieJar http.CookieJar
-
-	// Header specifies custom HTTP Header to send.
-	Header http.Header
+	ws               js.Value
+	releaseOnClose   func()
+	releaseOnMessage func()
+	readSignal       chan struct{}
+	readBufMu        sync.Mutex
+	readBuf          []jsMessageEvent
 }
 
 func newWebsocketTransport(url string, protocolType protocol.Type, config websocketConfig) (transport, error) {
@@ -90,15 +36,104 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 	}
 
 	t := &websocketTransport{
-		ws:             ws,
-		replyCh:        make(chan *protocol.Reply),
-		config:         config,
-		closeCh:        make(chan struct{}),
-		commandEncoder: newCommandEncoder(protocolType),
-		protocolType:   protocolType,
+		websocketTransportCommon: websocketTransportCommon{
+			replyCh:        make(chan *protocol.Reply),
+			config:         config,
+			closeCh:        make(chan struct{}),
+			commandEncoder: newCommandEncoder(protocolType),
+			protocolType:   protocolType,
+		},
+		ws:         ws,
+		readSignal: make(chan struct{}, 1),
 	}
-	go t.reader()
-	return t, nil
+
+	t.releaseOnClose = t.onClose(func(e jsCloseEvent) {
+		t.disconnect = extractDisconnectWebsocket(e)
+		_ = t.Close()
+
+		t.releaseOnClose()
+		t.releaseOnMessage()
+	})
+
+	t.releaseOnMessage = t.onMessage(func(e jsMessageEvent) {
+		t.readBufMu.Lock()
+		defer t.readBufMu.Unlock()
+		t.readBuf = append(t.readBuf, e)
+		// Let the read goroutine know there is something in readBuf.
+		select {
+		case t.readSignal <- struct{}{}:
+		default:
+		}
+	})
+
+	openCh := make(chan struct{})
+	releaseOpen := t.onOpen(func(e js.Value) {
+		close(openCh)
+	})
+	defer releaseOpen()
+
+	select {
+	case <-time.After(config.HandshakeTimeout):
+		t.Close()
+		return nil, ErrTimeout
+	case <-openCh:
+		go t.reader()
+		return t, nil
+	case <-t.closeCh:
+		return nil, ErrClientClosed
+	}
+}
+
+func (t *websocketTransport) addEventListener(eventType string, fn func(e js.Value)) func() {
+	f := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		fn(args[0])
+		return nil
+	})
+	t.ws.Call("addEventListener", eventType, f)
+	return func() {
+		t.ws.Call("removeEventListener", eventType, f)
+		f.Release()
+	}
+}
+
+func (t *websocketTransport) onOpen(fn func(e js.Value)) (remove func()) {
+	return t.addEventListener("open", fn)
+}
+
+type jsMessageEvent struct {
+	// string or []byte.
+	Data interface{}
+}
+
+func (t *websocketTransport) onMessage(fn func(m jsMessageEvent)) (remove func()) {
+	return t.addEventListener("message", func(e js.Value) {
+		var data interface{}
+		arrayBuffer := e.Get("data")
+		if arrayBuffer.Type() == js.TypeString {
+			data = arrayBuffer.String()
+		} else {
+			data = bytesFromArrayBuffer(arrayBuffer)
+		}
+		fn(jsMessageEvent{
+			Data: data,
+		})
+		return
+	})
+}
+
+type jsCloseEvent struct {
+	Code   uint16
+	Reason string
+}
+
+func (t *websocketTransport) onClose(fn func(jsCloseEvent)) (remove func()) {
+	return t.addEventListener("close", func(e js.Value) {
+		ce := jsCloseEvent{
+			Code:   uint16(e.Get("code").Int()),
+			Reason: e.Get("reason").String(),
+		}
+		fn(ce)
+	})
 }
 
 func (t *websocketTransport) Close() error {
@@ -109,48 +144,89 @@ func (t *websocketTransport) Close() error {
 	}
 	t.closed = true
 	close(t.closeCh)
-	// TODO: close connection.
-	return nil
+	return t.close()
+}
+
+func (t *websocketTransport) close() (err error) {
+	defer handleJSError(&err)
+	t.ws.Call("close", 1000, "normal closure")
+	return err
 }
 
 func (t *websocketTransport) reader() {
 	defer func() { _ = t.Close() }()
 	defer close(t.replyCh)
 
+LOOP:
 	for {
-		time.Sleep(time.Second)
-		fmt.Println("implement reading from connection")
-		//	_, data, err := t.conn.ReadMessage()
-		//	if err != nil {
-		//		disconnect := extractDisconnectWebsocket(err)
-		//		t.disconnect = disconnect
-		//		return
-		//	}
-		//	//println("<----", strings.Trim(string(data), "\n"))
-		//loop:
-		//	for {
-		//		decoder := newReplyDecoder(t.protocolType, data)
-		//		for {
-		//			reply, err := decoder.Decode()
-		//			if err != nil {
-		//				if err == io.EOF {
-		//					break loop
-		//				}
-		//				t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
-		//				return
-		//			}
-		//			select {
-		//			case <-t.closeCh:
-		//				return
-		//			case t.replyCh <- reply:
-		//				// Send is blocking here, but slow client will be disconnected
-		//				// eventually with `no ping` reason – so we will exit from this
-		//				// goroutine.
-		//			}
-		//		}
-		//	}
+		select {
+		case <-t.closeCh:
+			break LOOP
+		default:
+		}
+		data, err := t.read()
+		if err != nil {
+			return
+		}
+		//println("<----", strings.Trim(string(data), "\n"))
+
+		decoder := newReplyDecoder(t.protocolType, data)
+
+	DECODE:
+		for {
+			reply, err := decoder.Decode()
+			if err != nil {
+				if err == io.EOF {
+					break DECODE
+				}
+				t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
+				return
+			}
+			select {
+			case <-t.closeCh:
+				return
+			case t.replyCh <- reply:
+				// Send is blocking here, but slow client will be disconnected
+				// eventually with `no ping` reason – so we will exit from this
+				// goroutine.
+			}
+		}
 	}
-	fmt.Println("exit from reader")
+}
+
+func (t *websocketTransport) read() ([]byte, error) {
+	select {
+	case <-t.closeCh:
+		return nil, io.EOF
+	case <-t.readSignal:
+	}
+
+	t.readBufMu.Lock()
+	defer t.readBufMu.Unlock()
+
+	ev := t.readBuf[0]
+	// We copy the messages forward and decrease the size
+	// of the slice to avoid reallocating.
+	copy(t.readBuf, t.readBuf[1:])
+	t.readBuf = t.readBuf[:len(t.readBuf)-1]
+
+	if len(t.readBuf) > 0 {
+		// Next time we read, we'll grab the message.
+		select {
+		case t.readSignal <- struct{}{}:
+		default:
+		}
+	}
+
+	switch p := ev.Data.(type) {
+	case string:
+		return []byte(p), nil
+	case []byte:
+		return p, nil
+	default:
+		tp := reflect.TypeOf(ev.Data).String()
+		panic("websocket: unexpected data type on read: " + tp)
+	}
 }
 
 func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration) error {
@@ -164,7 +240,6 @@ func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration)
 func (t *websocketTransport) writeData(data []byte, timeout time.Duration) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	fmt.Println("writing to connection", string(data))
 	var err error
 	if t.protocolType == protocol.TypeJSON {
 		err = t.writeText(string(data))
@@ -174,26 +249,16 @@ func (t *websocketTransport) writeData(data []byte, timeout time.Duration) error
 	return err
 }
 
-// SendText sends the given string as a text message
-// on the WebSocket.
 func (t *websocketTransport) writeText(v string) (err error) {
-	defer handleJSError(&err, nil)
+	defer handleJSError(&err)
 	t.ws.Call("send", v)
 	return err
 }
 
-// SendBytes sends the given message as a binary message
-// on the WebSocket.
 func (t *websocketTransport) writeBytes(v []byte) (err error) {
-	defer handleJSError(&err, nil)
-	t.ws.Call("send", uint8Array(v))
+	defer handleJSError(&err)
+	t.ws.Call("send", bytesToUint8Array(v))
 	return err
-}
-
-func uint8Array(src []byte) js.Value {
-	uint8Array := js.Global().Get("Uint8Array").New(len(src))
-	js.CopyBytesToJS(uint8Array, src)
-	return uint8Array
 }
 
 func (t *websocketTransport) Read() (*protocol.Reply, *disconnect, error) {
@@ -202,4 +267,34 @@ func (t *websocketTransport) Read() (*protocol.Reply, *disconnect, error) {
 		return nil, t.disconnect, io.EOF
 	}
 	return reply, nil, nil
+}
+
+func bytesToUint8Array(src []byte) js.Value {
+	uint8Array := js.Global().Get("Uint8Array").New(len(src))
+	js.CopyBytesToJS(uint8Array, src)
+	return uint8Array
+}
+
+func bytesFromArrayBuffer(arrayBuffer js.Value) []byte {
+	uint8Array := js.Global().Get("Uint8Array").New(arrayBuffer)
+	dst := make([]byte, uint8Array.Length())
+	js.CopyBytesToGo(dst, uint8Array)
+	return dst
+}
+
+func handleJSError(err *error) {
+	r := recover()
+
+	if jsErr, ok := r.(js.Error); ok {
+		*err = jsErr
+		return
+	}
+
+	if r != nil {
+		panic(r)
+	}
+}
+
+func extractDisconnectWebsocket(e jsCloseEvent) *disconnect {
+	return constructDisconnect(uint32(e.Code), e.Reason)
 }

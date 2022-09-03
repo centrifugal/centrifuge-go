@@ -4,14 +4,10 @@
 package centrifuge
 
 import (
-	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/centrifugal/protocol"
@@ -28,23 +24,7 @@ func extractDisconnectWebsocket(err error) *disconnect {
 			} else {
 				code := uint32(closeErr.Code)
 				reason := closeErr.Text
-				reconnect := code < 3500 || code >= 5000 || (code >= 4000 && code < 4500)
-				if code < 3000 {
-					switch code {
-					case websocket.CloseMessageTooBig:
-						code = disconnectMessageSizeLimit
-					default:
-						// We expose codes defined by Centrifuge protocol, hiding
-						// details about transport-specific error codes. We may have extra
-						// optional transportCode field in the future.
-						code = connectingTransportClosed
-					}
-				}
-				return &disconnect{
-					Code:      code,
-					Reason:    reason,
-					Reconnect: reconnect,
-				}
+				return constructDisconnect(code, reason)
 			}
 		}
 	}
@@ -52,43 +32,8 @@ func extractDisconnectWebsocket(err error) *disconnect {
 }
 
 type websocketTransport struct {
-	mu             sync.Mutex
-	conn           *websocket.Conn
-	protocolType   protocol.Type
-	commandEncoder protocol.CommandEncoder
-	replyCh        chan *protocol.Reply
-	config         websocketConfig
-	disconnect     *disconnect
-	closed         bool
-	closeCh        chan struct{}
-}
-
-// websocketConfig configures Websocket transport.
-type websocketConfig struct {
-	// NetDialContext specifies the dial function for creating TCP connections. If
-	// NetDialContext is nil, net.DialContext is used.
-	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
-
-	// TLSConfig specifies the TLS configuration to use with tls.Client.
-	// If nil, the default configuration is used.
-	TLSConfig *tls.Config
-
-	// HandshakeTimeout specifies the duration for the handshake to complete.
-	HandshakeTimeout time.Duration
-
-	// EnableCompression specifies if the client should attempt to negotiate
-	// per message compression (RFC 7692). Setting this value to true does not
-	// guarantee that compression will be supported. Currently only "no context
-	// takeover" modes are supported.
-	EnableCompression bool
-
-	// CookieJar specifies the cookie jar.
-	// If CookieJar is nil, cookies are not sent in requests and ignored
-	// in responses.
-	CookieJar http.CookieJar
-
-	// Header specifies custom HTTP Header to send.
-	Header http.Header
+	websocketTransportCommon
+	conn *websocket.Conn
 }
 
 func newWebsocketTransport(url string, protocolType protocol.Type, config websocketConfig) (transport, error) {
@@ -116,12 +61,14 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 	}
 
 	t := &websocketTransport{
-		conn:           conn,
-		replyCh:        make(chan *protocol.Reply),
-		config:         config,
-		closeCh:        make(chan struct{}),
-		commandEncoder: newCommandEncoder(protocolType),
-		protocolType:   protocolType,
+		conn: conn,
+		websocketTransportCommon: websocketTransportCommon{
+			replyCh:        make(chan *protocol.Reply),
+			config:         config,
+			closeCh:        make(chan struct{}),
+			commandEncoder: newCommandEncoder(protocolType),
+			protocolType:   protocolType,
+		},
 	}
 	go t.reader()
 	return t, nil
@@ -151,26 +98,24 @@ func (t *websocketTransport) reader() {
 			return
 		}
 		//println("<----", strings.Trim(string(data), "\n"))
-	loop:
+		decoder := newReplyDecoder(t.protocolType, data)
+	LOOP:
 		for {
-			decoder := newReplyDecoder(t.protocolType, data)
-			for {
-				reply, err := decoder.Decode()
-				if err != nil {
-					if err == io.EOF {
-						break loop
-					}
-					t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
-					return
+			reply, err := decoder.Decode()
+			if err != nil {
+				if err == io.EOF {
+					break LOOP
 				}
-				select {
-				case <-t.closeCh:
-					return
-				case t.replyCh <- reply:
-					// Send is blocking here, but slow client will be disconnected
-					// eventually with `no ping` reason – so we will exit from this
-					// goroutine.
-				}
+				t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
+				return
+			}
+			select {
+			case <-t.closeCh:
+				return
+			case t.replyCh <- reply:
+				// Send is blocking here, but slow client will be disconnected
+				// eventually with `no ping` reason – so we will exit from this
+				// goroutine.
 			}
 		}
 	}

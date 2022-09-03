@@ -28,6 +28,7 @@ type Config struct {
 	Version string
 	// NetDialContext specifies the dial function for creating TCP connections. If
 	// NetDialContext is nil, net.DialContext is used.
+	// Not used in WASM environment.
 	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 	// ReadTimeout is how long to wait read operations to complete.
 	// Zero value means 5 * time.Second.
@@ -36,23 +37,27 @@ type Config struct {
 	// Zero value means 1 * time.Second.
 	WriteTimeout time.Duration
 	// HandshakeTimeout specifies the duration for the handshake to complete.
-	// Zero value means 1 * time.Second.
+	// Zero value means 5 * time.Second.
 	HandshakeTimeout time.Duration
 	// MaxServerPingDelay used to set maximum delay of ping from server.
 	// Zero value means 10 * time.Second.
 	MaxServerPingDelay time.Duration
 	// TLSConfig specifies the TLS configuration to use with tls.Client.
 	// If nil, the default configuration is used.
+	// Not used in WASM environment.
 	TLSConfig *tls.Config
 	// EnableCompression specifies if the client should attempt to negotiate
 	// per message compression (RFC 7692). Setting this value to true does not
 	// guarantee that compression will be supported. Currently, only "no context
 	// takeover" modes are supported.
+	// Not used in WASM environment.
 	EnableCompression bool
 	// CookieJar specifies the cookie jar.
 	// If CookieJar is nil, cookies are not sent in requests and ignored
 	// in responses.
+	// Not used in WASM environment.
 	CookieJar http.CookieJar
 	// Header specifies custom HTTP Header to send.
+	// Not used in WASM environment.
 	Header http.Header
 }

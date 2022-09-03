@@ -30,3 +30,4 @@ _testmain.go
 .vscode/
 
 *.orig
+examples/wasm/assets/example.wasm
