@@ -876,6 +876,8 @@ func (c *Client) getReconnectDelay() time.Duration {
 }
 
 func (c *Client) startReconnecting() error {
+	println(1)
+
 	c.mu.Lock()
 	c.round++
 	round := c.round
@@ -885,6 +887,8 @@ func (c *Client) startReconnecting() error {
 	}
 	refreshRequired := c.refreshRequired
 	c.mu.Unlock()
+
+	println(2)
 
 	wsConfig := websocketConfig{
 		NetDialContext:    c.config.NetDialContext,
@@ -912,6 +916,8 @@ func (c *Client) startReconnecting() error {
 		c.mu.Unlock()
 		return err
 	}
+
+	println(3)
 
 	if refreshRequired {
 		// Try to refresh token.
@@ -945,6 +951,8 @@ func (c *Client) startReconnecting() error {
 			c.mu.Unlock()
 		}
 	}
+
+	println(4)
 
 	c.mu.Lock()
 	if c.state != StateConnecting {
@@ -1120,6 +1128,9 @@ func (c *Client) startReconnecting() error {
 		}
 		c.resubscribe()
 	})
+
+	println(6, err.Error())
+
 	if err != nil {
 		_ = t.Close()
 		c.reconnectAttempts++
@@ -1127,7 +1138,6 @@ func (c *Client) startReconnecting() error {
 		c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
 			_ = c.startReconnecting()
 		})
-		c.mu.Unlock()
 		c.handleError(ConnectError{err})
 	}
 	c.mu.Unlock()
