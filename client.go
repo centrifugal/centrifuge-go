@@ -1127,7 +1127,6 @@ func (c *Client) startReconnecting() error {
 		c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
 			_ = c.startReconnecting()
 		})
-		c.mu.Unlock()
 		c.handleError(ConnectError{err})
 	}
 	c.mu.Unlock()
