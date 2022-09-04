@@ -968,6 +968,7 @@ func (c *Client) startReconnecting() error {
 		c.mu.Unlock()
 		if err != nil {
 			c.handleError(ConnectError{err})
+			_ = t.Close()
 			if isTokenExpiredError(err) {
 				c.mu.Lock()
 				defer c.mu.Unlock()
@@ -991,7 +992,6 @@ func (c *Client) startReconnecting() error {
 				c.mu.Lock()
 				defer c.mu.Unlock()
 				if c.state != StateConnecting {
-					_ = t.Close()
 					return
 				}
 				c.reconnectAttempts++

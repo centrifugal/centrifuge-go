@@ -1,3 +1,8 @@
+v0.9.3
+======
+
+* Fix leaking connection when getting `token expired` error upon connect.
+
 v0.9.2
 ======
 
