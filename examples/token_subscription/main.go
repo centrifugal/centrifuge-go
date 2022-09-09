@@ -24,13 +24,10 @@ func connToken(user string, exp int64) string {
 	return t
 }
 
-func subscriptionToken(channel string, client string, exp int64) string {
+func subscriptionToken(channel string, user string, exp int64) string {
 	// NOTE that JWT must be generated on backend side of your application!
 	// Here we are generating it on client side only for example simplicity.
-	claims := jwt.MapClaims{"channel": channel}
-	if client != "" {
-		claims["client"] = client
-	}
+	claims := jwt.MapClaims{"channel": channel, "sub": user}
 	if exp > 0 {
 		claims["exp"] = exp
 	}
@@ -42,7 +39,7 @@ func subscriptionToken(channel string, client string, exp int64) string {
 }
 
 func main() {
-	wsURL := "ws://localhost:8000/connection/websocket?cf_protocol_version=v2"
+	wsURL := "ws://localhost:8000/connection/websocket"
 	c := centrifuge.NewJsonClient(wsURL, centrifuge.Config{
 		Token: connToken("112", 0),
 	})
@@ -51,8 +48,11 @@ func main() {
 	c.OnConnected(func(_ centrifuge.ConnectedEvent) {
 		log.Println("Connected")
 	})
-	c.OnDisconnected(func(_ centrifuge.DisconnectedEvent) {
-		log.Println("Disconnected")
+	c.OnConnecting(func(_ centrifuge.ConnectingEvent) {
+		log.Println("Connecting")
+	})
+	c.OnDisconnected(func(e centrifuge.DisconnectedEvent) {
+		log.Println("Disconnected", e.Reason)
 	})
 	c.OnError(func(e centrifuge.ErrorEvent) {
 		log.Println("Error", e.Error.Error())
@@ -64,10 +64,9 @@ func main() {
 	}
 
 	sub, err := c.NewSubscription("$chat:index", centrifuge.SubscriptionConfig{
-		Token: subscriptionToken("$chat:index", "", time.Now().Unix()+10),
 		GetToken: func(e centrifuge.SubscriptionTokenEvent) (string, error) {
-			log.Println("Subscription refresh")
-			token := subscriptionToken(e.Channel, "", time.Now().Unix()+10)
+			log.Println("Getting subscription token")
+			token := subscriptionToken(e.Channel, "112", time.Now().Unix()+10)
 			return token, nil
 		},
 	})
