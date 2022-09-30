@@ -8,6 +8,8 @@ Check out [client SDK API specification](https://centrifugal.dev/docs/transports
 
 The features implemented by this SDK can be found in [SDK feature matrix](https://centrifugal.dev/docs/transports/client_sdk#sdk-feature-matrix).
 
+> **The latest `centrifuge-go` is compatible only with the latest [Centrifugo](https://github.com/centrifugal/centrifugo) server (v4) and [Centrifuge](https://github.com/centrifugal/centrifuge) >= 0.25.0. For Centrifugo v2, Centrifugo v3 and Centrifuge < 0.25.0 you should use `centrifuge-go` v0.8.x.**
+
 ## Callbacks should not block
 
 When using this SDK you should not block for a long time inside event handlers since handlers called synchronously by the SDK and block the connection read loop. The fact that the read loop is blocked also means that you can not issue blocking `Client` requests such as `Publish`, `RPC`, `History`, `Presence`, `PresenceStats` from the event handler code – this will result into a deadlock. Use a separate goroutine if you really need to issue a blocking call from inside an event handler.
