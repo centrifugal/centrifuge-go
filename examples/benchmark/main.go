@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
+	"go.uber.org/ratelimit"
 )
 
 // Some sane defaults.
@@ -37,6 +38,7 @@ var numPubs = flag.Int("np", DefaultNumPubs, "Number of concurrent publishers")
 var numSubs = flag.Int("ns", DefaultNumSubs, "Number of concurrent subscribers")
 var numMsg = flag.Int("n", DefaultNumMsg, "Number of messages to publish")
 var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message")
+var pubRateLimit = flag.Int("pl", 0, "Rate limit for each publisher in messages per second")
 
 var benchmark *Benchmark
 
@@ -134,7 +136,13 @@ func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 
 	startWg.Done()
 
+	rl := ratelimit.NewUnlimited()
+	if *pubRateLimit > 0 {
+		rl = ratelimit.New(*pubRateLimit, ratelimit.Per(time.Second))
+	}
+
 	for i := 0; i < numMsg; i++ {
+		rl.Take()
 		_, err := c.Publish(context.Background(), subj, payload)
 		if err != nil {
 			log.Fatalf("error publish: %v", err)
