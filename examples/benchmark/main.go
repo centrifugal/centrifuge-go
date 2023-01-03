@@ -14,6 +14,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/centrifugal/centrifuge-go"
@@ -26,10 +27,14 @@ const (
 	DefaultNumPubs     = 1
 	DefaultNumSubs     = 0
 	DefaultMessageSize = 128
+	DefaultDeadline    = 300
 )
 
+var messageReceivedCounter int32 = 0
+var messagePublishedCounter int32 = 0
+
 func usage() {
-	log.Fatalf("Usage: benchmark [-s uri] [-np NUM_PUBLISHERS] [-ns NUM_SUBSCRIBERS] [-n NUM_MSGS] [-ms MESSAGE_SIZE] [-p] <channel>\n")
+	log.Fatalf("Usage: benchmark [-s uri] [-np NUM_PUBLISHERS] [-ns NUM_SUBSCRIBERS] [-n NUM_MSGS] [-ms MESSAGE_SIZE] [-p] [-d DEADLINE_SECONDS] <channel>\n")
 }
 
 var url = flag.String("s", "ws://localhost:8000/connection/websocket", "Connection URI")
@@ -38,6 +43,7 @@ var numPubs = flag.Int("np", DefaultNumPubs, "Number of concurrent publishers")
 var numSubs = flag.Int("ns", DefaultNumSubs, "Number of concurrent subscribers")
 var numMsg = flag.Int("n", DefaultNumMsg, "Number of messages to publish")
 var msgSize = flag.Int("ms", DefaultMessageSize, "Size of the message")
+var deadline = flag.Int("d", DefaultDeadline, "Deadline for the test to finish")
 var pubRateLimit = flag.Int("pl", 0, "Rate limit for each publisher in messages per second")
 
 var benchmark *Benchmark
@@ -80,13 +86,16 @@ func main() {
 		go runPublisher(&startWg, &doneWg, pubCounts[i], *msgSize)
 	}
 
-	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d]\n", *numMsg, *msgSize, *numPubs, *numSubs)
-
 	startWg.Wait()
-	doneWg.Wait()
-
+	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d]\n", *numMsg, *msgSize, *numPubs, *numSubs)
+	if waitForTestCompletion(&doneWg, deadline) {
+		log.Printf("Test completed, generating report")
+	} else {
+		log.Printf("Deadline exceeded, proceeding with report generation")
+	}
 	benchmark.Close()
-
+	log.Println("total published messages : ", messagePublishedCounter)
+	log.Println("total received messages : ", messageReceivedCounter)
 	fmt.Print(benchmark.Report())
 }
 
@@ -125,7 +134,7 @@ func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 		msg = make([]byte, msgSize)
 	}
 
-	payload, _ := json.Marshal(string(msg))
+	payload, _ := json.Marshal(msg)
 
 	start := time.Now()
 
@@ -146,6 +155,8 @@ func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 		_, err := c.Publish(context.Background(), subj, payload)
 		if err != nil {
 			log.Fatalf("error publish: %v", err)
+		} else {
+			atomic.AddInt32(&messagePublishedCounter, 1)
 		}
 	}
 
@@ -154,17 +165,19 @@ func runPublisher(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 }
 
 type subEventHandler struct {
-	numMsg   int
-	msgSize  int
-	received int
-	doneWg   *sync.WaitGroup
-	startWg  *sync.WaitGroup
-	client   *centrifuge.Client
-	start    time.Time
+	numMsg    int
+	msgSize   int
+	received  int
+	connected bool
+	doneWg    *sync.WaitGroup
+	startWg   *sync.WaitGroup
+	client    *centrifuge.Client
+	start     time.Time
 }
 
 func (h *subEventHandler) OnPublication(_ centrifuge.PublicationEvent) {
 	h.received++
+	atomic.AddInt32(&messageReceivedCounter, 1)
 	if h.received >= h.numMsg {
 		benchmark.AddSubSample(NewSample(h.numMsg, h.msgSize, h.start, time.Now()))
 		h.doneWg.Done()
@@ -173,7 +186,11 @@ func (h *subEventHandler) OnPublication(_ centrifuge.PublicationEvent) {
 }
 
 func (h *subEventHandler) OnSubscribe(_ centrifuge.SubscribedEvent) {
-	h.startWg.Done()
+	// call Done() only for the first time and not on reconnects to avoid a panic
+	if !h.connected {
+		h.startWg.Done()
+		h.connected = true
+	}
 }
 
 func (h *subEventHandler) OnError(e centrifuge.SubscriptionErrorEvent) {
@@ -192,12 +209,13 @@ func runSubscriber(startWg, doneWg *sync.WaitGroup, numMsg int, msgSize int) {
 	}
 
 	subEvents := &subEventHandler{
-		numMsg:  numMsg,
-		msgSize: msgSize,
-		doneWg:  doneWg,
-		startWg: startWg,
-		client:  c,
-		start:   time.Now(),
+		numMsg:    numMsg,
+		msgSize:   msgSize,
+		connected: false,
+		doneWg:    doneWg,
+		startWg:   startWg,
+		client:    c,
+		start:     time.Now(),
 	}
 
 	sub.OnPublication(subEvents.OnPublication)
@@ -427,7 +445,7 @@ func (bm *Benchmark) Report() string {
 
 	indent := ""
 	if !bm.Pubs.HasSamples() && !bm.Subs.HasSamples() {
-		return "No publisher or subscribers. Nothing to report."
+		return "No publisher or subscribers data captured. Nothing to report."
 	}
 
 	if bm.Pubs.HasSamples() {
@@ -525,4 +543,22 @@ func MsgPerClient(numMsg, numClients int) []int {
 		counts[i]++
 	}
 	return counts
+}
+
+// In case of network reconnects, the subscriber clients can lose messages and might never finish waiting for the messages.
+// In such a scenario, even a single subscriber client can block the test from finishing. so use the configured deadline to finish waiting and get the accumulated report.
+func waitForTestCompletion(wg *sync.WaitGroup, deadlineSeconds *int) bool {
+	c := make(chan struct{})
+	deadLine := time.NewTimer(time.Duration(*deadlineSeconds) * time.Second)
+	go func() {
+		wg.Wait()
+		c <- struct{}{}
+	}()
+	select {
+	case <-c:
+		deadLine.Stop()
+		return true // completed normally
+	case <-deadLine.C:
+		return false // wait timed out
+	}
 }
