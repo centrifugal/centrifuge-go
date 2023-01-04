@@ -88,7 +88,9 @@ func main() {
 
 	startWg.Wait()
 	log.Printf("Starting benchmark [msgs=%d, msgsize=%d, pubs=%d, subs=%d]\n", *numMsg, *msgSize, *numPubs, *numSubs)
-	if waitForTestCompletion(&doneWg, deadline) {
+
+	testCompleted := waitForTestCompletion(&doneWg, deadline)
+	if testCompleted {
 		log.Printf("Test completed, generating report")
 	} else {
 		log.Printf("Deadline exceeded, proceeding with report generation")
