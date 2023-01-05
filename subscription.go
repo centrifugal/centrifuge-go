@@ -617,10 +617,10 @@ func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
 
 func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
 	if unsubscribe.Code < 2500 {
-		s.moveToSubscribing(unsubscribe.Code, "server")
-		s.resubscribe()
+		s.moveToUnsubscribed(unsubscribe.Code, unsubscribe.Reason)
 	} else {
-		s.moveToUnsubscribed(unsubscribe.Code, "server")
+		s.moveToSubscribing(unsubscribe.Code, unsubscribe.Reason)
+		s.resubscribe()
 	}
 }
 
