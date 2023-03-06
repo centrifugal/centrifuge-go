@@ -14,6 +14,8 @@ import (
 type SubscribeSuccessEvent struct {
 	Resubscribed bool
 	Recovered    bool
+	Epoch        string
+	Offset       uint64
 }
 
 // SubscribeErrorEvent is a subscribe error event context passed to
@@ -451,7 +453,12 @@ func (s *Subscription) subscribeSuccess(isResubscribe bool, res *protocol.Subscr
 	s.mu.Unlock()
 	if s.events != nil && s.events.onSubscribeSuccess != nil {
 		handler := s.events.onSubscribeSuccess
-		ev := SubscribeSuccessEvent{Resubscribed: isResubscribe, Recovered: res.Recovered}
+		ev := SubscribeSuccessEvent{
+			Resubscribed: isResubscribe,
+			Recovered:    res.Recovered,
+			Epoch:        res.Epoch,
+			Offset:       res.Offset,
+		}
 		s.centrifuge.runHandler(func() {
 			handler.OnSubscribeSuccess(s, ev)
 		})
