@@ -415,6 +415,13 @@ func (s *Subscription) Subscribe(opts ...SubscribeOption) error {
 	s.needResubscribe = true
 	s.mu.Unlock()
 	if !s.centrifuge.connected() {
+		if subscribeOpts.Since != nil {
+			s.mu.Lock()
+			s.recover = true
+			s.lastEpoch = subscribeOpts.Since.Epoch
+			s.lastOffset = subscribeOpts.Since.Offset
+			s.mu.Unlock()
+		}
 		return nil
 	}
 	return s.resubscribe(false, s.centrifuge.clientID(), *subscribeOpts)
