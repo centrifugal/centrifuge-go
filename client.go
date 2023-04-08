@@ -53,11 +53,6 @@ type Client struct {
 	reconnectStrategy reconnectStrategy
 	events            *eventHub
 	sendPong          bool
-	paramsEncoder     protocol.ParamsEncoder
-	resultDecoder     protocol.ResultDecoder
-	commandEncoder    protocol.CommandEncoder
-	pushEncoder       protocol.PushEncoder
-	pushDecoder       protocol.PushDecoder
 	delayPing         chan struct{}
 	closeCh           chan struct{}
 	connectFutures    map[uint64]connectFuture
@@ -130,11 +125,6 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		serverSubs:        make(map[string]*serverSub),
 		requests:          make(map[uint32]request),
 		reconnectStrategy: defaultBackoffReconnect,
-		paramsEncoder:     newParamsEncoder(protocolType),
-		resultDecoder:     newResultDecoder(protocolType),
-		commandEncoder:    newCommandEncoder(protocolType),
-		pushEncoder:       newPushEncoder(protocolType),
-		pushDecoder:       newPushDecoder(protocolType),
 		delayPing:         make(chan struct{}, 32),
 		events:            newEventHub(),
 		connectFutures:    make(map[uint64]connectFuture),
