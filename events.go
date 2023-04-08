@@ -17,6 +17,8 @@ type ServerSubscribeEvent struct {
 	Channel      string
 	Resubscribed bool
 	Recovered    bool
+	Epoch        string
+	Offset       uint64
 }
 
 // ServerJoinEvent has info about user who left channel.

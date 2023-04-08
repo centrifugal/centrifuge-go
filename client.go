@@ -79,6 +79,7 @@ func (c *Client) nextMsgID() uint32 {
 // New initializes Client. After client initialized call its Connect method
 // to trigger connection establishment with server.
 // Deprecated: if you are using Centrifuge >= v0.18.0 or Centrifugo >= 3 then use NewJsonClient or NewProtobufClient.
+//
 //goland:noinspection GoUnusedExportedFunction
 func New(u string, config Config) *Client {
 	return newClient(u, strings.Contains(u, "format=protobuf"), config)
@@ -502,7 +503,6 @@ func (c *Client) handle(reply *protocol.Reply) error {
 }
 
 func (c *Client) handleMessage(msg *protocol.Message) error {
-
 	var handler MessageHandler
 	if c.events != nil && c.events.onMessage != nil {
 		handler = c.events.onMessage
@@ -687,7 +687,13 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) error 
 	}
 	if handler != nil {
 		c.runHandler(func() {
-			handler.OnServerSubscribe(c, ServerSubscribeEvent{Channel: channel, Resubscribed: false, Recovered: false})
+			handler.OnServerSubscribe(c, ServerSubscribeEvent{
+				Channel:      channel,
+				Resubscribed: false,
+				Recovered:    false,
+				Epoch:        sub.Epoch,
+				Offset:       sub.Offset,
+			})
 		})
 	}
 	return nil
@@ -859,6 +865,8 @@ func (c *Client) connectFromScratch(isReconnect bool, reconnectWaitCB func()) er
 						Channel:      channel,
 						Resubscribed: isReconnect, // TODO: check request map.
 						Recovered:    subRes.Recovered,
+						Epoch:        subRes.Epoch,
+						Offset:       subRes.Offset,
 					})
 				})
 			}
