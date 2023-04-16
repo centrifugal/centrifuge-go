@@ -1,3 +1,13 @@
+v0.9.5
+======
+
+* Update protocol package to the latest one.
+
+v0.9.4
+======
+
+* Fix wrong unsubscribe code handling – see commit. According to spec unsubscribe codes >= 2500 should result into resubscribe from the SDK side, centrifuge-go did not follow this, instead it never resubscribed upon receiving such codes from the server. Thus message recovery and automatic resubscribe did not work correctly.
+
 v0.9.3
 ======
 
