@@ -147,11 +147,25 @@ func (c *Client) Connect() error {
 	return c.startConnecting()
 }
 
+// DisconnectOptions may tweak disconnect behavior.
+type DisconnectOptions struct {
+	// ResetConnectionToken if true tells SDK to reset current connection token.
+	ResetConnectionToken bool
+}
+
 // Disconnect client from server. It's still possible to connect again later. If
 // you don't need Client anymore – use Client.Close.
-func (c *Client) Disconnect() error {
+func (c *Client) Disconnect(options ...DisconnectOptions) error {
 	if c.isClosed() {
 		return ErrClientClosed
+	}
+	if len(options) >= 1 {
+		opts := options[0]
+		if opts.ResetConnectionToken {
+			c.mu.Lock()
+			c.token = ""
+			c.mu.Unlock()
+		}
 	}
 	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
 	return nil
@@ -874,6 +888,8 @@ func (c *Client) startReconnecting() error {
 		return nil
 	}
 	refreshRequired := c.refreshRequired
+	token := c.token
+	getTokenFunc := c.config.GetToken
 	c.mu.Unlock()
 
 	wsConfig := websocketConfig{
@@ -903,10 +919,14 @@ func (c *Client) startReconnecting() error {
 		return err
 	}
 
-	if refreshRequired {
+	if refreshRequired || (token == "" && getTokenFunc != nil) {
 		// Try to refresh token.
-		token, err := c.refreshToken()
+		newToken, err := c.refreshToken()
 		if err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
+				return nil
+			}
 			c.handleError(RefreshError{err})
 			c.mu.Lock()
 			if c.state != StateConnecting {
@@ -922,12 +942,8 @@ func (c *Client) startReconnecting() error {
 			c.mu.Unlock()
 			return err
 		} else {
-			if token == "" {
-				c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
-				return nil
-			}
 			c.mu.Lock()
-			c.token = token
+			c.token = newToken
 			if c.state != StateConnecting {
 				c.mu.Unlock()
 				return nil
@@ -1183,7 +1199,8 @@ func isTemporaryError(err error) bool {
 func (c *Client) refreshToken() (string, error) {
 	handler := c.config.GetToken
 	if handler == nil {
-		return "", errors.New("GetToken must be set to handle expired token")
+		c.handleError(ConfigurationError{Err: errors.New("GetToken must be set to handle expired token")})
+		return "", ErrUnauthorized
 	}
 	return handler(ConnectionTokenEvent{})
 }
@@ -1191,9 +1208,14 @@ func (c *Client) refreshToken() (string, error) {
 func (c *Client) sendRefresh() {
 	token, err := c.refreshToken()
 	if err != nil {
+		if errors.Is(err, ErrUnauthorized) {
+			c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
+			return
+		}
+		c.handleError(RefreshError{err})
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		c.handleRefreshError(err)
+		c.handleRefreshError()
 		return
 	}
 	c.mu.Lock()
@@ -1210,9 +1232,10 @@ func (c *Client) sendRefresh() {
 
 	_ = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
 		if err != nil {
+			c.handleError(RefreshError{err})
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			c.handleRefreshError(err)
+			c.handleRefreshError()
 			return
 		}
 		if r.Error != nil {
@@ -1244,11 +1267,10 @@ func (c *Client) sendRefresh() {
 }
 
 // Lock must be held outside.
-func (c *Client) handleRefreshError(err error) {
+func (c *Client) handleRefreshError() {
 	if c.state != StateConnected {
 		return
 	}
-	c.handleError(RefreshError{err})
 	c.refreshTimer = time.AfterFunc(10*time.Second, c.sendRefresh)
 }
 
@@ -1280,30 +1302,28 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 		Id: c.nextCmdID(),
 	}
 
-	if c.token != "" || c.data != nil || len(c.serverSubs) > 0 || c.config.Name != "" || c.config.Version != "" {
-		params := &protocol.ConnectRequest{}
-		params.Token = c.token
-		params.Name = c.config.Name
-		params.Version = c.config.Version
-		if c.data != nil {
-			params.Data = c.data
-		}
-		if len(c.serverSubs) > 0 {
-			subs := make(map[string]*protocol.SubscribeRequest)
-			for channel, serverSub := range c.serverSubs {
-				if !serverSub.Recoverable {
-					continue
-				}
-				subs[channel] = &protocol.SubscribeRequest{
-					Recover: true,
-					Epoch:   serverSub.Epoch,
-					Offset:  serverSub.Offset,
-				}
-			}
-			params.Subs = subs
-		}
-		cmd.Connect = params
+	req := &protocol.ConnectRequest{}
+	req.Token = c.token
+	req.Name = c.config.Name
+	req.Version = c.config.Version
+	if c.data != nil {
+		req.Data = c.data
 	}
+	if len(c.serverSubs) > 0 {
+		subs := make(map[string]*protocol.SubscribeRequest)
+		for channel, serverSub := range c.serverSubs {
+			if !serverSub.Recoverable {
+				continue
+			}
+			subs[channel] = &protocol.SubscribeRequest{
+				Recover: true,
+				Epoch:   serverSub.Epoch,
+				Offset:  serverSub.Offset,
+			}
+		}
+		req.Subs = subs
+	}
+	cmd.Connect = req
 
 	return c.sendAsync(cmd, func(reply *protocol.Reply, err error) {
 		if err != nil {
@@ -1335,9 +1355,7 @@ func (c *Client) sendSubscribe(channel string, data []byte, recover bool, stream
 		}
 		params.Epoch = streamPos.Epoch
 	}
-	if token != "" {
-		params.Token = token
-	}
+	params.Token = token
 	params.Data = data
 	params.Positioned = positioned
 	params.Recoverable = recoverable

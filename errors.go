@@ -20,6 +20,9 @@ var (
 	// that server does not allow subscribing to the same channel twice for
 	// the same connection.
 	ErrDuplicateSubscription = errors.New("duplicate subscription")
+	// ErrUnauthorized is a special error which may be returned by application
+	// from GetToken function to indicate lack of operation permission.
+	ErrUnauthorized = errors.New("unauthorized")
 )
 
 type TransportError struct {
@@ -44,6 +47,14 @@ type RefreshError struct {
 
 func (r RefreshError) Error() string {
 	return fmt.Sprintf("refresh error: %v", r.Err)
+}
+
+type ConfigurationError struct {
+	Err error
+}
+
+func (r ConfigurationError) Error() string {
+	return fmt.Sprintf("configuration error: %v", r.Err)
 }
 
 type SubscriptionSubscribeError struct {
