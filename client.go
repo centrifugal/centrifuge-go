@@ -128,9 +128,9 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		delayPing:         make(chan struct{}, 32),
 		events:            newEventHub(),
 		connectFutures:    make(map[uint64]connectFuture),
+		token:             config.Token,
+		data:              config.Data,
 	}
-	client.token = config.Token
-	client.data = config.Data
 
 	// Queue to run callbacks on.
 	client.cbQueue = &cbQueue{}
@@ -159,7 +159,7 @@ func (c *Client) Disconnect(options ...DisconnectOptions) error {
 	if c.isClosed() {
 		return ErrClientClosed
 	}
-	if len(options) >= 1 {
+	if len(options) == 1 {
 		opts := options[0]
 		if opts.ResetConnectionToken {
 			c.mu.Lock()
@@ -1306,9 +1306,8 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 	req.Token = c.token
 	req.Name = c.config.Name
 	req.Version = c.config.Version
-	if c.data != nil {
-		req.Data = c.data
-	}
+	req.Data = c.data
+
 	if len(c.serverSubs) > 0 {
 		subs := make(map[string]*protocol.SubscribeRequest)
 		for channel, serverSub := range c.serverSubs {
