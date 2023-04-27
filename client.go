@@ -731,9 +731,9 @@ func (c *Client) handlePush(push *protocol.Push) {
 		code := push.Disconnect.Code
 		reconnect := code < 3500 || code >= 5000 || (code >= 4000 && code < 4500)
 		if reconnect {
-			c.moveToDisconnected(code, push.Disconnect.Reason)
-		} else {
 			c.moveToConnecting(code, push.Disconnect.Reason)
+		} else {
+			c.moveToDisconnected(code, push.Disconnect.Reason)
 		}
 	default:
 	}
