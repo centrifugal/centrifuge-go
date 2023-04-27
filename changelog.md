@@ -1,3 +1,8 @@
+v0.9.6
+======
+
+* Properly handle disconnect push
+
 v0.9.5
 ======
 
