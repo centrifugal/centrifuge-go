@@ -147,25 +147,11 @@ func (c *Client) Connect() error {
 	return c.startConnecting()
 }
 
-// DisconnectOptions may tweak disconnect behavior.
-type DisconnectOptions struct {
-	// ResetConnectionToken if true tells SDK to reset current connection token.
-	ResetConnectionToken bool
-}
-
 // Disconnect client from server. It's still possible to connect again later. If
 // you don't need Client anymore – use Client.Close.
-func (c *Client) Disconnect(options ...DisconnectOptions) error {
+func (c *Client) Disconnect() error {
 	if c.isClosed() {
 		return ErrClientClosed
-	}
-	if len(options) == 1 {
-		opts := options[0]
-		if opts.ResetConnectionToken {
-			c.mu.Lock()
-			c.token = ""
-			c.mu.Unlock()
-		}
 	}
 	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
 	return nil
@@ -181,10 +167,19 @@ func (c *Client) Close() {
 	c.moveToClosed()
 }
 
+// State returns current Client state. Note that while you are processing
+// this state - Client can move to a new one.
 func (c *Client) State() State {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.state
+}
+
+// SetToken allows updating Client's connection token.
+func (c *Client) SetToken(token string) {
+	c.mu.Lock()
+	c.token = token
+	c.mu.Unlock()
 }
 
 // NewSubscription allocates new Subscription on a channel. As soon as Subscription
