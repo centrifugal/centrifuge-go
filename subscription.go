@@ -59,7 +59,8 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 	return s
 }
 
-// Subscription represents client subscription to channel.
+// Subscription represents client subscription to channel. DO NOT initialize this struct
+// directly, instead use Client.NewSubscription method to create channel subscriptions.
 type Subscription struct {
 	futureID uint64 // Keep atomic on top!
 
