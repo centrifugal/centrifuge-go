@@ -1,3 +1,14 @@
+v0.10.0
+=======
+
+**Breaking change!** This release changes the semantics of working with connection tokens described in [Centrifugo v5 release post](https://centrifugal.dev/blog/2023/06/29/centrifugo-v5-released#token-behaviour-adjustments-in-sdks).
+
+Previously, returning an empty token string from `Config.GetToken` callback resulted in client disconnection with unauthorized reason.
+
+Now returning an empty string from `Config.GetToken` is a valid scenario which won't result into disconnect on the client side. It's still possible to disconnect client by returning a special error `ErrUnauthorized` from `GetToken` function.
+
+And we are putting back `Client.SetToken` method to the SDK – so it's now possible to reset the token to be empty upon user logout.
+
 v0.9.6
 ======
 
