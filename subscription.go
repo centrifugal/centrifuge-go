@@ -638,13 +638,17 @@ func (s *Subscription) resubscribe() {
 		var err error
 		token, err = s.getSubscriptionToken(s.Channel)
 		if err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				s.unsubscribe(unsubscribedUnauthorized, "unauthorized", false)
+				return
+			}
 			s.subscribeError(err)
 			return
 		}
 		s.mu.Lock()
 		if token == "" {
-			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
 			s.mu.Unlock()
+			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", false)
 			return
 		}
 		s.token = token
@@ -703,6 +707,10 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 
 		token, err := s.getSubscriptionToken(s.Channel)
 		if err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
+				return
+			}
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			s.emitError(SubscriptionRefreshError{Err: err})
@@ -710,8 +718,6 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 			return
 		}
 		if token == "" {
-			s.mu.Lock()
-			defer s.mu.Unlock()
 			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
 			return
 		}
@@ -727,8 +733,6 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 						s.scheduleSubRefresh(10)
 						return
 					} else {
-						s.mu.Lock()
-						defer s.mu.Unlock()
 						s.unsubscribe(serverError.Code, serverError.Message, true)
 						return
 					}

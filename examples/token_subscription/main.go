@@ -81,7 +81,7 @@ func main() {
 		log.Println(fmt.Sprintf("Error subscribing to private channel %s: %v", sub.Channel, e.Error))
 	})
 	sub.OnUnsubscribed(func(e centrifuge.UnsubscribedEvent) {
-		log.Println(fmt.Sprintf("Unsubscribed from private channel %s", sub.Channel))
+		log.Println(fmt.Sprintf("Unsubscribed from private channel %s: %s", sub.Channel, e.Reason))
 	})
 	sub.OnPublication(func(e centrifuge.PublicationEvent) {
 		log.Println(fmt.Sprintf("New message received from channel %s: %s", sub.Channel, string(e.Data)))

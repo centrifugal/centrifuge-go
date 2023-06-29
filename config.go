@@ -12,11 +12,15 @@ import (
 type Config struct {
 	// Token for a connection authentication.
 	Token string
-	// GetToken called to get or refresh connection token.
+	// GetToken called by SDK to get or refresh connection token.
 	GetToken func(ConnectionTokenEvent) (string, error)
 	// Data is an arbitrary data which can be sent to a server in a Connect command.
 	// Make sure it's a valid JSON when using JSON protocol client.
 	Data []byte
+	// CookieJar specifies the cookie jar to send in WebSocket Upgrade request.
+	CookieJar http.CookieJar
+	// Header specifies custom HTTP Header to send in WebSocket Upgrade request.
+	Header http.Header
 	// Name allows setting client name. You should only use a limited
 	// amount of client names throughout your applications – i.e. don't
 	// make it unique per user for example, this name semantically represents
@@ -49,10 +53,4 @@ type Config struct {
 	// guarantee that compression will be supported. Currently, only "no context
 	// takeover" modes are supported.
 	EnableCompression bool
-	// CookieJar specifies the cookie jar.
-	// If CookieJar is nil, cookies are not sent in requests and ignored
-	// in responses.
-	CookieJar http.CookieJar
-	// Header specifies custom HTTP Header to send.
-	Header http.Header
 }

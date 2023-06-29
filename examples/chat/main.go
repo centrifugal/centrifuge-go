@@ -46,8 +46,8 @@ func main() {
 	client := centrifuge.NewJsonClient(
 		"ws://localhost:8000/connection/websocket",
 		centrifuge.Config{
-			// Uncomment to make it work with Centrifugo JWT auth.
-			//Token: connToken("49", 0),
+			// Sending token makes it work with Centrifugo JWT auth (with `secret` HMAC key).
+			Token: connToken("49", 0),
 		},
 	)
 	defer client.Close()
