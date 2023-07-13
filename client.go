@@ -76,6 +76,24 @@ func NewProtobufClient(endpoint string, config Config) *Client {
 	return newClient(endpoint, true, config)
 }
 
+// IsValidEndpoint checks if endpoint is valid.
+// This function should be used to validate endpoint string before creating a Client.
+// Endpoint must be a string with at least one endpoint URL.
+// Multiple endpoint URLs must be separated by comma.
+// Each endpoint URL must begin with ws or wss scheme.
+func IsValidEndpoint(endpoint string) (bool, error) {
+	endpoints := strings.Split(endpoint, ",")
+	if len(endpoints) == 0 {
+		return false, fmt.Errorf("connection endpoint required")
+	}
+	for _, e := range endpoints {
+		if !strings.HasPrefix(e, "ws") {
+			return false, fmt.Errorf("unsupported connection endpoint: %s", e)
+		}
+	}
+	return true, nil
+}
+
 func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	if config.ReadTimeout == 0 {
 		config.ReadTimeout = 5 * time.Second
@@ -98,18 +116,13 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	// We support setting multiple endpoints to try in round-robin fashion. But
 	// for now this feature is not documented and used for internal tests. In most
 	// cases there should be a single public server WS endpoint.
-	endpoints := strings.Split(endpoint, ",")
-	if len(endpoints) == 0 {
-		panic("connection endpoint required")
+	if ok, err := IsValidEndpoint(endpoint); !ok {
+		panic(err)
 	}
+	endpoints := strings.Split(endpoint, ",")
 	rand.Shuffle(len(endpoints), func(i, j int) {
 		endpoints[i], endpoints[j] = endpoints[j], endpoints[i]
 	})
-	for _, e := range endpoints {
-		if !strings.HasPrefix(e, "ws") {
-			panic(fmt.Sprintf("unsupported connection endpoint: %s", e))
-		}
-	}
 
 	protocolType := protocol.TypeJSON
 	if isProtobuf {
