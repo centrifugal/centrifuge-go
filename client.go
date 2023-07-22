@@ -63,15 +63,19 @@ type Client struct {
 }
 
 // NewJsonClient initializes Client which uses JSON-based protocol internally.
-// After client initialized call Client.Connect method.
-// Use Client.NewSubscription to create Subscription objects.
+// After client initialized call Client.Connect method. Use Client.NewSubscription to
+// create Subscription objects.
+// The provided endpoint must be a valid URL with ws:// or wss:// scheme – otherwise
+// NewJsonClient will panic.
 func NewJsonClient(endpoint string, config Config) *Client {
 	return newClient(endpoint, false, config)
 }
 
 // NewProtobufClient initializes Client which uses Protobuf-based protocol internally.
-// After client initialized call Client.Connect method.
-// Use Client.NewSubscription to create Subscription objects.
+// After client initialized call Client.Connect method. Use Client.NewSubscription to
+// create Subscription objects.
+// The provided endpoint must be a valid URL with ws:// or wss:// scheme – otherwise
+// NewProtobufClient will panic.
 func NewProtobufClient(endpoint string, config Config) *Client {
 	return newClient(endpoint, true, config)
 }
