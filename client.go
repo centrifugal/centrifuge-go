@@ -631,10 +631,12 @@ func (c *Client) reader(t transport, disconnectCh chan struct{}) {
 
 func (c *Client) runHandlerSync(fn func()) {
 	waitCh := make(chan struct{})
+	c.mu.RLock()
 	c.cbQueue.push(func(delay time.Duration) {
 		defer close(waitCh)
 		fn()
 	})
+	c.mu.RUnlock()
 	<-waitCh
 }
 
@@ -696,44 +698,38 @@ func (c *Client) handleMessage(msg *protocol.Message) error {
 }
 
 func (c *Client) handlePush(push *protocol.Push) {
+	channel := push.Channel
+	c.mu.RLock()
+	sub, ok := c.subs[channel]
+	c.mu.RUnlock()
 	switch {
 	case push.Message != nil:
 		_ = c.handleMessage(push.Message)
 	case push.Unsubscribe != nil:
-		channel := push.Channel
-		sub, ok := c.subs[channel]
 		if !ok {
 			c.handleServerUnsub(channel, push.Unsubscribe)
 			return
 		}
 		sub.handleUnsubscribe(push.Unsubscribe)
 	case push.Pub != nil:
-		channel := push.Channel
-		sub, ok := c.subs[channel]
 		if !ok {
 			c.handleServerPublication(channel, push.Pub)
 			return
 		}
 		sub.handlePublication(push.Pub)
 	case push.Join != nil:
-		channel := push.Channel
-		sub, ok := c.subs[channel]
 		if !ok {
 			c.handleServerJoin(channel, push.Join)
 			return
 		}
 		sub.handleJoin(push.Join.Info)
 	case push.Leave != nil:
-		channel := push.Channel
-		sub, ok := c.subs[channel]
 		if !ok {
 			c.handleServerLeave(channel, push.Leave)
 			return
 		}
 		sub.handleLeave(push.Leave.Info)
 	case push.Subscribe != nil:
-		channel := push.Channel
-		_, ok := c.subs[channel]
 		if ok {
 			// Client-side subscription exists.
 			return

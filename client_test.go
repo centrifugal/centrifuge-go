@@ -392,3 +392,76 @@ func TestClient_History(t *testing.T) {
 		t.Fatal("expected not available error, got " + strconv.FormatUint(uint64(e.Code), 10))
 	}
 }
+
+func TestConcurrentPublishSubscribe(t *testing.T) {
+	const (
+		numMessages        = 1000
+		numResubscritpions = 100
+	)
+
+	producer := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	defer producer.Close()
+
+	if err := producer.Connect(); err != nil {
+		t.Fatalf("error on connect: %v", err)
+	}
+
+	errChan := make(chan error)
+	defer close(errChan)
+	go func() {
+		for i := 0; i < numMessages; i++ {
+			msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
+			_, err := producer.Publish(context.Background(), "test_concurrent", msg)
+			if err != nil {
+				errChan <- fmt.Errorf("error on publish: %v", err)
+				return
+			}
+		}
+		errChan <- nil
+	}()
+
+	go func() {
+		for i := 0; i < numResubscritpions; i++ {
+			consumer := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+			if err := consumer.Connect(); err != nil {
+				errChan <- fmt.Errorf("error on connect: %v", err)
+				return
+			}
+
+			handler := &testSubscriptionHandler{}
+			sub, err := consumer.NewSubscription("test_concurrent")
+			if err != nil {
+				errChan <- fmt.Errorf("error on new subscription: %v (%d)", err, i)
+				return
+			}
+			sub.OnSubscribed(handler.OnSubscribe)
+			sub.OnPublication(handler.OnPublication)
+			if err := sub.Subscribe(); err != nil {
+				errChan <- fmt.Errorf("error on subscribe: %v (%d)", err, i)
+				return
+			}
+			sub2, err := consumer.NewSubscription("something_else")
+			if err != nil {
+				errChan <- fmt.Errorf("error on new subscription: %v (%d)", err, i)
+				return
+			}
+			sub2.OnSubscribed(handler.OnSubscribe)
+			sub2.OnPublication(handler.OnPublication)
+			if err := sub2.Subscribe(); err != nil {
+				errChan <- fmt.Errorf("error on subscribe: %v (%d)", err, i)
+				return
+			}
+		}
+		errChan <- nil
+	}()
+
+	var err error
+	for i := 0; i < 2; i++ {
+		if e := <-errChan; e != nil {
+			err = e
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+}
