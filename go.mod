@@ -15,5 +15,5 @@ require (
 	github.com/segmentio/encoding v0.3.6 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	golang.org/x/sys v0.0.0-20220829200755-d48e67d00261 // indirect
-	google.golang.org/protobuf v1.30.0 // indirect
+	google.golang.org/protobuf v1.33.0 // indirect
 )
