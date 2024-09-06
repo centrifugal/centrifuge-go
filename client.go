@@ -99,9 +99,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	if config.Name == "" {
 		config.Name = "go"
 	}
-	if config.Proxy == nil {
-		config.Proxy = http.ProxyFromEnvironment
-	}
+
 	// We support setting multiple endpoints to try in round-robin fashion. But
 	// for now this feature is not documented and used for internal tests. In most
 	// cases there should be a single public server WS endpoint.
