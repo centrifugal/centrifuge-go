@@ -96,10 +96,6 @@ type websocketConfig struct {
 func newWebsocketTransport(url string, protocolType protocol.Type, config websocketConfig) (transport, error) {
 	wsHeaders := config.Header
 
-	if config.Proxy == nil {
-		config.Proxy = http.ProxyFromEnvironment
-	}
-
 	dialer := &websocket.Dialer{}
 	dialer.Proxy = config.Proxy
 	dialer.NetDialContext = config.NetDialContext
