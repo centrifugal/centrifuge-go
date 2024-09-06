@@ -99,6 +99,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	if config.Name == "" {
 		config.Name = "go"
 	}
+
 	// We support setting multiple endpoints to try in round-robin fashion. But
 	// for now this feature is not documented and used for internal tests. In most
 	// cases there should be a single public server WS endpoint.
@@ -888,6 +889,7 @@ func (c *Client) startReconnecting() error {
 	c.mu.Unlock()
 
 	wsConfig := websocketConfig{
+		Proxy:             c.config.Proxy,
 		NetDialContext:    c.config.NetDialContext,
 		TLSConfig:         c.config.TLSConfig,
 		HandshakeTimeout:  c.config.HandshakeTimeout,
