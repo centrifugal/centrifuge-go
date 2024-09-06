@@ -63,8 +63,7 @@ type websocketTransport struct {
 
 // websocketConfig configures Websocket transport.
 type websocketConfig struct {
-	// Proxy specifies the function responsible for determining the proxy URL. If
-	// Proxy is nil, http.ProxyFromEnvironment is used.
+	// Proxy specifies the function responsible for determining the proxy URL.
 	Proxy func(*http.Request) (*url.URL, error)
 
 	// NetDialContext specifies the dial function for creating TCP connections. If
