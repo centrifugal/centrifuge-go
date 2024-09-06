@@ -888,7 +888,7 @@ func (c *Client) startReconnecting() error {
 	c.mu.Unlock()
 
 	wsConfig := websocketConfig{
-		Proxy:			   c.config.Proxy,
+		Proxy:             c.config.Proxy,
 		NetDialContext:    c.config.NetDialContext,
 		TLSConfig:         c.config.TLSConfig,
 		HandshakeTimeout:  c.config.HandshakeTimeout,
