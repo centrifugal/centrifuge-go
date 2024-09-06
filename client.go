@@ -873,6 +873,7 @@ func (c *Client) handleServerUnsub(channel string, _ *protocol.Unsubscribe) {
 func (c *Client) getReconnectDelay() time.Duration {
 	return c.reconnectStrategy.timeBeforeNextAttempt(c.reconnectAttempts)
 }
+type ProxyFunc = func(*http.Request) (*url.URL, error)
 
 func (c *Client) startReconnecting() error {
 	c.mu.Lock()
@@ -888,6 +889,7 @@ func (c *Client) startReconnecting() error {
 	c.mu.Unlock()
 
 	wsConfig := websocketConfig{
+		Proxy:			   c.config.Proxy,
 		NetDialContext:    c.config.NetDialContext,
 		TLSConfig:         c.config.TLSConfig,
 		HandshakeTimeout:  c.config.HandshakeTimeout,
