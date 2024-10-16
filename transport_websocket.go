@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -62,6 +63,12 @@ type websocketTransport struct {
 
 // websocketConfig configures Websocket transport.
 type websocketConfig struct {
+	// Proxy specifies a function to return a proxy for a given Request.
+	// If the function returns a non-nil error, the request is aborted with the
+	// provided error. If function returns a nil *URL, no proxy is used.
+	// If Proxy is nil then http.ProxyFromEnvironment will be used.
+	Proxy func(*http.Request) (*url.URL, error)
+
 	// NetDialContext specifies the dial function for creating TCP connections. If
 	// NetDialContext is nil, net.DialContext is used.
 	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -92,7 +99,11 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 	wsHeaders := config.Header
 
 	dialer := &websocket.Dialer{}
-	dialer.Proxy = http.ProxyFromEnvironment
+	if config.Proxy != nil {
+		dialer.Proxy = config.Proxy
+	} else {
+		dialer.Proxy = http.ProxyFromEnvironment
+	}
 	dialer.NetDialContext = config.NetDialContext
 
 	dialer.HandshakeTimeout = config.HandshakeTimeout

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -30,6 +31,11 @@ type Config struct {
 	// Version allows setting client version. This is an application
 	// specific information. By default, no version set.
 	Version string
+	// Proxy specifies a function to return a proxy for a given Request.
+	// If the function returns a non-nil error, the request is aborted with the
+	// provided error. If function returns a nil *URL, no proxy is used.
+	// If Proxy is nil then http.ProxyFromEnvironment will be used.
+	Proxy func(*http.Request) (*url.URL, error)
 	// NetDialContext specifies the dial function for creating TCP connections. If
 	// NetDialContext is nil, net.DialContext is used.
 	NetDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
