@@ -537,13 +537,17 @@ func (c *Client) moveToClosed() {
 		})
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	disconnectedCh := c.disconnectedCh
+	c.mu.RUnlock()
 	// At this point connection close was issued, so we wait until the reader goroutine
 	// finishes its work, after that it's safe to close the callback queue.
-	if c.disconnectedCh != nil {
-		<-c.disconnectedCh
+	if disconnectedCh != nil {
+		<-disconnectedCh
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.disconnectedCh = nil
 	c.cbQueue.close()
 	c.cbQueue = nil
