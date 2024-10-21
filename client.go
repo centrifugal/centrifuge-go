@@ -43,6 +43,7 @@ type Client struct {
 	token             string
 	data              protocol.Raw
 	transport         transport
+	disconnectedCh    chan struct{}
 	state             State
 	subs              map[string]*Subscription
 	serverSubs        map[string]*serverSub
@@ -138,7 +139,9 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	}
 
 	// Queue to run callbacks on.
-	client.cbQueue = &cbQueue{}
+	client.cbQueue = &cbQueue{
+		closeCh: make(chan struct{}),
+	}
 	client.cbQueue.cond = sync.NewCond(&client.cbQueue.mu)
 	go client.cbQueue.dispatch()
 
@@ -534,10 +537,20 @@ func (c *Client) moveToClosed() {
 		})
 	}
 
+	c.mu.RLock()
+	disconnectedCh := c.disconnectedCh
+	c.mu.RUnlock()
+	// At this point connection close was issued, so we wait until the reader goroutine
+	// finishes its work, after that it's safe to close the callback queue.
+	if disconnectedCh != nil {
+		<-disconnectedCh
+	}
+
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disconnectedCh = nil
 	c.cbQueue.close()
 	c.cbQueue = nil
-	c.mu.Unlock()
 }
 
 func (c *Client) handleError(err error) {
@@ -959,6 +972,7 @@ func (c *Client) startReconnecting() error {
 	disconnectCh := make(chan struct{})
 	c.receive = make(chan []byte, 64)
 	c.transport = t
+	c.disconnectedCh = disconnectCh
 
 	go c.reader(t, disconnectCh)
 

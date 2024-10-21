@@ -11,10 +11,12 @@ import (
 // https://github.com/nats-io/nats.go client released under Apache 2.0
 // license: see https://github.com/nats-io/nats.go/blob/master/LICENSE.
 type cbQueue struct {
-	mu   sync.Mutex
-	cond *sync.Cond
-	head *asyncCB
-	tail *asyncCB
+	mu      sync.Mutex
+	cond    *sync.Cond
+	head    *asyncCB
+	tail    *asyncCB
+	closeCh chan struct{}
+	closed  bool
 }
 
 type asyncCB struct {
@@ -43,6 +45,7 @@ func (q *cbQueue) dispatch() {
 		// This signals that the dispatcher has been closed and all
 		// previous callbacks have been dispatched.
 		if curr.fn == nil {
+			close(q.closeCh)
 			return
 		}
 		curr.fn(time.Since(curr.tm))
@@ -56,13 +59,22 @@ func (q *cbQueue) push(f func(duration time.Duration)) {
 }
 
 // Close signals that async queue must be closed.
+// Queue won't accept any more callbacks after that – ignoring them if pushed.
 func (q *cbQueue) close() {
 	q.pushOrClose(nil, true)
+	q.waitClose()
+}
+
+func (q *cbQueue) waitClose() {
+	<-q.closeCh
 }
 
 func (q *cbQueue) pushOrClose(f func(time.Duration), close bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.closed {
+		return
+	}
 	// Make sure that library is not calling push with nil function,
 	// since this is used to notify the dispatcher that it must stop.
 	if !close && f == nil {
@@ -76,6 +88,7 @@ func (q *cbQueue) pushOrClose(f func(time.Duration), close bool) {
 	}
 	q.tail = cb
 	if close {
+		q.closed = true
 		q.cond.Broadcast()
 	} else {
 		q.cond.Signal()
