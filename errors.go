@@ -33,12 +33,20 @@ func (t TransportError) Error() string {
 	return fmt.Sprintf("transport error: %v", t.Err)
 }
 
+func (t TransportError) Unwrap() error {
+	return t.Err
+}
+
 type ConnectError struct {
 	Err error
 }
 
 func (c ConnectError) Error() string {
 	return fmt.Sprintf("connect error: %v", c.Err)
+}
+
+func (c ConnectError) Unwrap() error {
+	return c.Err
 }
 
 type RefreshError struct {
@@ -49,12 +57,20 @@ func (r RefreshError) Error() string {
 	return fmt.Sprintf("refresh error: %v", r.Err)
 }
 
+func (r RefreshError) Unwrap() error {
+	return r.Err
+}
+
 type ConfigurationError struct {
 	Err error
 }
 
-func (r ConfigurationError) Error() string {
-	return fmt.Sprintf("configuration error: %v", r.Err)
+func (c ConfigurationError) Error() string {
+	return fmt.Sprintf("configuration error: %v", c.Err)
+}
+
+func (c ConfigurationError) Unwrap() error {
+	return c.Err
 }
 
 type SubscriptionSubscribeError struct {
@@ -65,10 +81,18 @@ func (s SubscriptionSubscribeError) Error() string {
 	return fmt.Sprintf("subscribe error: %v", s.Err)
 }
 
+func (s SubscriptionSubscribeError) Unwrap() error {
+	return s.Err
+}
+
 type SubscriptionRefreshError struct {
 	Err error
 }
 
 func (s SubscriptionRefreshError) Error() string {
 	return fmt.Sprintf("refresh error: %v", s.Err)
+}
+
+func (s SubscriptionRefreshError) Unwrap() error {
+	return s.Err
 }
