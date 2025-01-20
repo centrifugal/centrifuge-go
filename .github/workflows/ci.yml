@@ -37,4 +37,4 @@ jobs:
         run: docker run -d -p 8000:8000 centrifugo/centrifugo:latest centrifugo --client_insecure
 
       - name: Test
-        run: go test -race -v
+        run: sleep 3; go test -race -v
