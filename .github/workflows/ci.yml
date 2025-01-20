@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Start Centrifugo
-        run: docker run -d -p 8000:8000 centrifugo/centrifugo:latest centrifugo --client_insecure
+        run: docker run -d -p 8000:8000 centrifugo/centrifugo:latest centrifugo --client.insecure
 
       - name: Test
-        run: sleep 3; go test -race -v
+        run: go test -race -v
