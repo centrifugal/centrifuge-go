@@ -1275,7 +1275,7 @@ func (c *Client) sendRefresh() {
 	}
 	cmd.Refresh = params
 
-	err = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
+	if err := c.sendAsync(cmd, func(r *protocol.Reply, err error) {
 		if err != nil {
 			c.handleError(RefreshError{err})
 			c.mu.Lock()
@@ -1308,11 +1308,9 @@ func (c *Client) sendRefresh() {
 			}
 			c.mu.Unlock()
 		}
-	})
-	if err != nil {
+	}); err != nil {
 		slog.Debug("centrifuge client failed to send refresh error to Centrifugo server", "reason", err)
 	}
-
 }
 
 // Lock must be held outside.
