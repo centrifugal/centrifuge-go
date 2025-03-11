@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -366,6 +367,12 @@ func (c *Client) sendRPC(ctx context.Context, method string, data []byte, fn fun
 
 func (c *Client) moveToDisconnected(code uint32, reason string) {
 	c.mu.Lock()
+	slog.Debug(
+		"centrifuge client is attempting to move to a disconnected state",
+		"code", code,
+		"reason", reason,
+		"currentState", c.state,
+	)
 	if c.state == StateDisconnected || c.state == StateClosed {
 		c.mu.Unlock()
 		return
@@ -428,6 +435,12 @@ func (c *Client) moveToDisconnected(code uint32, reason string) {
 
 func (c *Client) moveToConnecting(code uint32, reason string) {
 	c.mu.Lock()
+	slog.Debug(
+		"centrifuge client is attempting to move to a connecting state",
+		"code", code,
+		"reason", reason,
+		"currentState", c.state,
+	)
 	if c.state == StateDisconnected || c.state == StateClosed || c.state == StateConnecting {
 		c.mu.Unlock()
 		return
@@ -491,14 +504,16 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 	}
 	c.reconnectAttempts++
 	reconnectDelay := c.getReconnectDelay()
-	c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
-		_ = c.startReconnecting()
-	})
+	c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 	c.mu.Unlock()
 }
 
 func (c *Client) moveToClosed() {
 	c.mu.Lock()
+	slog.Debug(
+		"centrifuge client is attempting to move to a closed state",
+		"currentState", c.state,
+	)
 	if c.state == StateClosed {
 		c.mu.Unlock()
 		return
@@ -567,6 +582,7 @@ func (c *Client) handleError(err error) {
 
 // Lock must be held outside.
 func (c *Client) clearConnectedState() {
+	slog.Debug("centrifuge clearing its connected state")
 	if c.reconnectTimer != nil {
 		c.reconnectTimer.Stop()
 		c.reconnectTimer = nil
@@ -616,6 +632,7 @@ func (c *Client) waitServerPing(disconnectCh chan struct{}, pingInterval uint32)
 		select {
 		case <-c.delayPing:
 		case <-time.After(timeout):
+			slog.Debug("centrifuge client did not receive a ping and will now move to disconnected")
 			go c.handleDisconnect(&disconnect{Code: connectingNoPing, Reason: "no ping", Reconnect: true})
 		case <-disconnectCh:
 			return
@@ -888,7 +905,20 @@ func (c *Client) getReconnectDelay() time.Duration {
 	return c.reconnectStrategy.timeBeforeNextAttempt(c.reconnectAttempts)
 }
 
+func (c *Client) reconnectAfter(delay time.Duration) *time.Timer {
+	return time.AfterFunc(delay, func() {
+		slog.Debug("centrifuge client will attempt to reconnect after a delay",
+			"delayDuration", delay,
+			"attempt", c.reconnectAttempts,
+		)
+		if err := c.startReconnecting(); err != nil {
+			slog.Error("centrifuge client failed to start reconnecting", "reason", err)
+		}
+	})
+}
+
 func (c *Client) startReconnecting() error {
+	slog.Debug("centrifuge is start to attempt a reconnect")
 	c.mu.Lock()
 	c.round++
 	round := c.round
@@ -914,6 +944,7 @@ func (c *Client) startReconnecting() error {
 	u := c.endpoints[round%len(c.endpoints)]
 	t, err := newWebsocketTransport(u, c.protocolType, wsConfig)
 	if err != nil {
+		slog.Debug("centrifuge client failed to build a websocket connection", "reason", err)
 		c.handleError(TransportError{err})
 		c.mu.Lock()
 		if c.state != StateConnecting {
@@ -922,17 +953,21 @@ func (c *Client) startReconnecting() error {
 		}
 		c.reconnectAttempts++
 		reconnectDelay := c.getReconnectDelay()
-		c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
-			_ = c.startReconnecting()
-		})
+		c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 		c.mu.Unlock()
 		return err
 	}
 
 	if refreshRequired || (token == "" && getTokenFunc != nil) {
+		slog.Debug("centrifuge client will attempt to get a new token",
+			"refreshRequired", refreshRequired,
+			"hasToken", token != "",
+			"hasGetTokenFunc", getTokenFunc != nil,
+		)
 		// Try to refresh token.
 		newToken, err := c.refreshToken()
 		if err != nil {
+			slog.Debug("centrifuge client failed to get a new token", "reason", err)
 			if errors.Is(err, ErrUnauthorized) {
 				c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
 				return nil
@@ -946,14 +981,13 @@ func (c *Client) startReconnecting() error {
 			}
 			c.reconnectAttempts++
 			reconnectDelay := c.getReconnectDelay()
-			c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
-				_ = c.startReconnecting()
-			})
+			c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 			c.mu.Unlock()
 			return err
 		} else {
 			c.mu.Lock()
 			c.token = newToken
+			slog.Debug("centrifuge client succeeded in refreshing its token")
 			if c.state != StateConnecting {
 				c.mu.Unlock()
 				return nil
@@ -976,6 +1010,7 @@ func (c *Client) startReconnecting() error {
 
 	go c.reader(t, disconnectCh)
 
+	slog.Debug("centrifuge client is attempting to connect to Centrifugo server")
 	err = c.sendConnect(func(res *protocol.ConnectResult, err error) {
 		c.mu.Lock()
 		if c.state != StateConnecting {
@@ -987,6 +1022,7 @@ func (c *Client) startReconnecting() error {
 			c.handleError(ConnectError{err})
 			_ = t.Close()
 			if isTokenExpiredError(err) {
+				slog.Debug("centrifuge client failed to connect because the token became expired", "reason", err)
 				c.mu.Lock()
 				defer c.mu.Unlock()
 				if c.state != StateConnecting {
@@ -995,17 +1031,17 @@ func (c *Client) startReconnecting() error {
 				c.refreshRequired = true
 				c.reconnectAttempts++
 				reconnectDelay := c.getReconnectDelay()
-				c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
-					_ = c.startReconnecting()
-				})
+				c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 				return
 			} else if isServerError(err) && !isTemporaryError(err) {
+				slog.Debug("centrifuge client failed to connect because of a non-temporary server error", "reason", err)
 				var serverError *Error
 				if errors.As(err, &serverError) {
 					c.moveToDisconnected(serverError.Code, serverError.Message)
 				}
 				return
 			} else {
+				slog.Debug("centrifuge client failed to connect", "reason", err)
 				c.mu.Lock()
 				defer c.mu.Unlock()
 				if c.state != StateConnecting {
@@ -1013,9 +1049,7 @@ func (c *Client) startReconnecting() error {
 				}
 				c.reconnectAttempts++
 				reconnectDelay := c.getReconnectDelay()
-				c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
-					_ = c.startReconnecting()
-				})
+				c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 				return
 			}
 		}
@@ -1138,12 +1172,11 @@ func (c *Client) startReconnecting() error {
 		c.resubscribe()
 	})
 	if err != nil {
+		slog.Debug("centrifuge client is failed to connect to Centrifugo server", "reason", err)
 		_ = t.Close()
 		c.reconnectAttempts++
 		reconnectDelay := c.getReconnectDelay()
-		c.reconnectTimer = time.AfterFunc(reconnectDelay, func() {
-			_ = c.startReconnecting()
-		})
+		c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 		c.handleError(ConnectError{err})
 	}
 	c.mu.Unlock()
@@ -1151,6 +1184,7 @@ func (c *Client) startReconnecting() error {
 }
 
 func (c *Client) startConnecting() error {
+	slog.Debug("centrifuge client is starting to connect")
 	c.mu.Lock()
 	if c.state == StateClosed {
 		c.mu.Unlock()
@@ -1176,7 +1210,6 @@ func (c *Client) startConnecting() error {
 			handler(event)
 		})
 	}
-
 	return c.startReconnecting()
 }
 
@@ -1217,8 +1250,10 @@ func (c *Client) refreshToken() (string, error) {
 }
 
 func (c *Client) sendRefresh() {
+	slog.Debug("centrifuge client is attempting to refresh its token")
 	token, err := c.refreshToken()
 	if err != nil {
+		slog.Debug("centrifuge client failed to refresh its token", "reason", err)
 		if errors.Is(err, ErrUnauthorized) {
 			c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
 			return
@@ -1241,7 +1276,7 @@ func (c *Client) sendRefresh() {
 	}
 	cmd.Refresh = params
 
-	_ = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
+	err = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
 		if err != nil {
 			c.handleError(RefreshError{err})
 			c.mu.Lock()
@@ -1275,6 +1310,10 @@ func (c *Client) sendRefresh() {
 			c.mu.Unlock()
 		}
 	})
+	if err != nil {
+		slog.Debug("centrifuge client failed to send refresh error to Centrifugo server", "reason", err)
+	}
+
 }
 
 // Lock must be held outside.
@@ -1334,7 +1373,6 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 		req.Subs = subs
 	}
 	cmd.Connect = req
-
 	return c.sendAsync(cmd, func(reply *protocol.Reply, err error) {
 		if err != nil {
 			fn(nil, err)
