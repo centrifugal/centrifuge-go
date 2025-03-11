@@ -1011,7 +1011,7 @@ func (c *Client) startReconnecting() error {
 	go c.reader(t, disconnectCh)
 
 	slog.Debug("centrifuge client is attempting to connect to Centrifugo server")
-	err = c.sendConnect(func(res *protocol.ConnectResult, err error) {
+	if err := c.sendConnect(func(res *protocol.ConnectResult, err error) {
 		c.mu.Lock()
 		if c.state != StateConnecting {
 			c.mu.Unlock()
@@ -1170,8 +1170,7 @@ func (c *Client) startReconnecting() error {
 			go c.waitServerPing(disconnectCh, res.Ping)
 		}
 		c.resubscribe()
-	})
-	if err != nil {
+	}); err != nil {
 		slog.Debug("centrifuge client is failed to connect to Centrifugo server", "reason", err)
 		_ = t.Close()
 		c.reconnectAttempts++
