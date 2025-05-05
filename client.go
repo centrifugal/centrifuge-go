@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/centrifugal/centrifuge-go/internal/mutex"
 	"github.com/centrifugal/protocol"
 )
 
@@ -36,7 +37,7 @@ const (
 type Client struct {
 	futureID          uint64
 	cmdID             uint32
-	mu                sync.RWMutex
+	mu                *mutex.Mutex
 	endpoints         []string
 	round             int
 	protocolType      protocol.Type
@@ -48,7 +49,7 @@ type Client struct {
 	state             State
 	subs              map[string]*Subscription
 	serverSubs        map[string]*serverSub
-	requestsMu        sync.RWMutex
+	requestsMu        *mutex.Mutex
 	requests          map[uint32]request
 	receive           chan []byte
 	reconnectAttempts int
@@ -179,8 +180,8 @@ func (c *Client) Close() {
 // State returns current Client state. Note that while you are processing
 // this state - Client can move to a new one.
 func (c *Client) State() State {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.state
 }
 
@@ -224,8 +225,8 @@ func (c *Client) RemoveSubscription(sub *Subscription) error {
 
 // GetSubscription allows getting Subscription from the internal client registry.
 func (c *Client) GetSubscription(channel string) (*Subscription, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	s, ok := c.subs[channel]
 	return s, ok
 }
@@ -306,21 +307,21 @@ func (c *Client) nextCmdID() uint32 {
 }
 
 func (c *Client) isConnected() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.state == StateConnected
 }
 
 func (c *Client) isClosed() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.state == StateClosed
 }
 
 func (c *Client) isSubscribed(channel string) bool {
-	c.mu.RLock()
+	c.mu.Lock()
 	_, ok := c.subs[channel]
-	c.mu.RUnlock()
+	c.mu.Unlock()
 	return ok
 }
 
@@ -552,9 +553,9 @@ func (c *Client) moveToClosed() {
 		})
 	}
 
-	c.mu.RLock()
+	c.mu.Lock()
 	disconnectedCh := c.disconnectedCh
-	c.mu.RUnlock()
+	c.mu.Unlock()
 	// At this point connection close was issued, so we wait until the reader goroutine
 	// finishes its work, after that it's safe to close the callback queue.
 	if disconnectedCh != nil {
@@ -662,12 +663,12 @@ func (c *Client) reader(t transport, disconnectCh chan struct{}) {
 
 func (c *Client) runHandlerSync(fn func()) {
 	waitCh := make(chan struct{})
-	c.mu.RLock()
+	c.mu.Lock()
 	c.cbQueue.push(func(delay time.Duration) {
 		defer close(waitCh)
 		fn()
 	})
-	c.mu.RUnlock()
+	c.mu.Unlock()
 	<-waitCh
 }
 
@@ -679,9 +680,9 @@ func (c *Client) runHandlerAsync(fn func()) {
 
 func (c *Client) handle(reply *protocol.Reply) {
 	if reply.Id > 0 {
-		c.requestsMu.RLock()
+		c.requestsMu.Lock()
 		req, ok := c.requests[reply.Id]
-		c.requestsMu.RUnlock()
+		c.requestsMu.Unlock()
 		if ok {
 			if req.cb != nil {
 				req.cb(reply, nil)
@@ -695,9 +696,9 @@ func (c *Client) handle(reply *protocol.Reply) {
 			case c.delayPing <- struct{}{}:
 			default:
 			}
-			c.mu.RLock()
+			c.mu.Lock()
 			sendPong := c.sendPong
-			c.mu.RUnlock()
+			c.mu.Unlock()
 			if sendPong {
 				cmd := &protocol.Command{}
 				_ = c.send(cmd)
@@ -730,9 +731,9 @@ func (c *Client) handleMessage(msg *protocol.Message) error {
 
 func (c *Client) handlePush(push *protocol.Push) {
 	channel := push.Channel
-	c.mu.RLock()
+	c.mu.Lock()
 	sub, ok := c.subs[channel]
-	c.mu.RUnlock()
+	c.mu.Unlock()
 	switch {
 	case push.Message != nil:
 		_ = c.handleMessage(push.Message)
@@ -1836,17 +1837,17 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 		defer c.removeRequest(cmd.Id)
 		select {
 		case <-time.After(c.config.ReadTimeout):
-			c.requestsMu.RLock()
+			c.requestsMu.Lock()
 			req, ok := c.requests[cmd.Id]
-			c.requestsMu.RUnlock()
+			c.requestsMu.Unlock()
 			if !ok {
 				return
 			}
 			req.cb(nil, ErrTimeout)
 		case <-closeCh:
-			c.requestsMu.RLock()
+			c.requestsMu.Lock()
 			req, ok := c.requests[cmd.Id]
-			c.requestsMu.RUnlock()
+			c.requestsMu.Unlock()
 			if !ok {
 				return
 			}
