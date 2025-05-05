@@ -3,10 +3,10 @@ package centrifuge
 import (
 	"context"
 	"errors"
-	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/centrifugal/centrifuge-go/internal/mutex"
 	"github.com/centrifugal/protocol"
 )
 
@@ -64,7 +64,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 type Subscription struct {
 	futureID uint64 // Keep atomic on top!
 
-	mu         sync.RWMutex
+	mu         mutex.Mutex
 	centrifuge *Client
 
 	// Channel for a subscription.
@@ -94,8 +94,8 @@ type Subscription struct {
 }
 
 func (s *Subscription) State() SubState {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.state
 }
 
@@ -338,8 +338,12 @@ func (s *Subscription) presenceStats(ctx context.Context, fn func(PresenceStatsR
 }
 
 // Unsubscribe allows unsubscribing from channel.
-func (s *Subscription) Unsubscribe() error {
-	if s.centrifuge.isClosed() {
+func (s *Subscription) Unsubscribe(ctx context.Context) error {
+	state, err := s.centrifuge.getStateCtx(ctx)
+	if err != nil {
+		return err
+	}
+	if state == StateClosed {
 		return ErrClientClosed
 	}
 	s.unsubscribe(unsubscribedUnsubscribeCalled, "unsubscribe called", true)
@@ -359,8 +363,12 @@ func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe b
 }
 
 // Subscribe allows initiating subscription process.
-func (s *Subscription) Subscribe() error {
-	if s.centrifuge.isClosed() {
+func (s *Subscription) Subscribe(ctx context.Context) error {
+	state, err := s.centrifuge.getStateCtx(ctx)
+	if err != nil {
+		return err
+	}
+	if state == StateClosed {
 		return ErrClientClosed
 	}
 	s.mu.Lock()
@@ -381,8 +389,12 @@ func (s *Subscription) Subscribe() error {
 		})
 	}
 
-	if !s.centrifuge.isConnected() {
-		return nil
+	state, err = s.centrifuge.getStateCtx(ctx)
+	if err != nil {
+		return err
+	}
+	if state != StateConnected {
+		return ErrClientClosed
 	}
 	s.resubscribe()
 	return nil

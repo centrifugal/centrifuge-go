@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -68,7 +69,7 @@ func (h *testSubscriptionHandler) OnUnsubscribe(e UnsubscribedEvent) {
 
 func TestConnectWrongAddress(t *testing.T) {
 	client := NewJsonClient("ws://localhost:9000/connection/websocket", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	doneCh := make(chan error, 1)
 	handler := &testEventHandler{
 		onError: func(e ErrorEvent) {
@@ -94,7 +95,7 @@ func TestConnectWrongAddress(t *testing.T) {
 
 func TestSuccessfulConnect(t *testing.T) {
 	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	doneCh := make(chan error, 1)
 	client.OnConnected(func(e ConnectedEvent) {
 		if e.ClientID == "" {
@@ -119,7 +120,7 @@ func TestSuccessfulConnect(t *testing.T) {
 
 func TestDisconnect(t *testing.T) {
 	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	connectDoneCh := make(chan error, 1)
 	disconnectDoneCh := make(chan error, 1)
 	handler := &testEventHandler{
@@ -141,7 +142,7 @@ func TestDisconnect(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Errorf("expecting successful connect")
 	}
-	_ = client.Disconnect()
+	_ = client.Disconnect(newCtx(t))
 	select {
 	case err := <-disconnectDoneCh:
 		if err != nil {
@@ -154,7 +155,7 @@ func TestDisconnect(t *testing.T) {
 
 func TestPublishProtobuf(t *testing.T) {
 	client := NewProtobufClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	_, err := client.Publish(context.Background(), "test", []byte("boom"))
 	if err != nil {
@@ -164,7 +165,7 @@ func TestPublishProtobuf(t *testing.T) {
 
 func TestPublishJSON(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	_, err := client.Publish(context.Background(), "test", []byte("{}"))
 	if err != nil {
@@ -174,7 +175,7 @@ func TestPublishJSON(t *testing.T) {
 
 func TestPublishInvalidJSON(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	_, err := client.Publish(context.Background(), "test", []byte("boom"))
 	if err == nil {
@@ -185,7 +186,7 @@ func TestPublishInvalidJSON(t *testing.T) {
 func TestSubscribeSuccess(t *testing.T) {
 	doneCh := make(chan error, 1)
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test")
 	if err != nil {
@@ -197,7 +198,7 @@ func TestSubscribeSuccess(t *testing.T) {
 		},
 	}
 	sub.OnSubscribed(subHandler.OnSubscribe)
-	_ = sub.Subscribe()
+	_ = sub.Subscribe(newCtx(t))
 	select {
 	case err := <-doneCh:
 		if err != nil {
@@ -211,7 +212,7 @@ func TestSubscribeSuccess(t *testing.T) {
 func TestSubscribeError(t *testing.T) {
 	doneCh := make(chan error, 1)
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test:test")
 	if err != nil {
@@ -224,7 +225,7 @@ func TestSubscribeError(t *testing.T) {
 		},
 	}
 	sub.OnError(subHandler.OnError)
-	_ = sub.Subscribe()
+	_ = sub.Subscribe(newCtx(t))
 	select {
 	case err := <-doneCh:
 		if err != nil {
@@ -249,7 +250,7 @@ func randString(n int) string {
 func TestHandlePublish(t *testing.T) {
 	doneCh := make(chan error, 1)
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test_handle_publish")
 	if err != nil {
@@ -279,7 +280,7 @@ func TestHandlePublish(t *testing.T) {
 		close(doneCh)
 	})
 
-	_ = sub.Subscribe()
+	_ = sub.Subscribe(newCtx(t))
 
 	select {
 	case <-publishOkCh:
@@ -301,7 +302,7 @@ func TestSubscription_Unsubscribe(t *testing.T) {
 	subscribedCh := make(chan struct{}, 1)
 	unsubscribedCh := make(chan struct{}, 1)
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	sub, err := client.NewSubscription("test_subscription_close")
 	if err != nil {
@@ -318,7 +319,7 @@ func TestSubscription_Unsubscribe(t *testing.T) {
 	sub.OnUnsubscribed(handler.OnUnsubscribe)
 	sub.OnSubscribed(handler.OnSubscribe)
 	sub.OnPublication(handler.OnPublication)
-	_ = sub.Subscribe()
+	_ = sub.Subscribe(newCtx(t))
 	select {
 	case <-subscribedCh:
 		if err != nil {
@@ -327,7 +328,7 @@ func TestSubscription_Unsubscribe(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Errorf("timeout waiting for subscribe")
 	}
-	err = sub.Unsubscribe()
+	err = sub.Unsubscribe(newCtx(t))
 	if err != nil {
 		t.Fatal("unexpected error", err)
 	}
@@ -340,7 +341,7 @@ func TestSubscription_Unsubscribe(t *testing.T) {
 
 func TestClient_Publish(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
 	_, err := client.Publish(context.Background(), "test", msg)
@@ -352,7 +353,7 @@ func TestClient_Publish(t *testing.T) {
 
 func TestClient_Presence(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	_, err := client.Presence(context.Background(), "test")
 	var e *Error
@@ -366,7 +367,7 @@ func TestClient_Presence(t *testing.T) {
 
 func TestClient_PresenceStats(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	_, err := client.PresenceStats(context.Background(), "test")
 	var e *Error
@@ -380,7 +381,7 @@ func TestClient_PresenceStats(t *testing.T) {
 
 func TestClient_History(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer client.Close()
+	defer client.Close(newCtx(t))
 	_ = client.Connect()
 	_, err := client.History(
 		context.Background(), "test", WithHistoryReverse(false), WithHistoryLimit(100), WithHistorySince(nil))
@@ -400,7 +401,7 @@ func TestConcurrentPublishSubscribe(t *testing.T) {
 	)
 
 	producer := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer producer.Close()
+	defer producer.Close(newCtx(t))
 
 	if err := producer.Connect(); err != nil {
 		t.Fatalf("error on connect: %v", err)
@@ -436,7 +437,7 @@ func TestConcurrentPublishSubscribe(t *testing.T) {
 			}
 			sub.OnSubscribed(handler.OnSubscribe)
 			sub.OnPublication(handler.OnPublication)
-			if err := sub.Subscribe(); err != nil {
+			if err := sub.Subscribe(newCtx(t)); err != nil {
 				errChan <- fmt.Errorf("error on subscribe: %v (%d)", err, i)
 				return
 			}
@@ -447,7 +448,7 @@ func TestConcurrentPublishSubscribe(t *testing.T) {
 			}
 			sub2.OnSubscribed(handler.OnSubscribe)
 			sub2.OnPublication(handler.OnPublication)
-			if err := sub2.Subscribe(); err != nil {
+			if err := sub2.Subscribe(newCtx(t)); err != nil {
 				errChan <- fmt.Errorf("error on subscribe: %v (%d)", err, i)
 				return
 			}
@@ -475,7 +476,7 @@ func TestConcurrentPublishSubscribeDisconnect(t *testing.T) {
 	)
 
 	producer := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
-	defer producer.Close()
+	defer producer.Close(newCtx(t))
 
 	if err := producer.Connect(); err != nil {
 		t.Fatalf("error on connect: %v", err)
@@ -516,7 +517,7 @@ func TestConcurrentPublishSubscribeDisconnect(t *testing.T) {
 			}
 			sub.OnSubscribed(handler.OnSubscribe)
 			sub.OnPublication(handler.OnPublication)
-			if err := sub.Subscribe(); err != nil {
+			if err := sub.Subscribe(newCtx(t)); err != nil {
 				errChan <- fmt.Errorf("error on subscribe: %v (%d)", err, i)
 				return
 			}
@@ -527,14 +528,14 @@ func TestConcurrentPublishSubscribeDisconnect(t *testing.T) {
 			}
 			sub2.OnSubscribed(handler.OnSubscribe)
 			sub2.OnPublication(handler.OnPublication)
-			if err := sub2.Subscribe(); err != nil {
+			if err := sub2.Subscribe(newCtx(t)); err != nil {
 				errChan <- fmt.Errorf("error on subscribe: %v (%d)", err, i)
 				return
 			}
 			// Simulate random disconnects.
 			go func(cl *Client) {
 				time.Sleep(time.Duration(rand.Int63n(150)) * time.Millisecond)
-				cl.Close()
+				cl.Close(newCtx(t))
 			}(consumer)
 		}
 		errChan <- nil
@@ -549,4 +550,52 @@ func TestConcurrentPublishSubscribeDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestClient_onConnect_respects_context_cancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &Client{}
+	client.mu.Lock()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		cancel()
+	}()
+	err := client.onConnect(ctx, func(err error) {
+		t.Fatalf("callback should not be called")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled error, got %v", err)
+	}
+	wg.Wait()
+}
+
+func TestClient_publish_respects_context_cancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &Client{}
+	client.mu.Lock()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		cancel()
+	}()
+	err := client.publish(ctx, "test", []byte("test"), func(pr PublishResult, err error) {
+		t.Fatalf("callback should not be called")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled error, got %v", err)
+	}
+	wg.Wait()
+}
+
+// newCtx registers a cleanup function to cancel the context when the test
+// ends. similar to t.Context() in future go versions. can be removed after
+// upgrading the module to go1.24.
+func newCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return ctx
 }
