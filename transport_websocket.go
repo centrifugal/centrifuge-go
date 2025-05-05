@@ -50,7 +50,7 @@ func extractDisconnectWebsocket(err error) *disconnect {
 }
 
 type websocketTransport struct {
-	mu             *mutex.Mutex
+	mu             mutex.Mutex
 	conn           *websocket.Conn
 	protocolType   protocol.Type
 	commandEncoder protocol.CommandEncoder
