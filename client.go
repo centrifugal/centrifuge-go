@@ -35,20 +35,18 @@ const (
 // Close method to clean up state when you don't need client instance
 // anymore.
 type Client struct {
-	futureID       uint64
-	cmdID          uint32
-	mu             mutex.Mutex
-	endpoints      []string
-	round          int
-	protocolType   protocol.Type
-	config         Config
-	token          string
-	data           protocol.Raw
-	transport      transport
-	disconnectedCh chan struct{}
-	state          State
-	// stateTimeout is the maximum time to wait for state lock, zero is unlimited.
-	stateTimeout      time.Duration
+	futureID          uint64
+	cmdID             uint32
+	mu                mutex.Mutex
+	endpoints         []string
+	round             int
+	protocolType      protocol.Type
+	config            Config
+	token             string
+	data              protocol.Raw
+	transport         transport
+	disconnectedCh    chan struct{}
+	state             State
 	subs              map[string]*Subscription
 	serverSubs        map[string]*serverSub
 	requestsMu        mutex.Mutex
@@ -141,7 +139,6 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		token:             config.Token,
 		data:              config.Data,
 		closeCh:           make(chan struct{}),
-		stateTimeout:      time.Minute, // safe to say, if we have to wait for more than a minute, something is wrong.
 	}
 
 	// Queue to run callbacks on.
