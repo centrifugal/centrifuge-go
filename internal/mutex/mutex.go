@@ -40,9 +40,9 @@ func (m *Mutex) WaitLock() chan<- struct{} {
 	return m.waitLock()
 }
 
-// LockCtx is a convience func for selecting WaitLock and ctx. If the ctx is
+// TryLockCtx is a convenience method for selecting WaitLock and ctx. If the ctx is
 // done the ctx error will be returned.
-func (m *Mutex) LockCtx(ctx context.Context) error {
+func (m *Mutex) TryLockCtx(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

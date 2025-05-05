@@ -51,7 +51,7 @@ func TestMutexTryLock_already_locked(t *testing.T) {
 
 func TestMutexLockCtx(t *testing.T) {
 	var mu Mutex
-	if err := mu.LockCtx(t.Context()); err != nil {
+	if err := mu.TryLockCtx(t.Context()); err != nil {
 		t.Fatal("failed to obtain lock")
 	}
 	defer mu.Unlock()
@@ -66,7 +66,7 @@ func TestMutexLockCtx_cancels(t *testing.T) {
 	mu.state <- struct{}{}
 	ctx, cancel := context.WithCancel(t.Context())
 	go cancel()
-	if err := mu.LockCtx(ctx); !errors.Is(err, context.Canceled) {
+	if err := mu.TryLockCtx(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatal("did not receive context cancel error")
 	}
 }

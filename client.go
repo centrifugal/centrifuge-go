@@ -331,7 +331,7 @@ func (c *Client) nextCmdID() uint32 {
 }
 
 func (c *Client) getStateCtx(ctx context.Context) (State, error) {
-	if err := c.mu.LockCtx(ctx); err != nil {
+	if err := c.mu.TryLockCtx(ctx); err != nil {
 		return "", fmt.Errorf("failed to obtain lock for getState: %w", err)
 	}
 	defer c.mu.Unlock()
@@ -1468,7 +1468,7 @@ func (c *Client) resolveConnectFutures(err error) {
 }
 
 func (c *Client) onConnect(ctx context.Context, fn func(err error)) error {
-	if err := c.mu.LockCtx(ctx); err != nil {
+	if err := c.mu.TryLockCtx(ctx); err != nil {
 		return fmt.Errorf("failed to obtain lock for onConnect: %w", err)
 	}
 	defer c.mu.Unlock()
