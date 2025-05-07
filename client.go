@@ -37,7 +37,7 @@ const (
 type Client struct {
 	futureID          uint64
 	cmdID             uint32
-	mu                mutex.Mutex
+	mu                *mutex.Mutex
 	endpoints         []string
 	round             int
 	protocolType      protocol.Type
@@ -49,7 +49,7 @@ type Client struct {
 	state             State
 	subs              map[string]*Subscription
 	serverSubs        map[string]*serverSub
-	requestsMu        mutex.Mutex
+	requestsMu        *mutex.Mutex
 	requests          map[uint32]request
 	receive           chan []byte
 	reconnectAttempts int
@@ -139,6 +139,8 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		token:             config.Token,
 		data:              config.Data,
 		closeCh:           make(chan struct{}),
+		mu:                mutex.New(),
+		requestsMu:        mutex.New(),
 	}
 
 	// Queue to run callbacks on.
@@ -161,11 +163,11 @@ func (c *Client) Connect() error {
 // Disconnect client from server. It's still possible to connect again later. If
 // you don't need Client anymore – use Client.Close.
 func (c *Client) Disconnect(ctx context.Context) error {
-	state, err := c.getStateCtx(ctx)
+	isClosed, err := c.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return ErrClientClosed
 	}
 	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
@@ -175,11 +177,11 @@ func (c *Client) Disconnect(ctx context.Context) error {
 // Close closes Client and cleanups resources. Client is unusable after this. Use this
 // method if you don't need client anymore, otherwise look at Client.Disconnect.
 func (c *Client) Close(ctx context.Context) error {
-	state, err := c.getStateCtx(ctx)
+	isClosed, err := c.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return nil
 	}
 	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
@@ -255,11 +257,11 @@ func (c *Client) Subscriptions() map[string]*Subscription {
 // Send message to server without waiting for response.
 // Message handler must be registered on server.
 func (c *Client) Send(ctx context.Context, data []byte) error {
-	state, err := c.getStateCtx(ctx)
+	isClosed, err := c.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return ErrClientClosed
 	}
 	errCh := make(chan error, 1)
@@ -300,11 +302,11 @@ type RPCResult struct {
 // RPC allows sending data to a server and waiting for a response.
 // RPC handler must be registered on server.
 func (c *Client) RPC(ctx context.Context, method string, data []byte) (RPCResult, error) {
-	state, err := c.getStateCtx(ctx)
+	isClosed, err := c.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return RPCResult{}, err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return RPCResult{}, ErrClientClosed
 	}
 	resCh := make(chan RPCResult, 1)
@@ -327,12 +329,12 @@ func (c *Client) nextCmdID() uint32 {
 	return atomic.AddUint32(&c.cmdID, 1)
 }
 
-func (c *Client) getStateCtx(ctx context.Context) (State, error) {
+func (c *Client) stateEqCtx(ctx context.Context, state State) (bool, error) {
 	if err := c.mu.TryLockCtx(ctx); err != nil {
-		return "", fmt.Errorf("failed to obtain lock for getState: %w", err)
+		return false, fmt.Errorf("failed to obtain lock for getState: %w", err)
 	}
 	defer c.mu.Unlock()
-	return c.state, nil
+	return c.state == state, nil
 }
 
 func (c *Client) isSubscribed(channel string) bool {
@@ -1500,11 +1502,11 @@ type PublishResult struct{}
 
 // Publish data into channel.
 func (c *Client) Publish(ctx context.Context, channel string, data []byte) (PublishResult, error) {
-	state, err := c.getStateCtx(ctx)
+	isClosed, err := c.stateEqCtx(ctx, StateClosed)
 	if err != nil {
-		return PublishResult{}, fmt.Errorf("failed to get state: %w", err)
+		return PublishResult{}, err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return PublishResult{}, ErrClientClosed
 	}
 	resCh := make(chan PublishResult, 1)
@@ -1574,11 +1576,11 @@ type HistoryResult struct {
 
 // History for a channel without being subscribed.
 func (c *Client) History(ctx context.Context, channel string, opts ...HistoryOption) (HistoryResult, error) {
-	state, err := c.getStateCtx(ctx)
+	isClosed, err := c.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return HistoryResult{}, err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return HistoryResult{}, ErrClientClosed
 	}
 	resCh := make(chan HistoryResult, 1)
@@ -1672,11 +1674,11 @@ type PresenceResult struct {
 
 // Presence for a channel without being subscribed.
 func (c *Client) Presence(ctx context.Context, channel string) (PresenceResult, error) {
-	state, err := c.getStateCtx(ctx)
+	isClosed, err := c.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return PresenceResult{}, err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return PresenceResult{}, ErrClientClosed
 	}
 	resCh := make(chan PresenceResult, 1)
@@ -1756,14 +1758,13 @@ type PresenceStatsResult struct {
 
 // PresenceStats for a channel without being subscribed.
 func (c *Client) PresenceStats(ctx context.Context, channel string) (PresenceStatsResult, error) {
-	state, err := c.getStateCtx(ctx)
+	isClosed, err := c.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return PresenceStatsResult{}, err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return PresenceStatsResult{}, ErrClientClosed
 	}
-
 	resCh := make(chan PresenceStatsResult, 1)
 	errCh := make(chan error, 1)
 	if err := c.presenceStats(ctx, channel, func(result PresenceStatsResult, err error) {

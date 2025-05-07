@@ -339,11 +339,11 @@ func (s *Subscription) presenceStats(ctx context.Context, fn func(PresenceStatsR
 
 // Unsubscribe allows unsubscribing from channel.
 func (s *Subscription) Unsubscribe(ctx context.Context) error {
-	state, err := s.centrifuge.getStateCtx(ctx)
+	isClosed, err := s.centrifuge.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return ErrClientClosed
 	}
 	s.unsubscribe(unsubscribedUnsubscribeCalled, "unsubscribe called", true)
@@ -364,11 +364,11 @@ func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe b
 
 // Subscribe allows initiating subscription process.
 func (s *Subscription) Subscribe(ctx context.Context) error {
-	state, err := s.centrifuge.getStateCtx(ctx)
+	isClosed, err := s.centrifuge.stateEqCtx(ctx, StateClosed)
 	if err != nil {
 		return err
 	}
-	if state == StateClosed {
+	if isClosed {
 		return ErrClientClosed
 	}
 	s.mu.Lock()
@@ -389,11 +389,11 @@ func (s *Subscription) Subscribe(ctx context.Context) error {
 		})
 	}
 
-	state, err = s.centrifuge.getStateCtx(ctx)
+	isConnected, err := s.centrifuge.stateEqCtx(ctx, StateConnected)
 	if err != nil {
 		return err
 	}
-	if state != StateConnected {
+	if !isConnected {
 		return ErrClientClosed
 	}
 	s.resubscribe()
