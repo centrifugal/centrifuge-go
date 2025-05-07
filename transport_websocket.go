@@ -9,9 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
+	"github.com/centrifugal/centrifuge-go/internal/mutex"
 	"github.com/centrifugal/protocol"
 	"github.com/gorilla/websocket"
 )
@@ -50,7 +50,7 @@ func extractDisconnectWebsocket(err error) *disconnect {
 }
 
 type websocketTransport struct {
-	mu             sync.Mutex
+	mu             *mutex.Mutex
 	conn           *websocket.Conn
 	protocolType   protocol.Type
 	commandEncoder protocol.CommandEncoder
@@ -130,6 +130,7 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 		closeCh:        make(chan struct{}),
 		commandEncoder: newCommandEncoder(protocolType),
 		protocolType:   protocolType,
+		mu:             mutex.New(),
 	}
 	go t.reader()
 	return t, nil
