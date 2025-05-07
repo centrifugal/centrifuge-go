@@ -192,7 +192,7 @@ func (c *Client) Close(ctx context.Context) error {
 // State returns current Client state. Note that while you are processing
 // this state - Client can move to a new one.
 func (c *Client) State() State {
-	c.mu.Lock()
+	c.mu.Lock() // was c.mu.RLock()
 	defer c.mu.Unlock()
 	return c.state
 }
@@ -529,7 +529,7 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 }
 
 func (c *Client) moveToClosed() {
-	c.mu.Lock() // was c.mu.RLock()
+	c.mu.Lock()
 	slog.Debug(
 		"centrifuge client is attempting to move to a closed state",
 		"currentState", c.state,
@@ -724,7 +724,7 @@ func (c *Client) handle(reply *protocol.Reply) {
 			}
 			return
 		}
-		c.mu.Lock() // was c.mu.RLock()
+		c.mu.Lock()
 		if c.state != StateConnected {
 			c.mu.Unlock()
 			return
