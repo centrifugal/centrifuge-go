@@ -163,7 +163,7 @@ func (c *Client) Connect() error {
 // Disconnect client from server. It's still possible to connect again later. If
 // you don't need Client anymore – use Client.Close.
 func (c *Client) Disconnect(ctx context.Context) error {
-	isClosed, err := c.stateEqCtx(ctx, StateClosed)
+	isClosed, err := c.stateEq(ctx, StateClosed)
 	if err != nil {
 		return err
 	}
@@ -177,7 +177,7 @@ func (c *Client) Disconnect(ctx context.Context) error {
 // Close closes Client and cleanups resources. Client is unusable after this. Use this
 // method if you don't need client anymore, otherwise look at Client.Disconnect.
 func (c *Client) Close(ctx context.Context) error {
-	isClosed, err := c.stateEqCtx(ctx, StateClosed)
+	isClosed, err := c.stateEq(ctx, StateClosed)
 	if err != nil {
 		return err
 	}
@@ -257,7 +257,7 @@ func (c *Client) Subscriptions() map[string]*Subscription {
 // Send message to server without waiting for response.
 // Message handler must be registered on server.
 func (c *Client) Send(ctx context.Context, data []byte) error {
-	isClosed, err := c.stateEqCtx(ctx, StateClosed)
+	isClosed, err := c.stateEq(ctx, StateClosed)
 	if err != nil {
 		return err
 	}
@@ -302,7 +302,7 @@ type RPCResult struct {
 // RPC allows sending data to a server and waiting for a response.
 // RPC handler must be registered on server.
 func (c *Client) RPC(ctx context.Context, method string, data []byte) (RPCResult, error) {
-	isClosed, err := c.stateEqCtx(ctx, StateClosed)
+	isClosed, err := c.stateEq(ctx, StateClosed)
 	if err != nil {
 		return RPCResult{}, err
 	}
@@ -329,7 +329,10 @@ func (c *Client) nextCmdID() uint32 {
 	return atomic.AddUint32(&c.cmdID, 1)
 }
 
-func (c *Client) stateEqCtx(ctx context.Context, state State) (bool, error) {
+// stateEq checks if the given state is equal to the current state of the
+// client. it return an error if it fails to obtain the lock before the context
+// is done.
+func (c *Client) stateEq(ctx context.Context, state State) (bool, error) {
 	if err := c.mu.TryLockCtx(ctx); err != nil { // was c.mu.RLock()
 		return false, fmt.Errorf("failed to obtain lock for getState: %w", err)
 	}
@@ -1502,7 +1505,7 @@ type PublishResult struct{}
 
 // Publish data into channel.
 func (c *Client) Publish(ctx context.Context, channel string, data []byte) (PublishResult, error) {
-	isClosed, err := c.stateEqCtx(ctx, StateClosed)
+	isClosed, err := c.stateEq(ctx, StateClosed)
 	if err != nil {
 		return PublishResult{}, err
 	}
@@ -1576,7 +1579,7 @@ type HistoryResult struct {
 
 // History for a channel without being subscribed.
 func (c *Client) History(ctx context.Context, channel string, opts ...HistoryOption) (HistoryResult, error) {
-	isClosed, err := c.stateEqCtx(ctx, StateClosed)
+	isClosed, err := c.stateEq(ctx, StateClosed)
 	if err != nil {
 		return HistoryResult{}, err
 	}
@@ -1674,7 +1677,7 @@ type PresenceResult struct {
 
 // Presence for a channel without being subscribed.
 func (c *Client) Presence(ctx context.Context, channel string) (PresenceResult, error) {
-	isClosed, err := c.stateEqCtx(ctx, StateClosed)
+	isClosed, err := c.stateEq(ctx, StateClosed)
 	if err != nil {
 		return PresenceResult{}, err
 	}
@@ -1758,7 +1761,7 @@ type PresenceStatsResult struct {
 
 // PresenceStats for a channel without being subscribed.
 func (c *Client) PresenceStats(ctx context.Context, channel string) (PresenceStatsResult, error) {
-	isClosed, err := c.stateEqCtx(ctx, StateClosed)
+	isClosed, err := c.stateEq(ctx, StateClosed)
 	if err != nil {
 		return PresenceStatsResult{}, err
 	}
