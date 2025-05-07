@@ -4,9 +4,8 @@ import (
 	"context"
 )
 
-// Mutex is a drop-in replacement for the standard libraries sync.Mutex. It
-// offers the ability cancel waiting to obtain a lock by making use of Go's
-// select statement.
+// Mutex is like sync.Mutex. It offers the ability cancel waiting to obtain a
+// lock by making use of Go's select statement.
 //
 // The zero value is not safe to use, and will cause a deadlock. You must
 // initialize a Mutex before using the New() func.
