@@ -2,34 +2,28 @@ package mutex
 
 import (
 	"context"
-	"sync"
 )
 
 // Mutex is a drop-in replacement for the standard libraries sync.Mutex. It
 // offers the ability cancel waiting to obtain a lock by making use of Go's
 // select statement.
 //
-// The zero value is safe to use.
+// The zero value is not safe to use, and will cause a deadlock. You must
+// initialize a Mutex before using the New() func.
 type Mutex struct {
-	initMu sync.Mutex
-
-	// state must be a buffered mmutex of 1.
+	// state must be a buffered mutex of 1.
 	// locked: len(state) == 1
 	// unlocked: len(state) == 0
 	state chan struct{}
 }
 
-// init is used to fix a zero value Mutex.
-func (m *Mutex) init() {
-	m.initMu.Lock()
-	defer m.initMu.Unlock()
-	if m.state == nil {
-		m.state = make(chan struct{}, 1)
+func New() *Mutex {
+	return &Mutex{
+		state: make(chan struct{}, 1),
 	}
 }
 
 func (m *Mutex) waitLock() chan<- struct{} {
-	m.init()
 	return m.state
 }
 
@@ -76,7 +70,6 @@ func (m *Mutex) TryLock() bool {
 // Calling unlock on an unlocked lock is generally an indication of a race
 // condition.
 func (m *Mutex) Unlock() {
-	m.init()
 	select {
 	case <-m.state:
 	default:
