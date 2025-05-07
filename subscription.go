@@ -46,6 +46,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 		events:              newSubscriptionEventHub(),
 		subFutures:          make(map[uint64]subFuture),
 		resubscribeStrategy: defaultBackoffReconnect,
+		mu:                  mutex.New(),
 	}
 	if len(config) == 1 {
 		cfg := config[0]
@@ -64,7 +65,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 type Subscription struct {
 	futureID uint64 // Keep atomic on top!
 
-	mu         mutex.Mutex
+	mu         *mutex.Mutex
 	centrifuge *Client
 
 	// Channel for a subscription.
