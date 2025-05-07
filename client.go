@@ -229,7 +229,7 @@ func (c *Client) RemoveSubscription(sub *Subscription) error {
 	if sub.State() != SubStateUnsubscribed {
 		return errors.New("subscription must be unsubscribed to be removed")
 	}
-	c.mu.Lock()
+	c.mu.Lock() // was c.mu.RLock()
 	defer c.mu.Unlock()
 	delete(c.subs, sub.Channel)
 	return nil
@@ -237,7 +237,7 @@ func (c *Client) RemoveSubscription(sub *Subscription) error {
 
 // GetSubscription allows getting Subscription from the internal client registry.
 func (c *Client) GetSubscription(channel string) (*Subscription, bool) {
-	c.mu.Lock()
+	c.mu.Lock() // was c.mu.RLock()
 	defer c.mu.Unlock()
 	s, ok := c.subs[channel]
 	return s, ok
@@ -330,7 +330,7 @@ func (c *Client) nextCmdID() uint32 {
 }
 
 func (c *Client) stateEqCtx(ctx context.Context, state State) (bool, error) {
-	if err := c.mu.TryLockCtx(ctx); err != nil {
+	if err := c.mu.TryLockCtx(ctx); err != nil { // was c.mu.RLock()
 		return false, fmt.Errorf("failed to obtain lock for getState: %w", err)
 	}
 	defer c.mu.Unlock()
@@ -338,7 +338,7 @@ func (c *Client) stateEqCtx(ctx context.Context, state State) (bool, error) {
 }
 
 func (c *Client) isSubscribed(channel string) bool {
-	c.mu.Lock()
+	c.mu.Lock() // was c.mu.RLock()
 	_, ok := c.subs[channel]
 	c.mu.Unlock()
 	return ok
@@ -529,7 +529,7 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 }
 
 func (c *Client) moveToClosed() {
-	c.mu.Lock()
+	c.mu.Lock() // was c.mu.RLock()
 	slog.Debug(
 		"centrifuge client is attempting to move to a closed state",
 		"currentState", c.state,
@@ -572,7 +572,7 @@ func (c *Client) moveToClosed() {
 		})
 	}
 
-	c.mu.Lock()
+	c.mu.Lock() // was c.mu.RLock()
 	disconnectedCh := c.disconnectedCh
 	c.mu.Unlock()
 	// At this point connection close was issued, so we wait until the reader goroutine
@@ -682,7 +682,7 @@ func (c *Client) reader(t transport, disconnectCh chan struct{}) {
 
 func (c *Client) runHandlerSync(fn func()) {
 	waitCh := make(chan struct{})
-	c.mu.Lock()
+	c.mu.Lock() // was c.mu.RLock()
 	c.cbQueue.push(func(delay time.Duration) {
 		defer close(waitCh)
 		fn()
@@ -699,7 +699,7 @@ func (c *Client) runHandlerAsync(fn func()) {
 
 func (c *Client) handle(reply *protocol.Reply) {
 	if reply.Id > 0 {
-		c.requestsMu.Lock()
+		c.requestsMu.Lock() // was c.mu.RLock()
 		req, ok := c.requests[reply.Id]
 		c.requestsMu.Unlock()
 		if ok {
@@ -715,7 +715,7 @@ func (c *Client) handle(reply *protocol.Reply) {
 			case c.delayPing <- struct{}{}:
 			default:
 			}
-			c.mu.Lock()
+			c.mu.Lock() // was c.mu.RLock()
 			sendPong := c.sendPong
 			c.mu.Unlock()
 			if sendPong {
@@ -724,7 +724,7 @@ func (c *Client) handle(reply *protocol.Reply) {
 			}
 			return
 		}
-		c.mu.Lock()
+		c.mu.Lock() // was c.mu.RLock()
 		if c.state != StateConnected {
 			c.mu.Unlock()
 			return
@@ -750,7 +750,7 @@ func (c *Client) handleMessage(msg *protocol.Message) error {
 
 func (c *Client) handlePush(push *protocol.Push) {
 	channel := push.Channel
-	c.mu.Lock()
+	c.mu.Lock() // was c.mu.RLock()
 	sub, ok := c.subs[channel]
 	c.mu.Unlock()
 	switch {
@@ -1878,7 +1878,7 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 		defer c.removeRequest(cmd.Id)
 		select {
 		case <-time.After(c.config.ReadTimeout):
-			c.requestsMu.Lock()
+			c.requestsMu.Lock() // was c.requestsMu.RLock()
 			req, ok := c.requests[cmd.Id]
 			c.requestsMu.Unlock()
 			if !ok {
@@ -1886,7 +1886,7 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 			}
 			req.cb(nil, ErrTimeout)
 		case <-c.closeCh:
-			c.requestsMu.Lock()
+			c.requestsMu.Lock() // was c.requestsMu.RLock()
 			req, ok := c.requests[cmd.Id]
 			c.requestsMu.Unlock()
 			if !ok {

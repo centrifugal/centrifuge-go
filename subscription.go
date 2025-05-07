@@ -95,7 +95,7 @@ type Subscription struct {
 }
 
 func (s *Subscription) State() SubState {
-	s.mu.Lock()
+	s.mu.Lock() // was s.mu.RLock()
 	defer s.mu.Unlock()
 	return s.state
 }
