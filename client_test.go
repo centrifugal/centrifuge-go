@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/centrifugal/centrifuge-go/internal/mutex"
 )
 
 type testEventHandler struct {
@@ -554,7 +556,7 @@ func TestConcurrentPublishSubscribeDisconnect(t *testing.T) {
 
 func TestClient_onConnect_respects_context_cancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	client := &Client{}
+	client := &Client{mu: mutex.New()}
 	client.mu.Lock()
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -573,7 +575,7 @@ func TestClient_onConnect_respects_context_cancel(t *testing.T) {
 
 func TestClient_publish_respects_context_cancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	client := &Client{}
+	client := &Client{mu: mutex.New()}
 	client.mu.Lock()
 	var wg sync.WaitGroup
 	wg.Add(1)
