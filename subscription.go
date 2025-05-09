@@ -3,6 +3,7 @@ package centrifuge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -365,13 +366,14 @@ func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe b
 
 // Subscribe allows initiating subscription process.
 func (s *Subscription) Subscribe(ctx context.Context) error {
-	isClosed, err := s.centrifuge.stateEq(ctx, StateClosed)
-	if err != nil {
-		return err
+	if err := s.centrifuge.mu.TryLockCtx(ctx); err != nil { // was c.mu.RLock()
+		return fmt.Errorf("failed to obtain lock for Subscribe: %w", err)
 	}
-	if isClosed {
+	if s.centrifuge.state == StateClosed {
+		s.centrifuge.mu.Unlock()
 		return ErrClientClosed
 	}
+	s.centrifuge.mu.Unlock()
 	s.mu.Lock()
 	if s.state == SubStateSubscribed || s.state == SubStateSubscribing {
 		s.mu.Unlock()
@@ -395,7 +397,7 @@ func (s *Subscription) Subscribe(ctx context.Context) error {
 		return err
 	}
 	if !isConnected {
-		return ErrClientClosed
+		return nil
 	}
 	s.resubscribe()
 	return nil

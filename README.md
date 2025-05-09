@@ -55,7 +55,7 @@ If you are calling `Publish`, `RPC`, `History`, `Presence`, `PresenceStats` from
 First run Centrifugo instance:
 
 ```
-docker run -d -p 8000:8000 centrifugo/centrifugo:latest centrifugo --client_insecure
+docker run -d -p 8000:8000 centrifugo/centrifugo:latest centrifugo --client.insecure
 ```
 
 Then run `go test`

@@ -52,7 +52,7 @@ type Client struct {
 	requestsMu        *mutex.Mutex
 	requests          map[uint32]request
 	receive           chan []byte
-	reconnectAttempts int
+	reconnectAttempts atomic.Uint32
 	reconnectStrategy reconnectStrategy
 	events            *eventHub
 	sendPong          bool
@@ -156,8 +156,8 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 // Connect dials to server and sends connect message. Will return an error if first
 // dial with a server failed. In case of failure client will automatically reconnect.
 // To temporary disconnect from a server call Client.Disconnect.
-func (c *Client) Connect() error {
-	return c.startConnecting()
+func (c *Client) Connect(ctx context.Context) error {
+	return c.startConnecting(ctx)
 }
 
 // Disconnect client from server. It's still possible to connect again later. If
@@ -525,7 +525,7 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 		c.mu.Unlock()
 		return
 	}
-	c.reconnectAttempts++
+	c.reconnectAttempts.Add(1)
 	reconnectDelay := c.getReconnectDelay()
 	c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 	c.mu.Unlock()
@@ -925,15 +925,12 @@ func (c *Client) handleServerUnsub(channel string, _ *protocol.Unsubscribe) {
 }
 
 func (c *Client) getReconnectDelay() time.Duration {
-	return c.reconnectStrategy.timeBeforeNextAttempt(c.reconnectAttempts)
+	return c.reconnectStrategy.timeBeforeNextAttempt(int(c.reconnectAttempts.Load()))
 }
 
 func (c *Client) reconnectAfter(delay time.Duration) *time.Timer {
 	return time.AfterFunc(delay, func() {
-		slog.Debug("centrifuge client will attempt to reconnect after a delay",
-			"delayDuration", delay,
-			"attempt", c.reconnectAttempts,
-		)
+		slog.Debug("centrifuge client will attempt to reconnect", "attempt", c.reconnectAttempts.Load())
 		if err := c.startReconnecting(); err != nil {
 			slog.Error("centrifuge client failed to start reconnecting", "reason", err)
 		}
@@ -974,7 +971,7 @@ func (c *Client) startReconnecting() error {
 			c.mu.Unlock()
 			return nil
 		}
-		c.reconnectAttempts++
+		c.reconnectAttempts.Add(1)
 		reconnectDelay := c.getReconnectDelay()
 		c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 		c.mu.Unlock()
@@ -1002,7 +999,7 @@ func (c *Client) startReconnecting() error {
 				c.mu.Unlock()
 				return nil
 			}
-			c.reconnectAttempts++
+			c.reconnectAttempts.Add(1)
 			reconnectDelay := c.getReconnectDelay()
 			c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 			c.mu.Unlock()
@@ -1052,7 +1049,7 @@ func (c *Client) startReconnecting() error {
 					return
 				}
 				c.refreshRequired = true
-				c.reconnectAttempts++
+				c.reconnectAttempts.Add(1)
 				reconnectDelay := c.getReconnectDelay()
 				c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 				return
@@ -1070,7 +1067,7 @@ func (c *Client) startReconnecting() error {
 				if c.state != StateConnecting {
 					return
 				}
-				c.reconnectAttempts++
+				c.reconnectAttempts.Add(1)
 				reconnectDelay := c.getReconnectDelay()
 				c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 				return
@@ -1182,7 +1179,7 @@ func (c *Client) startReconnecting() error {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		// Successfully connected – can reset reconnect attempts.
-		c.reconnectAttempts = 0
+		c.reconnectAttempts.Store(0)
 
 		if c.state != StateConnected {
 			return
@@ -1196,7 +1193,7 @@ func (c *Client) startReconnecting() error {
 	}); err != nil {
 		slog.Debug("centrifuge client is failed to connect to Centrifugo server", "reason", err)
 		_ = t.Close()
-		c.reconnectAttempts++
+		c.reconnectAttempts.Add(1)
 		reconnectDelay := c.getReconnectDelay()
 		c.reconnectTimer = c.reconnectAfter(reconnectDelay)
 		c.handleError(ConnectError{err})
@@ -1205,9 +1202,11 @@ func (c *Client) startReconnecting() error {
 	return err
 }
 
-func (c *Client) startConnecting() error {
+func (c *Client) startConnecting(ctx context.Context) error {
 	slog.Debug("centrifuge client is starting to connect")
-	c.mu.Lock()
+	if err := c.mu.TryLockCtx(ctx); err != nil {
+		return fmt.Errorf("failed to obtain lock for startConnecting: %w", err)
+	}
 	if c.state == StateClosed {
 		c.mu.Unlock()
 		return ErrClientClosed
