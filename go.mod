@@ -1,6 +1,6 @@
 module github.com/centrifugal/centrifuge-go
 
-go 1.19
+go 1.22
 
 require (
 	github.com/centrifugal/protocol v0.16.0
