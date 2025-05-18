@@ -3,7 +3,7 @@ module github.com/centrifugal/centrifuge-go
 go 1.19
 
 require (
-	github.com/centrifugal/protocol v0.14.0
+	github.com/centrifugal/protocol v0.16.0
 	github.com/gorilla/websocket v1.5.0
 	github.com/jpillora/backoff v1.0.0
 )
