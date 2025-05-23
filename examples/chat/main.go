@@ -48,6 +48,13 @@ func main() {
 		centrifuge.Config{
 			// Sending token makes it work with Centrifugo JWT auth (with `secret` HMAC key).
 			Token: connToken("49", 0),
+
+			// Most of the time available protocol callbacks cover all necessary information about client-server
+			// communication. But some advanced use cases or issue investigation may require more logging.
+			//LogLevel: centrifuge.LogLevelDebug,
+			//LogHandler: func(e centrifuge.LogEntry) {
+			//	log.Printf("[centrifuge] %s %s: %v", e.Level, e.Message, e.Fields)
+			//},
 		},
 	)
 	defer client.Close()

@@ -31,3 +31,4 @@ _testmain.go
 
 *.orig
 examples/benchmark/benchmark
+local/
