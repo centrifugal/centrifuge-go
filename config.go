@@ -59,4 +59,13 @@ type Config struct {
 	// guarantee that compression will be supported. Currently, only "no context
 	// takeover" modes are supported.
 	EnableCompression bool
+	// LogLevel to use, by default no logs will be exposed by centrifuge-go. Most of the
+	// time available protocol callbacks cover all necessary information about client-server
+	// communication.
+	LogLevel LogLevel
+	// LogHandler is a function that will be called for each log entry. Log entries
+	// are sent asynchronously and from a separate goroutine by centrifuge-go with an
+	// intermediary channel buffer (fixed capacity 256). If your LogHandler is not
+	// processing log entries fast enough, centrifuge-go will drop log entries.
+	LogHandler func(LogEntry)
 }
