@@ -55,7 +55,13 @@ If you are calling `Publish`, `RPC`, `History`, `Presence`, `PresenceStats` from
 First run Centrifugo instance:
 
 ```
-docker run -d -p 8000:8000 centrifugo/centrifugo:v6 centrifugo --client.insecure
+docker run -it --rm -p 8000:8000 \
+-e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_DELTA_PUBLISH=true \
+-e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_ALLOWED_DELTA_TYPES="fossil" \
+-e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_HISTORY_SIZE="100" \
+-e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_HISTORY_TTL="300s" \
+-e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_FORCE_RECOVERY="true" \
+centrifugo/centrifugo:v6 centrifugo --client.insecure
 ```
 
 Then run `go test`
