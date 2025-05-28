@@ -382,14 +382,11 @@ func TestClient_History(t *testing.T) {
 	client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
 	defer client.Close()
 	_ = client.Connect()
+	channel := "test" + randString(10)
 	_, err := client.History(
-		context.Background(), "test", WithHistoryReverse(false), WithHistoryLimit(100), WithHistorySince(nil))
-	var e *Error
-	if !errors.As(err, &e) {
-		t.Fatal("expected protocol error")
-	}
-	if e.Code != 108 {
-		t.Fatal("expected not available error, got " + strconv.FormatUint(uint64(e.Code), 10))
+		context.Background(), channel, WithHistoryReverse(false), WithHistoryLimit(100), WithHistorySince(nil))
+	if err != nil {
+		t.Fatal("got error", err)
 	}
 }
 
@@ -549,4 +546,81 @@ func TestConcurrentPublishSubscribeDisconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testFossil(t *testing.T, client *Client) {
+	doneCh := make(chan error, 1)
+	channel := "test_handle_publish_fossil" + randString(10)
+	sub, err := client.NewSubscription(channel, SubscriptionConfig{
+		Delta: DeltaTypeFossil,
+	})
+	if err != nil {
+		t.Errorf("error on new subscription: %v", err)
+	}
+	msg := []byte(`{"unique":"` + randString(6) + strconv.FormatInt(time.Now().UnixNano(), 10) + `"}`)
+
+	publishOkCh := []chan struct{}{
+		make(chan struct{}),
+		make(chan struct{}),
+	}
+
+	sub.OnSubscribed(func(e SubscribedEvent) {
+		if !sub.deltaNegotiated {
+			t.Fatal("expecting delta negotiation to be successful")
+		}
+		go func() {
+			for _, ch := range publishOkCh {
+				_, err := client.Publish(context.Background(), channel, msg)
+				if err != nil {
+					t.Fail()
+				}
+				close(ch)
+			}
+		}()
+	})
+	numPublished := 0
+	sub.OnPublication(func(e PublicationEvent) {
+		if !bytes.Equal(e.Data, msg) {
+			return
+		}
+		numPublished++
+		if numPublished == len(publishOkCh) {
+			close(doneCh)
+		}
+	})
+
+	_ = sub.Subscribe()
+
+	for _, ch := range publishOkCh {
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("expecting publication to be successful")
+		}
+	}
+
+	select {
+	case err := <-doneCh:
+		if err != nil {
+			t.Fatalf("finish with error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("expecting publication received over subscription")
+	}
+}
+
+func TestHandlePublishFossil(t *testing.T) {
+	t.Run("json", func(t *testing.T) {
+		client := NewJsonClient("ws://localhost:8000/connection/websocket", Config{})
+		defer client.Close()
+		_ = client.Connect()
+		testFossil(t, client)
+	})
+
+	t.Run("protobuf", func(t *testing.T) {
+		client := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
+		defer client.Close()
+		_ = client.Connect()
+		testFossil(t, client)
+	})
 }

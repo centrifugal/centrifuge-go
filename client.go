@@ -1353,7 +1353,11 @@ type StreamPosition struct {
 	Epoch  string
 }
 
-func (c *Client) sendSubscribe(channel string, data []byte, recover bool, streamPos StreamPosition, token string, positioned bool, recoverable bool, joinLeave bool, fn func(res *protocol.SubscribeResult, err error)) error {
+func (c *Client) sendSubscribe(
+	channel string, data []byte, recover bool, streamPos StreamPosition, token string,
+	positioned bool, recoverable bool, joinLeave bool, deltaType DeltaType,
+	fn func(res *protocol.SubscribeResult, err error),
+) error {
 	params := &protocol.SubscribeRequest{
 		Channel: channel,
 	}
@@ -1370,6 +1374,10 @@ func (c *Client) sendSubscribe(channel string, data []byte, recover bool, stream
 	params.Positioned = positioned
 	params.Recoverable = recoverable
 	params.JoinLeave = joinLeave
+
+	if deltaType != DeltaTypeNone {
+		params.Delta = string(deltaType)
+	}
 
 	cmd := &protocol.Command{
 		Id: c.nextCmdID(),
