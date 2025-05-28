@@ -2,12 +2,14 @@ package centrifuge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/centrifugal/protocol"
+	fossil "github.com/shadowspore/fossil-delta"
 )
 
 // SubState represents state of Subscription.
@@ -18,6 +20,16 @@ const (
 	SubStateUnsubscribed SubState = "unsubscribed"
 	SubStateSubscribing  SubState = "subscribing"
 	SubStateSubscribed   SubState = "subscribed"
+)
+
+// DeltaType represents type of delta used for Subscription.
+type DeltaType string
+
+const (
+	// DeltaTypeNone means that no delta is used for this subscription.
+	DeltaTypeNone DeltaType = ""
+	// DeltaTypeFossil means Fossil-based delta.
+	DeltaTypeFossil DeltaType = "fossil"
 )
 
 // SubscriptionConfig allows setting Subscription options.
@@ -36,6 +48,8 @@ type SubscriptionConfig struct {
 	Recoverable bool
 	// JoinLeave flag asks server to push join/leave messages.
 	JoinLeave bool
+	// Delta allows to specify delta type for the subscription. By default, no delta is used.
+	Delta DeltaType
 }
 
 func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *Subscription {
@@ -55,6 +69,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 		s.positioned = cfg.Positioned
 		s.recoverable = cfg.Recoverable
 		s.joinLeave = cfg.JoinLeave
+		s.deltaType = cfg.Delta
 	}
 	return s
 }
@@ -91,6 +106,10 @@ type Subscription struct {
 
 	resubscribeTimer *time.Timer
 	refreshTimer     *time.Timer
+
+	deltaType       DeltaType
+	deltaNegotiated bool
+	prevData        []byte
 }
 
 func (s *Subscription) State() SubState {
@@ -457,6 +476,7 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 	s.resolveSubFutures(nil)
 	s.offset = res.Offset
 	s.epoch = res.Epoch
+	s.deltaNegotiated = res.Delta
 	s.mu.Unlock()
 
 	if s.events != nil && s.events.onSubscribed != nil {
@@ -492,17 +512,62 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 				if pub.Offset > 0 {
 					s.offset = pub.Offset
 				}
+				publicationEvent := PublicationEvent{Publication: pubFromProto(pub)}
+				publicationEvent = s.applyDeltaLocked(pub, publicationEvent)
 				s.mu.Unlock()
 				var handler PublicationHandler
 				if s.events != nil && s.events.onPublication != nil {
 					handler = s.events.onPublication
 				}
 				if handler != nil {
-					handler(PublicationEvent{Publication: pubFromProto(pub)})
+					handler(publicationEvent)
 				}
 			}
 		})
 	}
+}
+
+func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event PublicationEvent) PublicationEvent {
+	if !s.deltaNegotiated {
+		return event
+	}
+	if s.centrifuge.protocolType == protocol.TypeJSON {
+		if pub.Delta {
+			// pub.Data is JSON string delta, let's decode to []byte and apply it to prevData.
+			var delta string
+			err := json.Unmarshal(pub.Data, &delta)
+			if err != nil {
+				panic(err)
+			}
+			newData, err := fossil.Apply(s.prevData, []byte(delta))
+			if err != nil {
+				panic(err)
+			}
+			event.Data = newData
+			s.prevData = newData
+		} else {
+			// pub.Data is JSON string, let's decode to []byte and keep as prevData.
+			var data string
+			err := json.Unmarshal(pub.Data, &data)
+			if err != nil {
+				panic(err)
+			}
+			s.prevData = []byte(data)
+			event.Data = s.prevData
+		}
+	} else {
+		if pub.Delta {
+			newData, err := fossil.Apply(s.prevData, pub.Data)
+			if err != nil {
+				panic(err)
+			}
+			event.Data = newData
+			s.prevData = newData
+		} else {
+			s.prevData = pub.Data
+		}
+	}
+	return event
 }
 
 // Lock must be held outside.
@@ -528,7 +593,7 @@ func (s *Subscription) subscribeError(err error) {
 	}
 	s.mu.Unlock()
 
-	if err == ErrTimeout {
+	if errors.Is(err, ErrTimeout) {
 		go s.centrifuge.handleDisconnect(&disconnect{Code: connectingSubscribeTimeout, Reason: "subscribe timeout", Reconnect: true})
 		return
 	}
@@ -578,6 +643,8 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 	if pub.Offset > 0 {
 		s.offset = pub.Offset
 	}
+	publicationEvent := PublicationEvent{Publication: pubFromProto(pub)}
+	publicationEvent = s.applyDeltaLocked(pub, publicationEvent)
 	s.mu.Unlock()
 
 	var handler PublicationHandler
@@ -588,7 +655,7 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 		return
 	}
 	s.centrifuge.runHandlerSync(func() {
-		handler(PublicationEvent{Publication: pubFromProto(pub)})
+		handler(publicationEvent)
 	})
 }
 
@@ -669,7 +736,7 @@ func (s *Subscription) resubscribe() {
 		sp.Epoch = s.epoch
 	}
 
-	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, func(res *protocol.SubscribeResult, err error) {
+	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
 			s.subscribeError(err)
 			return

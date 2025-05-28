@@ -34,7 +34,7 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Start Centrifugo
-        run: docker run -d -p 8000:8000 centrifugo/centrifugo:v6 centrifugo --client.insecure
+        run: docker run -d -p 8000:8000 -e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_DELTA_PUBLISH=true -e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_ALLOWED_DELTA_TYPES="fossil" -e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_HISTORY_SIZE="100" -e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_HISTORY_TTL="300s" -e CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_FORCE_RECOVERY="true" centrifugo/centrifugo:v6 centrifugo --client.insecure
 
       - name: Test
         run: go test -race -v
