@@ -94,19 +94,23 @@ func (q *CallBackQueue) processCallBacks() {
 	}
 }
 
+// nextCallBack blocks forever until there is a callback to process. It returns
+// false if the queue is closed.
 func (q *CallBackQueue) nextCallBack() bool {
-	if q.list.Len() > 0 {
-		return true
-	}
-	select {
-	case <-q.closeSignal:
-		return false
-	case <-q.enqueueSignals:
-		return true
+	for {
+		if q.list.Len() > 0 {
+			return true
+		}
+		select {
+		case <-q.closeSignal:
+			return false
+		case <-q.enqueueSignals:
+		}
 	}
 }
 
-// signalEnqueue wakes nextCallBack.
+// signalEnqueue wakes nextCallBack. callBackRequest should be added to the list
+// before calling this method.
 func (q *CallBackQueue) signalEnqueue() {
 	select {
 	case q.enqueueSignals <- struct{}{}:

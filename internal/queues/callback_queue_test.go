@@ -202,3 +202,25 @@ func TestCallbackQueue_PushNilPanics(t *testing.T) {
 	}()
 	_ = q.Push(nil)
 }
+
+func TestCallBackQueue_nextCallBack_returns_true_when_callback_is_queued(t *testing.T) {
+	q := newUnopenedCallBackQueue()
+	n := 10
+	go func() {
+		for range n {
+			q.list.PushBack(&callBackRequest{})
+		}
+		q.signalEnqueue()
+	}()
+	for range n {
+		assertTrue(t, q.nextCallBack(), "nextCallBack should return true when there is a callback to process")
+	}
+}
+
+func TestCallBackQueue_nextCallBack_returns_false_when_closed(t *testing.T) {
+	q := newUnopenedCallBackQueue()
+	go func() {
+		close(q.closeSignal)
+	}()
+	assertTrue(t, !q.nextCallBack(), "nextCallBack should return false when there is no callback to process")
+}
