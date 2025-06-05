@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/centrifugal/centrifuge-go/internal/queues"
 	"github.com/centrifugal/protocol"
 	"google.golang.org/protobuf/encoding/protojson"
 )
@@ -60,7 +61,7 @@ type Client struct {
 	delayPing         chan struct{}
 	closeCh           chan struct{}
 	connectFutures    map[uint64]connectFuture
-	cbQueue           *cbQueue
+	cbQueue           *queues.CallBackQueue
 	reconnectTimer    *time.Timer
 	refreshTimer      *time.Timer
 	refreshRequired   bool
@@ -199,11 +200,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	}
 
 	// Queue to run callbacks on.
-	client.cbQueue = &cbQueue{
-		closeCh: make(chan struct{}),
-	}
-	client.cbQueue.cond = sync.NewCond(&client.cbQueue.mu)
-	go client.cbQueue.dispatch()
+	client.cbQueue = queues.OpenCallBackQueue()
 	if client.config.LogLevel > 0 {
 		go client.handleLogs()
 	}
@@ -667,7 +664,7 @@ func (c *Client) moveToClosed() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.disconnectedCh = nil
-	c.cbQueue.close()
+	c.cbQueue.Close()
 	c.cbQueue = nil
 }
 
@@ -764,18 +761,24 @@ func (c *Client) reader(t transport, disconnectCh chan struct{}) {
 func (c *Client) runHandlerSync(fn func()) {
 	waitCh := make(chan struct{})
 	c.mu.RLock()
-	c.cbQueue.push(func(delay time.Duration) {
+	cb := func(_ context.Context, _ time.Duration) {
 		defer close(waitCh)
 		fn()
-	})
+	}
+	if err := c.cbQueue.Push(cb); err != nil {
+		c.log(LogLevelDebug, "runHandlerSync failed to push callback to queue", map[string]string{"reason": err.Error()})
+	}
 	c.mu.RUnlock()
 	<-waitCh
 }
 
 func (c *Client) runHandlerAsync(fn func()) {
-	c.cbQueue.push(func(delay time.Duration) {
+	cb := func(_ context.Context, _ time.Duration) {
 		fn()
-	})
+	}
+	if err := c.cbQueue.Push(cb); err != nil {
+		c.log(LogLevelDebug, "runHandlerAsync failed to push callback to queue", map[string]string{"reason": err.Error()})
+	}
 }
 
 func (c *Client) handle(reply *protocol.Reply) {
