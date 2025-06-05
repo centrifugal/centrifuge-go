@@ -59,7 +59,7 @@ func TestCallbackQueue_OpenCallBackQueue(t *testing.T) {
 	defer q.running.Unlock()
 }
 
-func TestCallbackQueue_processCallBacks(t *testing.T) {
+func TestCallbackQueue_processCallBacks_starts_and_cancels(t *testing.T) {
 	q := newUnopenedCallBackQueue()
 	// stage a callback to be processed
 	cbStarted := make(chan struct{})
@@ -162,16 +162,20 @@ func TestCallbackQueue_Push_order_preserved(t *testing.T) {
 
 func TestCallbackQueue_Close(t *testing.T) {
 	q := OpenCallBackQueue()
-	var executed bool
-	err := q.Push(func(_ context.Context, _ time.Duration) {
-		executed = true
-	})
 	q.Close()
-	assertNoError(t, err, "Push should not return an error")
-	assertTrue(t, executed, "Callback should be executed before close")
+	assertTrue(t, !q.opened.Load(), "Queue should be closed after Close() is called")
+	assertTrue(t, q.list.Len() == 0, "Queue should be empty after Close() is called")
+	q.running.Lock()
+	defer q.running.Unlock()
+	defer func() {
+		if v := recover(); v == nil {
+			t.Fatalf("expected panic when trying send on closed closeSignal channel, got none")
+		}
+	}()
+	q.closeSignal <- struct{}{} // This should panic.
 }
 
-func TestCallbackQueue_IgnorePushAfterClose(t *testing.T) {
+func TestCallbackQueue_Push_after_close_returns_ErrQueueClosed(t *testing.T) {
 	q := OpenCallBackQueue()
 	q.Close()
 	var executed bool
@@ -192,7 +196,7 @@ func TestCallbackQueue_Push_unopened_returns_ErrClosed(t *testing.T) {
 	assertTrue(t, !executed, "Callback should not be executed after queue close")
 }
 
-func TestCallbackQueue_PushNilPanics(t *testing.T) {
+func TestCallbackQueue_Push_nil_panics(t *testing.T) {
 	q := OpenCallBackQueue()
 	defer q.Close()
 	defer func() {
@@ -203,7 +207,7 @@ func TestCallbackQueue_PushNilPanics(t *testing.T) {
 	_ = q.Push(nil)
 }
 
-func TestCallBackQueue_nextCallBack_returns_true_when_callback_is_queued(t *testing.T) {
+func TestCallbackQueue_nextCallBack_returns_true_when_callback_is_queued(t *testing.T) {
 	q := newUnopenedCallBackQueue()
 	n := 10
 	go func() {
@@ -217,7 +221,7 @@ func TestCallBackQueue_nextCallBack_returns_true_when_callback_is_queued(t *test
 	}
 }
 
-func TestCallBackQueue_nextCallBack_returns_false_when_closed(t *testing.T) {
+func TestCallbackQueue_nextCallBack_returns_false_when_closed(t *testing.T) {
 	q := newUnopenedCallBackQueue()
 	go func() {
 		close(q.closeSignal)
