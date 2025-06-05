@@ -709,7 +709,7 @@ func (s *Subscription) resubscribe() {
 		s.mu.Unlock()
 		return
 	}
-	if s.inflight.Load() == true {
+	if s.inflight.Load() {
 		s.mu.Unlock()
 		if s.centrifuge.logLevelEnabled(LogLevelDebug) {
 			s.centrifuge.log(LogLevelDebug, "avoid subscribe since inflight", map[string]string{
