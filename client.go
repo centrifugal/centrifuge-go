@@ -230,7 +230,6 @@ func (c *Client) Close() {
 	if c.isClosed() {
 		return
 	}
-	defer c.cbQueue.Close()
 	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
 	c.moveToClosed()
 	c.logCloseOnce.Do(func() {
