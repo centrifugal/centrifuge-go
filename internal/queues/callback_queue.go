@@ -146,10 +146,8 @@ func (q *CallBackQueue) invokeOneCallBack() {
 	curr.fn(callbackCtx, time.Since(curr.tm))
 }
 
-// Push adds a callback to the queue. It blocks until the callback is added to
-// the queue. It panics if cb is nil. It returns ErrQueueClosed if the queue is
-// closed. The duration passed to cb is the time since the callback was
-// enqueued.
+// Push adds a callback to the queue. It panics if cb is nil. It returns
+// ErrQueueClosed if the queue is closed.
 func (q *CallBackQueue) Push(cb CallBackFunc) error {
 	if cb == nil {
 		panic("nil callback function")

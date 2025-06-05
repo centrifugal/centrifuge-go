@@ -151,7 +151,7 @@ func TestCallbackQueue_Push_order_preserved(t *testing.T) {
 			defer wg.Done()
 			results[i] = v
 		})
-		assertTrue(t, err == nil, "Push should not return an error")
+		assertNoError(t, err, "Push should not return an error")
 	}
 	wg.Wait()
 	// Check order.
