@@ -21,12 +21,12 @@ var ErrQueueClosed = errors.New("queue is closed")
 type CallBackQueue struct {
 	// The ordered list of callbacks to be processed.
 	list *lists.List[*callBackRequest]
-	// enqueueSignals signals when a new item is added. it must be a buffered
+	// enqueueSignals signals when a new item is added. It must be a buffered
 	// channel to avoid missing signals.
 	enqueueSignals chan struct{}
 	// running prevents concurrent processCallBacks execution.
 	running sync.Mutex
-	// If true, the queue must not be used; return ErrQueueClosed.
+	// If false, the queue must not be used; return ErrQueueClosed.
 	opened atomic.Bool
 	// closeSignal is closed as a signal to shut down the queue processing.
 	closeSignal chan struct{}
