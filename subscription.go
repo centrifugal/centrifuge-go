@@ -110,6 +110,8 @@ type Subscription struct {
 	deltaType       DeltaType
 	deltaNegotiated bool
 	prevData        []byte
+
+	inflight atomic.Bool
 }
 
 func (s *Subscription) State() SubState {
@@ -572,6 +574,15 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 
 // Lock must be held outside.
 func (s *Subscription) scheduleResubscribe() {
+	if s.resubscribeTimer != nil {
+		if s.centrifuge.logLevelEnabled(LogLevelDebug) {
+			s.centrifuge.log(LogLevelDebug, "stopping previous resubscribe timer", map[string]string{
+				"channel": s.Channel,
+			})
+		}
+		s.resubscribeTimer.Stop()
+		s.resubscribeTimer = nil
+	}
 	delay := s.resubscribeStrategy.timeBeforeNextAttempt(s.resubscribeAttempts)
 	s.resubscribeAttempts++
 	s.resubscribeTimer = time.AfterFunc(delay, func() {
@@ -698,7 +709,17 @@ func (s *Subscription) resubscribe() {
 		s.mu.Unlock()
 		return
 	}
+	if s.inflight.Load() == true {
+		s.mu.Unlock()
+		if s.centrifuge.logLevelEnabled(LogLevelDebug) {
+			s.centrifuge.log(LogLevelDebug, "avoid subscribe since inflight", map[string]string{
+				"channel": s.Channel,
+			})
+		}
+		return
+	}
 	token := s.token
+	s.inflight.Store(true)
 	s.mu.Unlock()
 
 	if token == "" && s.getToken != nil {
@@ -706,15 +727,18 @@ func (s *Subscription) resubscribe() {
 		token, err = s.getSubscriptionToken(s.Channel)
 		if err != nil {
 			if errors.Is(err, ErrUnauthorized) {
+				s.inflight.Store(false)
 				s.unsubscribe(unsubscribedUnauthorized, "unauthorized", false)
 				return
 			}
+			s.inflight.Store(false)
 			s.subscribeError(err)
 			return
 		}
 		s.mu.Lock()
 		if token == "" {
 			s.mu.Unlock()
+			s.inflight.Store(false)
 			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", false)
 			return
 		}
@@ -725,6 +749,7 @@ func (s *Subscription) resubscribe() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != SubStateSubscribing {
+		s.inflight.Store(false)
 		return
 	}
 
@@ -738,12 +763,15 @@ func (s *Subscription) resubscribe() {
 
 	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
+			s.inflight.Store(false)
 			s.subscribeError(err)
 			return
 		}
+		s.inflight.Store(false)
 		s.moveToSubscribed(res)
 	})
 	if err != nil {
+		s.inflight.Store(false)
 		s.scheduleResubscribe()
 	}
 }
