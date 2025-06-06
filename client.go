@@ -601,6 +601,13 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 
 func (c *Client) scheduleReconnectLocked() {
 	c.reconnectAttempts++
+	if c.reconnectTimer != nil {
+		if c.logLevelEnabled(LogLevelDebug) {
+			c.log(LogLevelDebug, "stopping previous reconnect timer", nil)
+		}
+		c.reconnectTimer.Stop()
+		c.reconnectTimer = nil
+	}
 	reconnectDelay := c.getReconnectDelay()
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "reconnect with delay", map[string]string{
