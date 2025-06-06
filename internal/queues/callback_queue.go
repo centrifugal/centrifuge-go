@@ -21,15 +21,17 @@ var ErrQueueClosed = errors.New("queue is closed")
 type CallBackQueue struct {
 	// The ordered list of callbacks to be processed.
 	list *lists.List[*callBackRequest]
-	// enqueueSignals signals when a new item is added. It must be a buffered
+	// enqueueSignals are sent when a new item is added. It must be a buffered
 	// channel to avoid missing signals.
 	enqueueSignals chan struct{}
 	// running prevents concurrent processCallBacks execution.
 	running sync.Mutex
 	// If false, the queue must not be used; return ErrQueueClosed.
 	opened atomic.Bool
-	// closeSignal is closed as a signal to shut down the queue processing.
+	// closeSignal is closed to signal the queue to begin shutdown.
 	closeSignal chan struct{}
+	// doneSignal is closed to signal the queue is fully shutdown.
+	doneSignal chan struct{}
 }
 
 // newUnopenedCallBackQueue creates a queue in the closed state. Use
@@ -39,6 +41,7 @@ func newUnopenedCallBackQueue() *CallBackQueue {
 		list:           lists.NewList[*callBackRequest](),
 		enqueueSignals: make(chan struct{}, 1),
 		closeSignal:    make(chan struct{}),
+		doneSignal:     make(chan struct{}),
 	}
 }
 
@@ -50,8 +53,6 @@ func OpenCallBackQueue() *CallBackQueue {
 	q.running.Lock()
 	processCallBacksIsRunning := make(chan struct{})
 	go func() {
-		defer q.running.Unlock()
-		defer q.Close()
 		defer func() {
 			if v := recover(); v != nil {
 				// This should not happen, but if it does, this defer only adds
@@ -60,6 +61,8 @@ func OpenCallBackQueue() *CallBackQueue {
 				panic(fmt.Sprintf("callback queue panicked: %v", v))
 			}
 		}()
+		defer q.running.Unlock()
+		defer close(q.doneSignal)
 		q.opened.Store(true)
 		close(processCallBacksIsRunning)
 		q.processCallBacks()
@@ -78,12 +81,24 @@ func (q *CallBackQueue) Close() {
 	if !q.opened.Swap(false) {
 		return // The queue is already closed.
 	}
-	close(q.closeSignal)
-	// Obtain the running lock to ensure the queue is finished processing before
-	// returning.
-	q.running.Lock()
-	defer q.running.Unlock()
 	q.list.Clear()
+	close(q.closeSignal)
+	<-q.doneSignal
+}
+
+// Push adds a callback to the queue. It panics if cb is nil. It returns
+// ErrQueueClosed if the queue is closed.
+func (q *CallBackQueue) Push(cb CallBackFunc) error {
+	if cb == nil {
+		panic("nil callback function")
+	}
+	if !q.opened.Load() {
+		return ErrQueueClosed
+	}
+	// Preserve order.
+	q.list.PushBack(&callBackRequest{fn: cb, tm: time.Now()})
+	q.signalEnqueue()
+	return nil
 }
 
 // processCallBacks is responsible for invoking callbacks from the list when it
@@ -144,21 +159,6 @@ func (q *CallBackQueue) invokeOneCallBack() {
 		}
 	}()
 	curr.fn(callbackCtx, time.Since(curr.tm))
-}
-
-// Push adds a callback to the queue. It panics if cb is nil. It returns
-// ErrQueueClosed if the queue is closed.
-func (q *CallBackQueue) Push(cb CallBackFunc) error {
-	if cb == nil {
-		panic("nil callback function")
-	}
-	if !q.opened.Load() {
-		return ErrQueueClosed
-	}
-	// Preserve order.
-	q.list.PushBack(&callBackRequest{fn: cb, tm: time.Now()})
-	q.signalEnqueue()
-	return nil
 }
 
 // CallBackFunc is a function type that represents a callback to be executed.

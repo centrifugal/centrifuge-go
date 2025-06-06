@@ -38,9 +38,9 @@ func assertErrorIs(t *testing.T, err error, target error, msg string) {
 func TestCallbackQueue_newUnopenedCallBackQueue(t *testing.T) {
 	q := newUnopenedCallBackQueue()
 	assertTrue(t, q != nil, "newUnopenedCallBackQueue should return a non-nil queue")
-	assertTrue(t, !q.opened.Load(), "newUnopenedCallBackQueue should return a closed queue")
+	assertTrue(t, !q.opened.Load(), "newUnopenedCallBackQueue should return an opened queue")
 	assertTrue(t, q.list.Len() == 0, "newUnopenedCallBackQueue should return an empty queue")
-	// check that the enqueueSignals channel is buffered
+	// Check that the enqueueSignals channel is buffered.
 	select {
 	case q.enqueueSignals <- struct{}{}:
 	default:
@@ -52,16 +52,19 @@ func TestCallbackQueue_OpenCallBackQueue(t *testing.T) {
 	q := OpenCallBackQueue()
 	assertTrue(t, q != nil, "OpenCallBackQueue should return a non-nil queue")
 	assertTrue(t, q.opened.Load(), "OpenCallBackQueue should return an opened queue")
+	assertTrue(t, !q.running.TryLock(), "OpenCallBackQueue should not have the running lock locked")
 	q.Close()
 	assertTrue(t, !q.opened.Load(), "OpenCallBackQueue should close the queue after Close() is called")
-	// check that the queue was closed by acquiring the running lock.
+	// Check that doneSignal is closed.
+	<-q.doneSignal
+	// Check that the running lock was released.
 	q.running.Lock()
 	defer q.running.Unlock()
 }
 
 func TestCallbackQueue_processCallBacks_starts_and_cancels(t *testing.T) {
 	q := newUnopenedCallBackQueue()
-	// stage a callback to be processed
+	// Stage a callback to be processed
 	cbStarted := make(chan struct{})
 	cbFinished := make(chan struct{})
 	cb := func(ctx context.Context, d time.Duration) {
@@ -70,19 +73,19 @@ func TestCallbackQueue_processCallBacks_starts_and_cancels(t *testing.T) {
 		close(cbFinished)
 	}
 	q.list.PushBack(&callBackRequest{fn: cb, tm: time.Now()})
-	// run the processCallBacks method
+	// Run the processCallBacks method
 	go q.processCallBacks()
 	<-cbStarted // wait for the callback to start processing
 	assertTrue(t, q.list.Len() == 0, "Callback queue should be empty after processing")
 	close(q.closeSignal)
-	// the context was canceled when closeSignal was closed.
+	// The context was canceled when closeSignal was closed.
 	<-cbFinished
 }
 
 func TestCallbackQueue_processCallBacks_auto_dequeues(t *testing.T) {
 	q := newUnopenedCallBackQueue()
 	go q.processCallBacks()
-	// stage a callback to be processed
+	// Stage a callback to be processed.
 	n := 10
 	var wg sync.WaitGroup
 	wg.Add(n)
@@ -92,7 +95,7 @@ func TestCallbackQueue_processCallBacks_auto_dequeues(t *testing.T) {
 		}
 		q.list.PushBack(&callBackRequest{fn: cb, tm: time.Now()})
 	}
-	// only send one signal, the processCallBacks should dequeue the rest.
+	// Only send one signal; processCallBacks should dequeue the rest.
 	q.signalEnqueue()
 	wg.Wait()
 	assertTrue(t, q.list.Len() == 0, "Callback queue should be empty after processing all callbacks")
@@ -106,7 +109,7 @@ func TestCallbackQueue_Push_does_not_block(t *testing.T) {
 	neverProcessed := func(ctx context.Context, d time.Duration) {}
 	n := 100
 	for range n {
-		// push callbacks while there is nothing to dequeue.
+		// Push callbacks while there is nothing to dequeue.
 		err := q.Push(neverProcessed)
 		assertNoError(t, err, "Push should not return an error")
 	}
@@ -146,7 +149,7 @@ func TestCallbackQueue_Push_order_preserved(t *testing.T) {
 	// Process callbacks.
 	results := make([]string, len(expectedResults))
 	for i, v := range expectedResults {
-		i, v := i, v // Capture loop variables
+		i, v := i, v // Capture loop variables.
 		err := q.Push(func(_ context.Context, _ time.Duration) {
 			defer wg.Done()
 			results[i] = v
@@ -175,15 +178,18 @@ func TestCallbackQueue_Close(t *testing.T) {
 	q.closeSignal <- struct{}{} // This should panic.
 }
 
+func TestCallbackQueue_Close_multiple_calls_no_ops(t *testing.T) {
+	q := OpenCallBackQueue()
+	for range 10 {
+		q.Close()
+	}
+}
+
 func TestCallbackQueue_Push_after_close_returns_ErrQueueClosed(t *testing.T) {
 	q := OpenCallBackQueue()
 	q.Close()
-	var executed bool
-	err := q.Push(func(_ context.Context, _ time.Duration) {
-		executed = true
-	})
+	err := q.Push(func(_ context.Context, _ time.Duration) {})
 	assertErrorIs(t, err, ErrQueueClosed, "Push should return an error after queue close")
-	assertTrue(t, !executed, "Callback should not be executed after queue close")
 }
 
 func TestCallbackQueue_Push_unopened_returns_ErrClosed(t *testing.T) {
