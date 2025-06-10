@@ -25,17 +25,29 @@ You can strip out debug info and get 10 MB:
 GOOS=js GOARCH=wasm go build -ldflags="-s -w" -o ./assets/example.wasm
 ```
 
-You can use brotli compression:
+You can use `gzip` to compress the file and get 2.5 MB:
+
+```bash
+cd assets
+gzip -c example.wasm > example.wasm.gz
+
+❯ ls -lah | grep example.wasm
+-rwxr-xr-x  1 alexander.emelin  staff    10M 10 Jun 04:49 example.wasm
+-rwxr-xr-x  1 alexander.emelin  staff   2.5M 10 Jun 04:30 example.wasm.gz
+```
+
+Or use brotli compression:
 
 ```bash
 cd assets
 brotli example.wasm
 ❯ ls -lah | grep example.wasm
--rwxr-xr-x  1 alexander.emelin  staff    10M 10 Jun 04:30 example.wasm
+-rwxr-xr-x  1 alexander.emelin  staff    10M 10 Jun 04:49 example.wasm
 -rwxr-xr-x  1 alexander.emelin  staff   1.8M 10 Jun 04:30 example.wasm.br
 ```
 
-So you get 1.8 MB. But in this case make sure your Web server supports brotli compression and sets `Content-Encoding: br` header for `example.wasm.br` file. See `serve.py` as a very simple example of such server.
+So you get 1.8 MB. 
+
+But in these case make sure your Web server supports gzip/brotli compression and sets proper `Content-Encoding` headers. See `serve.py` as a very simple example of such server.
 
 We were able to build the example with Tinygo (requires some changes in protocol package, see [tinygo](https://github.com/centrifugal/protocol/compare/tinygo?expand=1) branch), got 5.6 MB size of `example.wasm`, but there was a WASM error in Javascript. So Tinygo does not work for now.
-

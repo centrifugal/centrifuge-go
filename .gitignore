@@ -32,5 +32,6 @@ _testmain.go
 *.orig
 examples/benchmark/benchmark
 examples/wasm/assets/example.wasm
+examples/wasm/assets/example.wasm.gz
 examples/wasm/assets/example.wasm.br
 local/
