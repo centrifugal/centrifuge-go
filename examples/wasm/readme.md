@@ -1,4 +1,4 @@
-This example demonstrates how to use `centrifuge-js` in web browser using WebAssembly.
+This example demonstrates how to use `centrifuge-go` in web browser using WebAssembly.
 
 To run example, compile `main.go` to WASM using:
 
