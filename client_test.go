@@ -334,7 +334,32 @@ func TestSubscription_Unsubscribe(t *testing.T) {
 	select {
 	case <-unsubscribedCh:
 	case <-time.After(3 * time.Second):
-		t.Errorf("timeout waiting for subscribe")
+		t.Errorf("timeout waiting for unsubscribe")
+	}
+}
+
+func TestConcurrentCloseDisconnect(t *testing.T) {
+	// Race condtition probability between close and disconnect is small,
+	// so doing a lot of iterations to reproduce reliably.
+	for i := 0; i < 10000; i++ {
+		client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+		client.OnConnecting(func(ConnectingEvent) {})
+		if err := client.Connect(); err != nil {
+			t.Fatalf("failed to connect: %v", err)
+		}
+		sub, err := client.NewSubscription("thechannel", SubscriptionConfig{})
+		if err != nil {
+			t.Fatalf("failed to subscribe: %v", err)
+		}
+		sub.OnUnsubscribed(func(UnsubscribedEvent) {})
+		sub.OnSubscribing(func(SubscribingEvent) {})
+		sub.Subscribe()
+		go client.Close()
+		client.handleDisconnect(&disconnect{
+			Code:      connectingTransportClosed,
+			Reason:    "transport closed",
+			Reconnect: false,
+		})
 	}
 }
 
