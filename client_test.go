@@ -353,7 +353,7 @@ func TestConcurrentCloseDisconnect(t *testing.T) {
 		}
 		sub.OnUnsubscribed(func(UnsubscribedEvent) {})
 		sub.OnSubscribing(func(SubscribingEvent) {})
-		sub.Subscribe()
+		_ = sub.Subscribe()
 		go client.Close()
 		client.handleDisconnect(&disconnect{
 			Code:      connectingTransportClosed,
