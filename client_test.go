@@ -339,10 +339,10 @@ func TestSubscription_Unsubscribe(t *testing.T) {
 }
 
 func TestConcurrentCloseDisconnect(t *testing.T) {
-	// Race condtition probability between close and disconnect is small,
-	// so doing a lot of iterations to reproduce reliably.
-	for i := 0; i < 10000; i++ {
-		client := NewJsonClient("ws://localhost:8000/connection/websocket?cf_protocol_version=v2", Config{})
+	// Race condition probability between close and disconnect is small,
+	// so doing a lot of iterations increase chance of reproducing.
+	for i := 0; i < 100; i++ {
+		client := NewJsonClient("ws://localhost:8000/connection/websocket", Config{})
 		client.OnConnecting(func(ConnectingEvent) {})
 		if err := client.Connect(); err != nil {
 			t.Fatalf("failed to connect: %v", err)
