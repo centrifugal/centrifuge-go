@@ -770,29 +770,29 @@ func (c *Client) reader(t transport, disconnectCh chan struct{}) {
 
 func (c *Client) runHandlerSync(fn func()) {
 	c.mu.RLock()
-	if c.cbQueue == nil {
-		c.mu.RUnlock()
+	queue := c.cbQueue
+	c.mu.RUnlock()
+	if queue == nil {
 		return
 	}
 	waitCh := make(chan struct{})
-	c.cbQueue.push(func(delay time.Duration) {
+	queue.push(func(delay time.Duration) {
 		defer close(waitCh)
 		fn()
 	})
-	c.mu.RUnlock()
 	<-waitCh
 }
 
 func (c *Client) runHandlerAsync(fn func()) {
 	c.mu.RLock()
-	if c.cbQueue == nil {
-		c.mu.RUnlock()
+	queue := c.cbQueue
+	c.mu.RUnlock()
+	if queue == nil {
 		return
 	}
-	c.cbQueue.push(func(delay time.Duration) {
+	queue.push(func(delay time.Duration) {
 		fn()
 	})
-	c.mu.RUnlock()
 }
 
 func (c *Client) handle(reply *protocol.Reply) {
