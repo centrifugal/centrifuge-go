@@ -88,7 +88,7 @@ func NewProtobufClient(endpoint string, config Config) *Client {
 }
 
 func (c *Client) logLevelEnabled(level LogLevel) bool {
-	return level >= c.config.LogLevel
+	return c.config.LogLevel > LogLevelNone && level >= c.config.LogLevel
 }
 
 func (c *Client) log(level LogLevel, message string, fields map[string]string) {

@@ -649,3 +649,56 @@ func TestHandlePublishFossil(t *testing.T) {
 		testFossil(t, client)
 	})
 }
+
+func TestLogLevel(t *testing.T) {
+	cases := []struct {
+		name            string
+		configuredLevel LogLevel
+		requestedLevel  LogLevel
+		enabled         bool
+	}{
+		{
+			"configured with debug, requested trace",
+			LogLevelDebug,
+			LogLevelTrace,
+			false,
+		},
+		{
+			"configured with none, requested trace",
+			LogLevelNone,
+			LogLevelTrace,
+			false,
+		},
+		{
+			"configured with none, requested dabug",
+			LogLevelNone,
+			LogLevelDebug,
+			false,
+		},
+		{
+			"configured with trace, requested debug",
+			LogLevelTrace,
+			LogLevelDebug,
+			true,
+		},
+		{
+			"configured with debug, requested debug",
+			LogLevelDebug,
+			LogLevelDebug,
+			true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := NewJsonClient("ws://localhost:9000/connection/websocket", Config{
+				LogLevel: tc.configuredLevel,
+			})
+
+			got := client.logLevelEnabled(tc.requestedLevel)
+			if got != tc.enabled {
+				t.Errorf("expected %v got %v", tc.enabled, got)
+			}
+		})
+	}
+}
