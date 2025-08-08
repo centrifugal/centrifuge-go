@@ -21,13 +21,6 @@ type backoffReconnect struct {
 	MaxDelay time.Duration
 }
 
-var defaultBackoffReconnect = &backoffReconnect{
-	MinDelay: 200 * time.Millisecond,
-	MaxDelay: 20 * time.Second,
-	Factor:   2,
-	Jitter:   true,
-}
-
 func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) time.Duration {
 	b := &backoff.Backoff{
 		Min:    r.MinDelay,
