@@ -50,16 +50,30 @@ type SubscriptionConfig struct {
 	JoinLeave bool
 	// Delta allows to specify delta type for the subscription. By default, no delta is used.
 	Delta DeltaType
+	// MinResubscribeDelay is the minimum delay between resubscription attempts.
+	// This delay is jittered.
+	// Zero value means 200 * time.Millisecond.
+	MinResubscribeDelay time.Duration
+	// MaxResubscribeDelay is the maximum delay between resubscription attempts.
+	// Zero value means 20 * time.Second.
+	MaxResubscribeDelay time.Duration
 }
 
 func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *Subscription {
+	var resubscribeStrategy reconnectStrategy
+	var minResubscribeDelay, maxResubscribeDelay time.Duration
+	if len(config) == 1 {
+		minResubscribeDelay = config[0].MinResubscribeDelay
+		maxResubscribeDelay = config[0].MaxResubscribeDelay
+	}
+	resubscribeStrategy = newBackoffReconnect(minResubscribeDelay, maxResubscribeDelay)
 	s := &Subscription{
 		Channel:             channel,
 		centrifuge:          c,
 		state:               SubStateUnsubscribed,
 		events:              newSubscriptionEventHub(),
 		subFutures:          make(map[uint64]subFuture),
-		resubscribeStrategy: defaultBackoffReconnect,
+		resubscribeStrategy: resubscribeStrategy,
 	}
 	if len(config) == 1 {
 		cfg := config[0]

@@ -21,13 +21,6 @@ type backoffReconnect struct {
 	MaxDelay time.Duration
 }
 
-var defaultBackoffReconnect = &backoffReconnect{
-	MinDelay: 200 * time.Millisecond,
-	MaxDelay: 20 * time.Second,
-	Factor:   2,
-	Jitter:   true,
-}
-
 func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) time.Duration {
 	b := &backoff.Backoff{
 		Min:    r.MinDelay,
@@ -36,4 +29,21 @@ func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) time.Duration {
 		Jitter: r.Jitter,
 	}
 	return b.ForAttempt(float64(attempt))
+}
+
+// newBackoffReconnect creates a new backoff reconnect strategy with custom min and max delays.
+// If minDelay or maxDelay is zero, it uses the default values.
+func newBackoffReconnect(minDelay, maxDelay time.Duration) reconnectStrategy {
+	if minDelay == 0 {
+		minDelay = 200 * time.Millisecond
+	}
+	if maxDelay == 0 {
+		maxDelay = 20 * time.Second
+	}
+	return &backoffReconnect{
+		MinDelay: minDelay,
+		MaxDelay: maxDelay,
+		Factor:   2,
+		Jitter:   true,
+	}
 }
