@@ -51,6 +51,13 @@ type Config struct {
 	// MaxServerPingDelay used to set maximum delay of ping from server.
 	// Zero value means 10 * time.Second.
 	MaxServerPingDelay time.Duration
+	// MinReconnectDelay is the minimum delay between reconnection attempts.
+	// This delay is jittered.
+	// Zero value means 200 * time.Millisecond.
+	MinReconnectDelay time.Duration
+	// MaxReconnectDelay is the maximum delay between reconnection attempts.
+	// Zero value means 20 * time.Second.
+	MaxReconnectDelay time.Duration
 	// TLSConfig specifies the TLS configuration to use with tls.Client.
 	// If nil, the default configuration is used.
 	TLSConfig *tls.Config

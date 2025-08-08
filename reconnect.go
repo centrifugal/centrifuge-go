@@ -37,3 +37,20 @@ func (r *backoffReconnect) timeBeforeNextAttempt(attempt int) time.Duration {
 	}
 	return b.ForAttempt(float64(attempt))
 }
+
+// newBackoffReconnect creates a new backoff reconnect strategy with custom min and max delays.
+// If minDelay or maxDelay is zero, it uses the default values.
+func newBackoffReconnect(minDelay, maxDelay time.Duration) reconnectStrategy {
+	if minDelay == 0 {
+		minDelay = 200 * time.Millisecond
+	}
+	if maxDelay == 0 {
+		maxDelay = 20 * time.Second
+	}
+	return &backoffReconnect{
+		MinDelay: minDelay,
+		MaxDelay: maxDelay,
+		Factor:   2,
+		Jitter:   true,
+	}
+}

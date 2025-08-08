@@ -188,7 +188,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		subs:              make(map[string]*Subscription),
 		serverSubs:        make(map[string]*serverSub),
 		requests:          make(map[uint32]request),
-		reconnectStrategy: defaultBackoffReconnect,
+		reconnectStrategy: newBackoffReconnect(config.MinReconnectDelay, config.MaxReconnectDelay),
 		delayPing:         make(chan struct{}, 32),
 		events:            newEventHub(),
 		connectFutures:    make(map[uint64]connectFuture),
