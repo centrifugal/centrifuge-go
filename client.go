@@ -1343,7 +1343,7 @@ func (c *Client) startReconnecting() error {
 		for ch := range c.serverSubs {
 			if _, ok := res.Subs[ch]; !ok {
 				var serverUnsubscribedHandler ServerUnsubscribedHandler
-				if c.events != nil && c.events.onServerSubscribing != nil {
+				if c.events != nil && c.events.onServerUnsubscribed != nil {
 					serverUnsubscribedHandler = c.events.onServerUnsubscribed
 				}
 				if serverUnsubscribedHandler != nil {
