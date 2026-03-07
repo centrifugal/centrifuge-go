@@ -17,6 +17,7 @@ type ServerPublicationEvent struct {
 	Publication
 }
 
+// ServerSubscribedEvent has info about server-side subscription.
 type ServerSubscribedEvent struct {
 	Channel        string
 	WasRecovering  bool
@@ -27,13 +28,13 @@ type ServerSubscribedEvent struct {
 	Data           []byte
 }
 
-// ServerJoinEvent has info about user who left channel.
+// ServerJoinEvent has info about user who joined channel.
 type ServerJoinEvent struct {
 	Channel string
 	ClientInfo
 }
 
-// ServerLeaveEvent has info about user who joined channel.
+// ServerLeaveEvent has info about user who left channel.
 type ServerLeaveEvent struct {
 	Channel string
 	ClientInfo
