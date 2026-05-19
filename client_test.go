@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -648,6 +650,292 @@ func TestHandlePublishFossil(t *testing.T) {
 		_ = client.Connect()
 		testFossil(t, client)
 	})
+}
+
+// fastReconnectConfig returns a Config with short reconnect delays so stress
+// tests do not spend most of their time waiting for backoff timers.
+func fastReconnectConfig() Config {
+	return Config{
+		MinReconnectDelay: 50 * time.Millisecond,
+		MaxReconnectDelay: 200 * time.Millisecond,
+		ReadTimeout:       2 * time.Second,
+		HandshakeTimeout:  time.Second,
+	}
+}
+
+// TestStress_CloseWhileReconnecting verifies that Close() called while the
+// client is in a reconnect loop (bad server address) always completes promptly
+// and never hangs. This is the scenario that triggered issue #105: the cbQueue
+// dispatch goroutine must not stall between reconnect attempts.
+func TestStress_CloseWhileReconnecting(t *testing.T) {
+	const iterations = 30
+	for i := 0; i < iterations; i++ {
+		client := NewJsonClient("ws://localhost:9000/connection/websocket", fastReconnectConfig())
+		client.OnConnecting(func(ConnectingEvent) {})
+		client.OnError(func(ErrorEvent) {})
+		_ = client.Connect()
+
+		// Randomise how long the reconnect loop runs before we shut it down.
+		time.Sleep(time.Duration(rand.Intn(15)) * time.Millisecond)
+
+		done := make(chan struct{})
+		go func() {
+			client.Close()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: Close() hung while client was reconnecting", i)
+		}
+	}
+}
+
+// TestStress_ConcurrentCloseWhileReconnecting is the same scenario as above
+// but Close() is called from several goroutines simultaneously to surface
+// races on the client state machine and the cbQueue.
+func TestStress_ConcurrentCloseWhileReconnecting(t *testing.T) {
+	const iterations = 20
+	const closers = 5
+	for i := 0; i < iterations; i++ {
+		client := NewJsonClient("ws://localhost:9000/connection/websocket", fastReconnectConfig())
+		client.OnConnecting(func(ConnectingEvent) {})
+		client.OnError(func(ErrorEvent) {})
+		_ = client.Connect()
+		time.Sleep(time.Duration(rand.Intn(10)) * time.Millisecond)
+
+		var wg sync.WaitGroup
+		for j := 0; j < closers; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				client.Close()
+			}()
+		}
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: concurrent Close() calls hung", i)
+		}
+	}
+}
+
+// TestStress_RepeatedForcedReconnects connects to a real server and forces N
+// disconnect-then-reconnect cycles, waiting for a successful reconnect each
+// time. It verifies the reconnect path — including cbQueue handler dispatch —
+// completes reliably under repeated churn and that every cycle fires exactly
+// one connected event.
+func TestStress_RepeatedForcedReconnects(t *testing.T) {
+	const cycles = 25
+
+	var connectedCount atomic.Int32
+	connectedCh := make(chan struct{}, cycles+1)
+
+	client := NewJsonClient(
+		"ws://localhost:8000/connection/websocket?cf_protocol_version=v2",
+		fastReconnectConfig(),
+	)
+	defer client.Close()
+	client.OnConnecting(func(ConnectingEvent) {})
+	client.OnConnected(func(ConnectedEvent) {
+		connectedCount.Add(1)
+		connectedCh <- struct{}{}
+	})
+	client.OnError(func(ErrorEvent) {})
+
+	_ = client.Connect()
+	select {
+	case <-connectedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial connect timed out")
+	}
+
+	for i := 0; i < cycles; i++ {
+		client.handleDisconnect(&disconnect{
+			Code:      connectingTransportClosed,
+			Reason:    "stress-test-forced-disconnect",
+			Reconnect: true,
+		})
+		select {
+		case <-connectedCh:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("cycle %d: reconnect timed out", i)
+		}
+	}
+
+	if got := int(connectedCount.Load()); got != cycles+1 {
+		t.Fatalf("expected %d connected events, got %d", cycles+1, got)
+	}
+}
+
+// TestStress_AllHandlersDuringReconnect registers every available client
+// handler, forces many reconnect cycles and verifies that the handler call
+// counts are self-consistent: every connecting event must be followed by
+// exactly one connected event, and the cbQueue must never stall even with
+// all handler slots occupied.
+func TestStress_AllHandlersDuringReconnect(t *testing.T) {
+	const cycles = 20
+
+	var (
+		connectingCount atomic.Int32
+		connectedCount  atomic.Int32
+		errorCount      atomic.Int32
+	)
+	connectedCh := make(chan struct{}, cycles+1)
+
+	client := NewJsonClient(
+		"ws://localhost:8000/connection/websocket?cf_protocol_version=v2",
+		fastReconnectConfig(),
+	)
+	defer client.Close()
+
+	client.OnConnecting(func(ConnectingEvent) { connectingCount.Add(1) })
+	client.OnConnected(func(ConnectedEvent) {
+		connectedCount.Add(1)
+		connectedCh <- struct{}{}
+	})
+	client.OnDisconnected(func(DisconnectedEvent) {})
+	client.OnError(func(e ErrorEvent) { errorCount.Add(1) })
+
+	_ = client.Connect()
+	select {
+	case <-connectedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial connect timed out")
+	}
+
+	for i := 0; i < cycles; i++ {
+		client.handleDisconnect(&disconnect{
+			Code:      connectingTransportClosed,
+			Reason:    "stress-test-forced-disconnect",
+			Reconnect: true,
+		})
+		select {
+		case <-connectedCh:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("cycle %d: reconnect timed out (connecting=%d connected=%d)",
+				i, connectingCount.Load(), connectedCount.Load())
+		}
+	}
+
+	if got, want := int(connectedCount.Load()), cycles+1; got != want {
+		t.Fatalf("connected events: got %d, want %d", got, want)
+	}
+	// Every reconnect fires a connecting event; the initial Connect() also does.
+	if got := int(connectingCount.Load()); got < cycles+1 {
+		t.Fatalf("connecting events: got %d, want at least %d", got, cycles+1)
+	}
+}
+
+// TestStress_ReconnectWithSlowHandlers verifies that the reconnect loop
+// completes even when every handler sleeps briefly. This guards against
+// regressions where a slow handler permanently stalls runHandlerSync and
+// prevents scheduleReconnectLocked from being reached.
+func TestStress_ReconnectWithSlowHandlers(t *testing.T) {
+	const cycles = 10
+	const handlerDelay = 5 * time.Millisecond
+
+	connectedCh := make(chan struct{}, cycles+1)
+
+	client := NewJsonClient(
+		"ws://localhost:8000/connection/websocket?cf_protocol_version=v2",
+		fastReconnectConfig(),
+	)
+	defer client.Close()
+
+	client.OnConnecting(func(ConnectingEvent) { time.Sleep(handlerDelay) })
+	client.OnConnected(func(ConnectedEvent) {
+		time.Sleep(handlerDelay)
+		connectedCh <- struct{}{}
+	})
+	client.OnError(func(ErrorEvent) { time.Sleep(handlerDelay) })
+
+	_ = client.Connect()
+	select {
+	case <-connectedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial connect timed out")
+	}
+
+	for i := 0; i < cycles; i++ {
+		client.handleDisconnect(&disconnect{
+			Code:      connectingTransportClosed,
+			Reason:    "stress-test-forced-disconnect",
+			Reconnect: true,
+		})
+		// Allow extra time per cycle for the handler delays.
+		select {
+		case <-connectedCh:
+		case <-time.After(15 * time.Second):
+			t.Fatalf("cycle %d: reconnect timed out with slow handlers", i)
+		}
+	}
+}
+
+// TestStress_ReconnectWithSubscriptions subscribes to a channel, forces many
+// reconnects and verifies that the subscription resubscribes successfully after
+// each one. This exercises the interaction between the reconnect path, the
+// cbQueue and subscription state management under churn.
+func TestStress_ReconnectWithSubscriptions(t *testing.T) {
+	const cycles = 15
+
+	connectedCh := make(chan struct{}, cycles+1)
+	subscribedCh := make(chan struct{}, cycles+1)
+
+	client := NewJsonClient(
+		"ws://localhost:8000/connection/websocket?cf_protocol_version=v2",
+		fastReconnectConfig(),
+	)
+	defer client.Close()
+
+	sub, err := client.NewSubscription("stress_reconnect_sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub.OnSubscribed(func(SubscribedEvent) { subscribedCh <- struct{}{} })
+	sub.OnSubscribing(func(SubscribingEvent) {})
+	sub.OnUnsubscribed(func(UnsubscribedEvent) {})
+
+	client.OnConnecting(func(ConnectingEvent) {})
+	client.OnConnected(func(ConnectedEvent) { connectedCh <- struct{}{} })
+	client.OnError(func(ErrorEvent) {})
+
+	_ = client.Connect()
+	_ = sub.Subscribe()
+
+	select {
+	case <-connectedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial connect timed out")
+	}
+	select {
+	case <-subscribedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial subscribe timed out")
+	}
+
+	for i := 0; i < cycles; i++ {
+		client.handleDisconnect(&disconnect{
+			Code:      connectingTransportClosed,
+			Reason:    "stress-test-forced-disconnect",
+			Reconnect: true,
+		})
+		select {
+		case <-connectedCh:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("cycle %d: reconnect timed out", i)
+		}
+		select {
+		case <-subscribedCh:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("cycle %d: resubscribe timed out", i)
+		}
+	}
 }
 
 func TestLogLevel(t *testing.T) {

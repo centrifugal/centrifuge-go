@@ -201,8 +201,8 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 	// Queue to run callbacks on.
 	client.cbQueue = &cbQueue{
 		closeCh: make(chan struct{}),
+		notify:  make(chan struct{}, 1),
 	}
-	client.cbQueue.cond = sync.NewCond(&client.cbQueue.mu)
 	go client.cbQueue.dispatch()
 	if client.config.LogLevel > 0 {
 		go client.handleLogs()
