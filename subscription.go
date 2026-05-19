@@ -283,11 +283,12 @@ func (s *Subscription) PresenceStats(ctx context.Context) (PresenceStatsResult, 
 func (s *Subscription) onSubscribe(fn func(err error)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state == SubStateSubscribed {
+	switch s.state {
+	case SubStateSubscribed:
 		go fn(nil)
-	} else if s.state == SubStateUnsubscribed {
+	case SubStateUnsubscribed:
 		go fn(ErrSubscriptionUnsubscribed)
-	} else {
+	default:
 		id := s.nextFutureID()
 		fut := newSubFuture(fn)
 		s.subFutures[id] = fut

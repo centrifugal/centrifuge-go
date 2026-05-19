@@ -1679,13 +1679,14 @@ func (c *Client) resolveConnectFutures(err error) {
 
 func (c *Client) onConnect(fn func(err error)) {
 	c.mu.Lock()
-	if c.state == StateConnected {
+	switch c.state {
+	case StateConnected:
 		c.mu.Unlock()
 		fn(nil)
-	} else if c.state == StateDisconnected {
+	case StateDisconnected:
 		c.mu.Unlock()
 		fn(ErrClientDisconnected)
-	} else {
+	default:
 		defer c.mu.Unlock()
 		id := c.nextFutureID()
 		fut := newConnectFuture(fn)
