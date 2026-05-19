@@ -12,7 +12,7 @@ import (
 // license: see https://github.com/nats-io/nats.go/blob/master/LICENSE.
 type cbQueue struct {
 	mu      sync.Mutex
-	cond    *sync.Cond
+	notify  chan struct{}
 	head    *asyncCB
 	tail    *asyncCB
 	closeCh chan struct{}
@@ -30,17 +30,19 @@ type asyncCB struct {
 func (q *cbQueue) dispatch() {
 	for {
 		q.mu.Lock()
-		// Protect for spurious wake-ups. We should get out of the
-		// wait only if there is an element to pop from the list.
-		for q.head == nil {
-			q.cond.Wait()
-		}
 		curr := q.head
-		q.head = curr.next
-		if curr == q.tail {
-			q.tail = nil
+		if curr != nil {
+			q.head = curr.next
+			if curr == q.tail {
+				q.tail = nil
+			}
 		}
 		q.mu.Unlock()
+
+		if curr == nil {
+			<-q.notify
+			continue
+		}
 
 		// This signals that the dispatcher has been closed and all
 		// previous callbacks have been dispatched.
@@ -89,8 +91,9 @@ func (q *cbQueue) pushOrClose(f func(time.Duration), close bool) {
 	q.tail = cb
 	if close {
 		q.closed = true
-		q.cond.Broadcast()
-	} else {
-		q.cond.Signal()
+	}
+	select {
+	case q.notify <- struct{}{}:
+	default:
 	}
 }
