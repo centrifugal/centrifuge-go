@@ -57,6 +57,36 @@ type SubscriptionConfig struct {
 	// MaxResubscribeDelay is the maximum delay between resubscription attempts.
 	// Zero value means 20 * time.Second.
 	MaxResubscribeDelay time.Duration
+	// GetState called to load the app's current state and stream position.
+	// Requires Centrifugo >= 6.8.0.
+	//
+	// The SDK calls this:
+	// - On initial subscribe (no saved position)
+	// - On reconnect when recovery fails (server returns error 112 —
+	//   unrecoverable position)
+	//
+	// NOT called on reconnects where the server successfully recovers missed
+	// publications — in that case the recovered publications arrive as events
+	// and GetState is skipped.
+	//
+	// The app should load its data from its own source of truth (database,
+	// API), render it, and return the stream position. The SDK subscribes with
+	// recovery from the returned position, so any publications between the
+	// state read and the subscribe are delivered as publication events.
+	//
+	// IMPORTANT: inside GetState, read the stream position FIRST, then read
+	// your data. This ensures the position is a lower bound — any data loaded
+	// after the position read is guaranteed to be included. The reverse order
+	// can produce gaps.
+	//
+	// Recovered publications may overlap with data already loaded in GetState.
+	// This works correctly when updates are idempotent (applying the same
+	// update twice produces the same result). For non-idempotent updates,
+	// deduplicate by publication offset.
+	//
+	// On error, the SDK emits an error event with SubscriptionGetStateError
+	// and retries with backoff.
+	GetState func(SubscriptionGetStateEvent) (StreamPosition, error)
 }
 
 func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *Subscription {
@@ -84,6 +114,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 		s.recoverable = cfg.Recoverable
 		s.joinLeave = cfg.JoinLeave
 		s.deltaType = cfg.Delta
+		s.getState = cfg.GetState
 	}
 	return s
 }
@@ -114,6 +145,7 @@ type Subscription struct {
 
 	token    string
 	getToken func(SubscriptionTokenEvent) (string, error)
+	getState func(SubscriptionGetStateEvent) (StreamPosition, error)
 
 	resubscribeAttempts int
 	resubscribeStrategy reconnectStrategy
@@ -624,9 +656,22 @@ func (s *Subscription) subscribeError(err error) {
 		return
 	}
 
+	var serverError *Error
+	if errors.As(err, &serverError) && serverError.Code == errorCodeUnrecoverablePosition && s.getState != nil {
+		// Unrecoverable position with GetState: reset position so the next
+		// subscribe attempt calls GetState to reload app state from scratch.
+		s.mu.Lock()
+		s.recover = false
+		s.offset = 0
+		s.epoch = ""
+		s.prevData = nil
+		s.scheduleResubscribe()
+		s.mu.Unlock()
+		return
+	}
+
 	s.emitError(SubscriptionSubscribeError{Err: err})
 
-	var serverError *Error
 	if errors.As(err, &serverError) {
 		if serverError.Code == 109 { // Token expired.
 			s.mu.Lock()
@@ -733,8 +778,63 @@ func (s *Subscription) resubscribe() {
 		}
 		return
 	}
-	token := s.token
+	// GetState: ask the app for its current state position. Only called when
+	// we don't have a saved position (first subscribe or after a position
+	// reset due to unrecoverable position error 112). On normal reconnects
+	// with a valid saved position we skip GetState and let the server try
+	// recovery — GetState is only called again if recovery fails.
+	needGetState := s.getState != nil && !s.recover
 	s.inflight.Store(true)
+	s.mu.Unlock()
+
+	if needGetState {
+		// Run GetState on its own goroutine: resubscribe may be entered with
+		// the client mutex held (on connect), and the user callback can be
+		// slow (database read) or call client methods. inflight stays true
+		// while GetState is running — concurrent resubscribe attempts skip.
+		go s.getStateAndResubscribe()
+		return
+	}
+	s.continueResubscribe()
+}
+
+func (s *Subscription) getStateAndResubscribe() {
+	sp, err := s.getState(SubscriptionGetStateEvent{Channel: s.Channel})
+	if err != nil {
+		s.inflight.Store(false)
+		s.mu.Lock()
+		if s.state != SubStateSubscribing {
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+		s.emitError(SubscriptionGetStateError{Err: err})
+		s.mu.Lock()
+		if s.state == SubStateSubscribing {
+			s.scheduleResubscribe()
+		}
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Lock()
+	if s.state != SubStateSubscribing {
+		s.inflight.Store(false)
+		s.mu.Unlock()
+		return
+	}
+	s.recover = true
+	s.offset = sp.Offset
+	s.epoch = sp.Epoch
+	s.mu.Unlock()
+	s.continueResubscribe()
+}
+
+// continueResubscribe is the part of the subscribe flow after the optional
+// GetState step: token retrieval and sending the subscribe command. Called
+// with inflight already set to true.
+func (s *Subscription) continueResubscribe() {
+	s.mu.Lock()
+	token := s.token
 	s.mu.Unlock()
 
 	if token == "" && s.getToken != nil {
@@ -776,7 +876,15 @@ func (s *Subscription) resubscribe() {
 		sp.Epoch = s.epoch
 	}
 
-	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, func(res *protocol.SubscribeResult, err error) {
+	var flag int64
+	if s.getState != nil {
+		// Ask the server to reject the subscribe with error 112 when recovery
+		// from the provided position is impossible, instead of returning
+		// recovered=false — so we can call GetState again to reload state.
+		flag |= subscriptionFlagRejectUnrecovered
+	}
+
+	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, flag, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
 			s.inflight.Store(false)
 			s.subscribeError(err)

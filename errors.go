@@ -85,6 +85,18 @@ func (s SubscriptionSubscribeError) Unwrap() error {
 	return s.Err
 }
 
+type SubscriptionGetStateError struct {
+	Err error
+}
+
+func (s SubscriptionGetStateError) Error() string {
+	return fmt.Sprintf("get state error: %v", s.Err)
+}
+
+func (s SubscriptionGetStateError) Unwrap() error {
+	return s.Err
+}
+
 type SubscriptionRefreshError struct {
 	Err error
 }
