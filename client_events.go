@@ -11,6 +11,11 @@ type SubscriptionTokenEvent struct {
 	Channel string
 }
 
+// SubscriptionGetStateEvent is passed to SubscriptionConfig.GetState callback.
+type SubscriptionGetStateEvent struct {
+	Channel string
+}
+
 // ServerPublicationEvent has info about received channel Publication.
 type ServerPublicationEvent struct {
 	Channel string

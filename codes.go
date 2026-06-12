@@ -25,3 +25,12 @@ const (
 	unsubscribedUnauthorized      uint32 = 1
 	unsubscribedClientClosed      uint32 = 2
 )
+
+// Subscription feature flags — bitmask sent in SubscribeRequest.Flag.
+const (
+	subscriptionFlagRejectUnrecovered int64 = 2
+)
+
+// Server error code returned when recovery from the provided position is
+// impossible (only sent when subscriptionFlagRejectUnrecovered was requested).
+const errorCodeUnrecoverablePosition uint32 = 112
