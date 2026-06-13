@@ -749,6 +749,24 @@ func (c *Client) clearConnectedState() {
 	}
 }
 
+// invalidateConnectionState handles a "state invalidated" disconnect (code
+// 3014): it drops the connection token (so a fresh one is fetched via GetToken
+// on reconnect, via refreshRequired) and invalidates every subscription's
+// cached state. The actual reconnect is performed by the caller.
+func (c *Client) invalidateConnectionState() {
+	c.mu.Lock()
+	c.token = ""
+	c.refreshRequired = true
+	subs := make([]*Subscription, 0, len(c.subs))
+	for _, s := range c.subs {
+		subs = append(subs, s)
+	}
+	c.mu.Unlock()
+	for _, s := range subs {
+		s.invalidateState()
+	}
+}
+
 func (c *Client) handleDisconnect(d *disconnect) {
 	if d == nil {
 		d = &disconnect{
@@ -756,6 +774,11 @@ func (c *Client) handleDisconnect(d *disconnect) {
 			Reason:    "transport closed",
 			Reconnect: true,
 		}
+	}
+	if d.Code == disconnectedStateInvalidated {
+		// State invalidated delivered as a WebSocket close frame (the usual
+		// path; the Disconnect-push path is handled in handlePush).
+		c.invalidateConnectionState()
 	}
 	if d.Reconnect {
 		c.moveToConnecting(d.Code, d.Reason)
@@ -960,6 +983,9 @@ func (c *Client) handlePush(push *protocol.Push) {
 		return
 	case push.Disconnect != nil:
 		code := push.Disconnect.Code
+		if code == disconnectedStateInvalidated {
+			c.invalidateConnectionState()
+		}
 		reconnect := code < 3500 || code >= 5000 || (code >= 4000 && code < 4500)
 		if reconnect {
 			c.moveToConnecting(code, push.Disconnect.Reason)

@@ -818,9 +818,42 @@ func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
 	if unsubscribe.Code < 2500 {
 		s.moveToUnsubscribed(unsubscribe.Code, unsubscribe.Reason)
 	} else {
+		if unsubscribe.Code == unsubscribedStateInvalidated {
+			// State invalidated: drop the subscription token and cached state so
+			// the resubscribe below obtains a fresh token and re-syncs.
+			s.invalidateState()
+		}
 		s.moveToSubscribing(unsubscribe.Code, unsubscribe.Reason)
 		s.resubscribe()
 	}
+}
+
+// invalidateState resets cached subscription state on "state invalidated"
+// (unsubscribe code 2502 or connection disconnect code 3014) so the resubscribe
+// re-syncs: it clears the subscription token (so the next subscribe fetches a
+// fresh one via GetToken), the fossil delta base (a stale base would corrupt
+// decoding of the first publication after resubscribe), and the channel-
+// compaction ID mapping. The recovery position is reset to a sentinel epoch the
+// server can never match (offset 0); the recover flag is left untouched. So for
+// a recoverable subscription the resubscribe reply reports WasRecovering=true,
+// Recovered=false — letting the app reload via its existing recovery-failure
+// path rather than looking like a brand-new first subscribe — while a non-
+// recoverable subscription simply resubscribes (the sentinel is not sent). The
+// real epoch/offset are adopted from the subscribe reply.
+//
+// TODO: when map / shared-poll subscription types are added (as in centrifuge-js),
+// reset their cached buffers and restart them from scratch here instead.
+func (s *Subscription) invalidateState() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pushID != 0 {
+		s.centrifuge.updateSubscriptionPushID(s, s.pushID, 0)
+		s.pushID = 0
+	}
+	s.token = ""
+	s.offset = 0
+	s.epoch = stateInvalidatedEpoch
+	s.prevData = nil
 }
 
 func (s *Subscription) resubscribe() {
