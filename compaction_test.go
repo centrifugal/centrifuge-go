@@ -209,13 +209,13 @@ func TestCompactionFlagOfferedAndPushesRoutedByID(t *testing.T) {
 	// Join / leave pushes are compacted the same way.
 	server.sendCompactedJoin(42, "other-client")
 	join := waitCh(t, joinCh, "compacted join")
-	if join.ClientInfo.Client != "other-client" {
-		t.Fatalf("unexpected join client: %s", join.ClientInfo.Client)
+	if join.Client != "other-client" {
+		t.Fatalf("unexpected join client: %s", join.Client)
 	}
 
 	server.sendCompactedLeave(42, "other-client")
 	leave := waitCh(t, leaveCh, "compacted leave")
-	if leave.ClientInfo.Client != "other-client" {
+	if leave.Client != "other-client" {
 		t.Fatalf("unexpected leave client: %s", leave.ClientInfo.Client)
 	}
 }
