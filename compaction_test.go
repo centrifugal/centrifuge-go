@@ -216,7 +216,7 @@ func TestCompactionFlagOfferedAndPushesRoutedByID(t *testing.T) {
 	server.sendCompactedLeave(42, "other-client")
 	leave := waitCh(t, leaveCh, "compacted leave")
 	if leave.Client != "other-client" {
-		t.Fatalf("unexpected leave client: %s", leave.ClientInfo.Client)
+		t.Fatalf("unexpected leave client: %s", leave.Client)
 	}
 }
 
