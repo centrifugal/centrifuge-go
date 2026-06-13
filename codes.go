@@ -28,6 +28,12 @@ const (
 
 // Subscription feature flags — bitmask sent in SubscribeRequest.Flag.
 const (
+	// subscriptionFlagChannelCompaction offers channel compaction: the server
+	// may replace the string channel name with a short numeric ID in
+	// subscription pushes (bandwidth optimization). Safe to send
+	// unconditionally — servers that don't support or don't allow it ignore
+	// the bit and keep sending the full channel name.
+	subscriptionFlagChannelCompaction int64 = 1
 	subscriptionFlagRejectUnrecovered int64 = 2
 )
 

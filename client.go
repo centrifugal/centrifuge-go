@@ -36,20 +36,33 @@ const (
 // Close method to clean up state when you don't need client instance
 // anymore.
 type Client struct {
-	futureID          uint64
-	cmdID             uint32
-	mu                sync.RWMutex
-	endpoints         []string
-	round             int
-	protocolType      protocol.Type
-	config            Config
-	token             string
-	data              protocol.Raw
-	transport         transport
-	disconnectedCh    chan struct{}
-	state             State
-	subs              map[string]*Subscription
-	serverSubs        map[string]*serverSub
+	futureID       uint64
+	cmdID          uint32
+	mu             sync.RWMutex
+	endpoints      []string
+	round          int
+	protocolType   protocol.Type
+	config         Config
+	token          string
+	data           protocol.Raw
+	transport      transport
+	disconnectedCh chan struct{}
+	state          State
+	subs           map[string]*Subscription
+	serverSubs     map[string]*serverSub
+	// Channel compaction: numeric channel ID → subscription, used to route pushes
+	// that carry an ID instead of the string channel name. Guarded by its own leaf
+	// mutex (never held while calling into Client or Subscription methods) because
+	// subscriptions register under their own mu while the client may hold c.mu
+	// when calling into subscriptions.
+	subsByIDMu sync.RWMutex
+	subsByID   map[int64]*Subscription
+	// connGeneration identifies the current connected session. Bumped whenever
+	// the connected state is cleared. Captured by the subscribe pipeline before
+	// sending and compared when processing the reply, so a reply from a
+	// torn-down connection can't flip a subscription to Subscribed after the
+	// teardown already moved it to Subscribing.
+	connGeneration    atomic.Int64
 	requestsMu        sync.RWMutex
 	requests          map[uint32]request
 	receive           chan []byte
@@ -186,6 +199,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		state:             StateDisconnected,
 		protocolType:      protocolType,
 		subs:              make(map[string]*Subscription),
+		subsByID:          make(map[int64]*Subscription),
 		serverSubs:        make(map[string]*serverSub),
 		requests:          make(map[uint32]request),
 		reconnectStrategy: newBackoffReconnect(config.MinReconnectDelay, config.MaxReconnectDelay),
@@ -692,6 +706,18 @@ func (c *Client) handleError(err error) {
 
 // Lock must be held outside.
 func (c *Client) clearConnectedState() {
+	// The connected session ends here: stale subscribe replies still in flight
+	// through the processing pipeline must not be applied anymore (see the
+	// generation check in moveToSubscribed). Bumped before subscriptions are
+	// moved to subscribing (callers run the moveToSubscribing loops after this
+	// method returns), so a reply observing the old generation is guaranteed
+	// to have fully applied before the teardown touches subscription state.
+	c.connGeneration.Add(1)
+	// Channel compaction IDs are scoped to a server session — drop the routing
+	// registry; each resubscribe re-registers a fresh ID.
+	c.subsByIDMu.Lock()
+	c.subsByID = make(map[int64]*Subscription)
+	c.subsByIDMu.Unlock()
 	if c.reconnectTimer != nil {
 		c.reconnectTimer.Stop()
 		c.reconnectTimer = nil
@@ -855,11 +881,37 @@ func (c *Client) handleMessage(msg *protocol.Message) error {
 	return nil
 }
 
+// updateSubscriptionPushID updates the channel compaction registry for sub:
+// removes the old numeric ID mapping (only if it still points to this
+// subscription) and registers the new one. Either ID may be 0 meaning
+// "no mapping". Safe to call while holding sub.mu — subsByIDMu is a leaf lock.
+func (c *Client) updateSubscriptionPushID(sub *Subscription, oldID, newID int64) {
+	c.subsByIDMu.Lock()
+	defer c.subsByIDMu.Unlock()
+	if oldID > 0 && c.subsByID[oldID] == sub {
+		delete(c.subsByID, oldID)
+	}
+	if newID > 0 {
+		c.subsByID[newID] = sub
+	}
+}
+
 func (c *Client) handlePush(push *protocol.Push) {
 	channel := push.Channel
-	c.mu.RLock()
-	sub, ok := c.subs[channel]
-	c.mu.RUnlock()
+	var sub *Subscription
+	var ok bool
+	if push.Id > 0 {
+		// Channel compaction: the push carries a numeric channel ID instead of
+		// the channel name. Only client-side subscriptions negotiate compaction,
+		// so an unknown ID can be dropped without consulting server-side subs.
+		c.subsByIDMu.RLock()
+		sub, ok = c.subsByID[push.Id]
+		c.subsByIDMu.RUnlock()
+	} else {
+		c.mu.RLock()
+		sub, ok = c.subs[channel]
+		c.mu.RUnlock()
+	}
 	switch {
 	case push.Message != nil:
 		_ = c.handleMessage(push.Message)
@@ -871,18 +923,27 @@ func (c *Client) handlePush(push *protocol.Push) {
 		sub.handleUnsubscribe(push.Unsubscribe)
 	case push.Pub != nil:
 		if !ok {
+			if push.Id > 0 {
+				return // Compacted push with unknown ID (e.g. already unsubscribed) — drop.
+			}
 			c.handleServerPublication(channel, push.Pub)
 			return
 		}
 		sub.handlePublication(push.Pub)
 	case push.Join != nil:
 		if !ok {
+			if push.Id > 0 {
+				return // Compacted push with unknown ID — drop.
+			}
 			c.handleServerJoin(channel, push.Join)
 			return
 		}
 		sub.handleJoin(push.Join.Info)
 	case push.Leave != nil:
 		if !ok {
+			if push.Id > 0 {
+				return // Compacted push with unknown ID — drop.
+			}
 			c.handleServerLeave(channel, push.Leave)
 			return
 		}

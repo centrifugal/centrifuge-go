@@ -157,6 +157,11 @@ type Subscription struct {
 	deltaNegotiated bool
 	prevData        []byte
 
+	// pushID is the numeric channel ID assigned by the server when channel
+	// compaction is negotiated. Pushes then carry this ID instead of the
+	// channel name. Guarded by mu.
+	pushID int64
+
 	inflight atomic.Bool
 }
 
@@ -468,6 +473,12 @@ func (s *Subscription) moveToUnsubscribed(code uint32, reason string) {
 
 	needEvent := s.state != SubStateUnsubscribed
 	s.state = SubStateUnsubscribed
+	// Channel compaction ID is no longer valid once unsubscribed. Cleared under
+	// s.mu, atomically with the state transition (see moveToSubscribed).
+	if s.pushID != 0 {
+		s.centrifuge.updateSubscriptionPushID(s, s.pushID, 0)
+		s.pushID = 0
+	}
 	s.mu.Unlock()
 
 	if needEvent && s.events != nil && s.events.onUnsubscribe != nil {
@@ -505,9 +516,25 @@ func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 	}
 }
 
-func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
+func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGeneration int64) {
 	s.mu.Lock()
 	if s.state != SubStateSubscribing {
+		s.mu.Unlock()
+		return
+	}
+	// Stale-reply guard: the client left the connected session this reply
+	// belongs to (transport closed / no ping / disconnect) after the reply
+	// arrived but before it was processed. Applying it would flip the
+	// subscription to Subscribed while the client is reconnecting, and the
+	// post-reconnect resubscribe sweep would then skip it — stranding the
+	// subscription without a server-side counterpart. The generation is bumped
+	// in clearConnectedState before subscriptions are moved to subscribing, so
+	// observing a matching generation here guarantees the teardown has not
+	// started touching subscription state yet. Schedule a retry ourselves:
+	// the resubscribe-on-connect sweep may have already run and skipped this
+	// subscription while the reply was still inflight.
+	if connGeneration != s.centrifuge.connGeneration.Load() {
+		s.scheduleResubscribe()
 		s.mu.Unlock()
 		return
 	}
@@ -526,6 +553,16 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult) {
 	s.offset = res.Offset
 	s.epoch = res.Epoch
 	s.deltaNegotiated = res.Delta
+	// Channel compaction: register the numeric channel ID assigned by the
+	// server (0 when not negotiated — also clears a stale ID from a previous
+	// subscribe session). Always re-registers even when the ID is unchanged:
+	// the registry is dropped on teardown and on reconnect the server commonly
+	// assigns the same ID again. Done under s.mu, atomically with the state
+	// transition, so a concurrent unsubscribe either prevents the registration
+	// or runs its own clear strictly after it.
+	oldPushID := s.pushID
+	s.pushID = res.Id
+	s.centrifuge.updateSubscriptionPushID(s, oldPushID, res.Id)
 	s.mu.Unlock()
 
 	if s.events != nil && s.events.onSubscribed != nil {
@@ -876,13 +913,23 @@ func (s *Subscription) continueResubscribe() {
 		sp.Epoch = s.epoch
 	}
 
-	var flag int64
+	// Always offer channel compaction: when the server supports and allows it,
+	// the subscribe result carries a numeric channel ID and subsequent pushes
+	// use that ID instead of the string channel name.
+	flag := subscriptionFlagChannelCompaction
 	if s.getState != nil {
 		// Ask the server to reject the subscribe with error 112 when recovery
 		// from the provided position is impossible, instead of returning
 		// recovered=false — so we can call GetState again to reload state.
 		flag |= subscriptionFlagRejectUnrecovered
 	}
+
+	// Capture the connection generation as close to the send as possible: the
+	// reply is only applied if the client is still in the same connected
+	// session when it is processed (see moveToSubscribed). A teardown sneaking
+	// between this capture and the send only causes a benign discard-and-retry
+	// of an otherwise valid reply.
+	connGeneration := s.centrifuge.connGeneration.Load()
 
 	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, flag, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
@@ -891,7 +938,7 @@ func (s *Subscription) continueResubscribe() {
 			return
 		}
 		s.inflight.Store(false)
-		s.moveToSubscribed(res)
+		s.moveToSubscribed(res, connGeneration)
 	})
 	if err != nil {
 		s.inflight.Store(false)
