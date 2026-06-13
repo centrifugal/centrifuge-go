@@ -283,6 +283,9 @@ func (c *Client) NewSubscription(channel string, config ...SubscriptionConfig) (
 	if _, ok := c.subs[channel]; ok {
 		return nil, ErrDuplicateSubscription
 	}
+	if len(config) == 1 && config[0].TagsFilter != nil && config[0].Delta != DeltaTypeNone {
+		return nil, errors.New("cannot use delta and tags filter together")
+	}
 	sub = newSubscription(c, channel, config...)
 	c.subs[channel] = sub
 	return sub, nil
@@ -1674,7 +1677,7 @@ type StreamPosition struct {
 
 func (c *Client) sendSubscribe(
 	channel string, data []byte, recover bool, streamPos StreamPosition, token string,
-	positioned bool, recoverable bool, joinLeave bool, deltaType DeltaType, flag int64,
+	positioned bool, recoverable bool, joinLeave bool, deltaType DeltaType, tagsFilter *FilterNode, flag int64,
 	fn func(res *protocol.SubscribeResult, err error),
 ) error {
 	params := &protocol.SubscribeRequest{
@@ -1697,6 +1700,10 @@ func (c *Client) sendSubscribe(
 
 	if deltaType != DeltaTypeNone {
 		params.Delta = string(deltaType)
+	}
+
+	if tagsFilter != nil {
+		params.Tf = tagsFilter.node
 	}
 
 	cmd := &protocol.Command{

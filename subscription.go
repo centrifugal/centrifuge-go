@@ -50,6 +50,11 @@ type SubscriptionConfig struct {
 	JoinLeave bool
 	// Delta allows to specify delta type for the subscription. By default, no delta is used.
 	Delta DeltaType
+	// TagsFilter sets a server-side publication filter based on publication tags.
+	// When set, the server delivers only publications whose tags match the
+	// filter. Must be enabled for the namespace on the server (allow_tags_filter)
+	// and cannot be combined with Delta. Build with the Filter* helpers.
+	TagsFilter *FilterNode
 	// MinResubscribeDelay is the minimum delay between resubscription attempts.
 	// This delay is jittered.
 	// Zero value means 200 * time.Millisecond.
@@ -114,6 +119,7 @@ func newSubscription(c *Client, channel string, config ...SubscriptionConfig) *S
 		s.recoverable = cfg.Recoverable
 		s.joinLeave = cfg.JoinLeave
 		s.deltaType = cfg.Delta
+		s.tagsFilter = cfg.TagsFilter
 		s.getState = cfg.GetState
 	}
 	return s
@@ -156,6 +162,10 @@ type Subscription struct {
 	deltaType       DeltaType
 	deltaNegotiated bool
 	prevData        []byte
+
+	// tagsFilter is the server-side publication tags filter (nil if unset).
+	// Guarded by mu.
+	tagsFilter *FilterNode
 
 	// pushID is the numeric channel ID assigned by the server when channel
 	// compaction is negotiated. Pushes then carry this ID instead of the
@@ -429,6 +439,19 @@ func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe b
 			}
 		})
 	}
+}
+
+// SetTagsFilter sets the server-side publication tags filter. It is applied on
+// the next subscribe attempt, not the current one. Pass nil to clear it. Cannot
+// be combined with delta compression. Build with the Filter* helpers.
+func (s *Subscription) SetTagsFilter(tagsFilter *FilterNode) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tagsFilter != nil && s.deltaType != DeltaTypeNone {
+		return errors.New("cannot use delta and tags filter together")
+	}
+	s.tagsFilter = tagsFilter
+	return nil
 }
 
 // Subscribe allows initiating subscription process.
@@ -931,7 +954,7 @@ func (s *Subscription) continueResubscribe() {
 	// of an otherwise valid reply.
 	connGeneration := s.centrifuge.connGeneration.Load()
 
-	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, flag, func(res *protocol.SubscribeResult, err error) {
+	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, s.tagsFilter, flag, func(res *protocol.SubscribeResult, err error) {
 		if err != nil {
 			s.inflight.Store(false)
 			s.subscribeError(err)
