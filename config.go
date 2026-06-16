@@ -22,6 +22,8 @@ type Config struct {
 	CookieJar http.CookieJar
 	// Header specifies custom HTTP Header to send in WebSocket Upgrade request.
 	Header http.Header
+	// EmulatedHeaders to use instead of native Upgrade Header. Can be helpful for WASM context.
+	EmulatedHeaders map[string]string
 	// Name allows setting client name. You should only use a limited
 	// amount of client names throughout your applications – i.e. don't
 	// make it unique per user for example, this name semantically represents

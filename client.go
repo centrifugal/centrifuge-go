@@ -1666,6 +1666,7 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 	req.Name = c.config.Name
 	req.Version = c.config.Version
 	req.Data = c.data
+	req.Headers = c.config.EmulatedHeaders
 
 	if len(c.serverSubs) > 0 {
 		subs := make(map[string]*protocol.SubscribeRequest)
