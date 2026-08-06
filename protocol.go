@@ -88,3 +88,13 @@ func pubFromProto(pub *protocol.Publication) Publication {
 	}
 	return p
 }
+
+// connectionFlagDictionaryCompression advertises in ConnectRequest.Flag that
+// this client understands ConnectionState pushes carrying a dictionary and can
+// decode DEFLATE-compressed frames against it. Must match the server side: the
+// flag identifies the codec, since frames themselves carry only a
+// compressed/raw marker.
+const connectionFlagDictionaryCompression int64 = 1 << 0
+
+// supportedConnectionFlags is what this SDK advertises at connect.
+const supportedConnectionFlags = connectionFlagDictionaryCompression

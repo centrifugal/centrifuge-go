@@ -36,16 +36,19 @@ const (
 // Close method to clean up state when you don't need client instance
 // anymore.
 type Client struct {
-	futureID       uint64
-	cmdID          uint32
-	mu             sync.RWMutex
-	endpoints      []string
-	round          int
-	protocolType   protocol.Type
-	config         Config
-	token          string
-	data           protocol.Raw
-	transport      transport
+	futureID     uint64
+	cmdID        uint32
+	mu           sync.RWMutex
+	endpoints    []string
+	round        int
+	protocolType protocol.Type
+	config       Config
+	token        string
+	data         protocol.Raw
+	transport    transport
+	// dictionaries survives reconnects, so the structure dictionary is fetched
+	// once per client rather than once per connection.
+	dictionaries   *dictionaryCache
 	disconnectedCh chan struct{}
 	state          State
 	subs           map[string]*Subscription
@@ -210,6 +213,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		data:              config.Data,
 		logCh:             make(chan LogEntry, 256),
 		logCloseCh:        make(chan struct{}),
+		dictionaries:      newDictionaryCache(),
 	}
 
 	// Queue to run callbacks on.
@@ -1154,7 +1158,7 @@ func (c *Client) startReconnecting() error {
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "creating new transport", nil)
 	}
-	t, err := newWebsocketTransport(u, c.protocolType, wsConfig)
+	t, err := newWebsocketTransport(u, c.protocolType, wsConfig, c.dictionaries)
 	if err != nil {
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "error creating new transport", map[string]string{
@@ -1352,9 +1356,10 @@ func (c *Client) startReconnecting() error {
 		if c.events != nil && c.events.onConnected != nil {
 			handler := c.events.onConnected
 			ev := ConnectedEvent{
-				ClientID: res.Client,
-				Version:  res.Version,
-				Data:     res.Data,
+				ClientID:              res.Client,
+				Version:               res.Version,
+				Data:                  res.Data,
+				DictionaryCompression: res.Flag&connectionFlagDictionaryCompression != 0,
 			}
 			c.runHandlerSync(func() {
 				handler(ev)
@@ -1666,6 +1671,16 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 	req.Name = c.config.Name
 	req.Version = c.config.Version
 	req.Data = c.data
+	// Always advertise every connection-level codec this SDK can decode. There is
+	// no user-facing option on purpose: the client states capability, the server
+	// decides what to use, and a server which supports none of them ignores it.
+	req.Flag = supportedConnectionFlags
+	// Dictionaries kept from earlier connections. The server answers with an id
+	// alone for anything it recognises, so a returning client is compressed from
+	// its first frame without paying for the transfer again.
+	if ids := c.dictionaries.ids(); len(ids) > 0 {
+		req.State = &protocol.ClientState{DictionaryIds: ids}
+	}
 
 	if len(c.serverSubs) > 0 {
 		subs := make(map[string]*protocol.SubscribeRequest)
@@ -1694,6 +1709,19 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 		}
 		fn(reply.Connect, nil)
 	})
+}
+
+// CompressionStats returns what this connection measured about dictionary
+// compression. It is zero valued when the transport does not support it or the
+// server never enabled it.
+func (c *Client) CompressionStats() CompressionStats {
+	c.mu.RLock()
+	t := c.transport
+	c.mu.RUnlock()
+	if wt, ok := t.(*websocketTransport); ok {
+		return wt.compressionStats()
+	}
+	return CompressionStats{}
 }
 
 type StreamPosition struct {

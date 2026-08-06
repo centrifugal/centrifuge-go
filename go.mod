@@ -19,3 +19,5 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 )
+
+replace github.com/centrifugal/protocol => ../protocol
