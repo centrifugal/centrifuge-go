@@ -73,10 +73,6 @@ type websocketTransport struct {
 	// so a reconnect costs an id rather than a transfer. It is shared with the
 	// Client and touched only by the reader goroutine plus connect setup.
 	cache *dictionaryCache
-	// structureCandidate marks the next dictionary as the structure one - it is
-	// always the first a connection receives - so channel dictionaries that follow
-	// are not cached.
-	structureCandidate bool
 	// fromCache records that the codec in use came from the cache, so a decode
 	// failure can be attributed to a stale entry and retried rather than treated
 	// as an unrecoverable protocol error.
@@ -118,20 +114,23 @@ const maxDecompressedFrameSize = 16 * 1024 * 1024
 // Useful dictionaries are a few kilobytes; this leaves generous headroom.
 const maxDictionarySize = 1 * 1024 * 1024
 
-// dictionaryFromPush builds a codec from a ConnectionState push carrying a
-// dictionary, returning nil when the push carries something else. Unknown
-// ConnectionState fields are ignored on purpose: the frame is meant to carry
-// further connection-level state in future without breaking older clients.
+// dictionaryFrom builds a codec from a Dictionary the server sent, returning
+// nil when there is nothing usable in it.
+//
+// cacheable says whether the dictionary is worth keeping past this connection.
+// The one that arrives in the connect reply is: it belongs to this client's
+// profile and changes only when the server publishes a new version, so keeping
+// it turns the next connect into an id and no transfer. One that arrives later
+// in a push is connection-scoped and is not kept.
 //
 // A dictionary with an id but no content means "use the one you already have" -
-// the server recognised an id this client advertised at connect, so there was
+// the server recognised the id this client advertised at connect, so there was
 // nothing to send. An id is a hash of the content, so a match is byte identical
 // by construction.
-func (t *websocketTransport) dictionaryFromPush(push *protocol.Push) *protocol.DeflateFrameCodec {
-	if push == nil || push.State == nil || push.State.Dictionary == nil {
+func (t *websocketTransport) dictionaryFrom(d *protocol.Dictionary, cacheable bool) *protocol.DeflateFrameCodec {
+	if d == nil {
 		return nil
 	}
-	d := push.State.Dictionary
 	if len(d.Data) == 0 && d.DataB64 == "" {
 		if t.cache != nil {
 			if dict, ok := t.cache.get(d.Id); ok {
@@ -158,24 +157,16 @@ func (t *websocketTransport) dictionaryFromPush(push *protocol.Push) *protocol.D
 		}
 		raw = decoded
 	}
-	if d.Flags&protocol.DictionaryFlagDeflate != 0 {
-		// The first dictionary of a connection travels deflated: its delivery
-		// frame could not be compressed, because nothing was installed yet to
-		// compress it against.
-		inflated, err := protocol.InflateDictionary(raw, maxDictionarySize)
-		if err != nil {
-			return nil
-		}
-		raw = inflated
+	// Content is always deflated: the frame carrying it cannot be compressed,
+	// because nothing is installed yet to compress it against.
+	inflated, err := protocol.InflateDictionary(raw, maxDictionarySize)
+	if err != nil {
+		return nil
 	}
-	// Only the structure dictionary is remembered. A channel dictionary is built
-	// per node from that channel's traffic, so a cached copy would rarely match
-	// on reconnect, and it holds verbatim fragments of other users' messages -
-	// worth keeping for the life of a connection, not beyond it.
-	if t.cache != nil && d.Id != "" && t.structureCandidate {
+	raw = inflated
+	if cacheable && t.cache != nil && d.Id != "" {
 		t.cache.put(d.Id, raw)
 	}
-	t.structureCandidate = false
 	t.fromCache = false
 	return protocol.NewDeflateFrameCodec(d.Id, raw)
 }
@@ -251,9 +242,6 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 		commandEncoder: newCommandEncoder(protocolType),
 		protocolType:   protocolType,
 		cache:          cache,
-		// The first dictionary a connection receives is always the structure one,
-		// which is the only kind worth remembering.
-		structureCandidate: true,
 	}
 	go t.reader()
 	return t, nil
@@ -315,7 +303,11 @@ func (t *websocketTransport) reader() {
 					t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
 					return
 				}
-				if c := t.dictionaryFromPush(reply.Push); c != nil {
+				// Compression is set up by the connect reply, which is the frame
+				// that carries the dictionary. A push may replace it later, which
+				// the protocol allows but the server does not currently do.
+				offered, cacheable := offeredDictionary(reply)
+				if c := t.dictionaryFrom(offered, cacheable); c != nil {
 					// Applied after this frame completes - see pendingCodec.
 					t.pendingCodec = c
 					// A dictionary that had to be sent is a real cost paid on this
@@ -329,8 +321,8 @@ func (t *websocketTransport) reader() {
 					// nothing after this frame can be decoded. Forget the id and
 					// start over rather than misread everything that follows.
 					t.unusableDict = false
-					if t.cache != nil && reply.Push.State.Dictionary != nil {
-						t.cache.forget(reply.Push.State.Dictionary.Id)
+					if t.cache != nil && offered != nil {
+						t.cache.forget(offered.Id)
 					}
 					t.disconnect = &disconnect{Code: disconnectBadProtocol,
 						Reason: "unknown dictionary", Reconnect: true}
@@ -351,6 +343,20 @@ func (t *websocketTransport) reader() {
 			t.pendingCodec = nil
 		}
 	}
+}
+
+// offeredDictionary returns the dictionary a reply carries, if any, and whether
+// it is worth caching past this connection. Unknown ConnectionState fields are
+// ignored on purpose: the message is meant to carry further connection-level
+// state in future without breaking older clients.
+func offeredDictionary(reply *protocol.Reply) (*protocol.Dictionary, bool) {
+	if reply.Connect != nil && reply.Connect.Dict != nil {
+		return reply.Connect.Dict, true
+	}
+	if reply.Push != nil && reply.Push.State != nil && reply.Push.State.Dict != nil {
+		return reply.Push.State.Dict, false
+	}
+	return nil, false
 }
 
 func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration) error {

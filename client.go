@@ -1678,9 +1678,8 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 	// Dictionaries kept from earlier connections. The server answers with an id
 	// alone for anything it recognises, so a returning client is compressed from
 	// its first frame without paying for the transfer again.
-	if ids := c.dictionaries.ids(); len(ids) > 0 {
-		req.State = &protocol.ClientState{DictionaryIds: ids}
-	}
+	req.Dict = c.dictionaries.advertise()
+	req.Profile = c.config.Profile
 
 	if len(c.serverSubs) > 0 {
 		subs := make(map[string]*protocol.SubscribeRequest)
