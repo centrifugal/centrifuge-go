@@ -243,6 +243,23 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 		protocolType:   protocolType,
 		cache:          cache,
 	}
+	// Install the codec for whatever this client is about to advertise, before
+	// the connect reply arrives. A server that recognises the id compresses the
+	// connect reply itself - there is nothing to wait for once both sides hold
+	// the dictionary - so learning the codec from a reply would mean never
+	// being able to read the reply that teaches it.
+	//
+	// Safe when the server does not recognise it: every frame carries a codec
+	// marker, so a raw reply passes through untouched and the dictionary it
+	// carries replaces this one.
+	if cache != nil {
+		if held := cache.advertise(); held != "" {
+			if bytes, ok := cache.get(held); ok {
+				t.codec = protocol.NewDeflateFrameCodec(held, bytes)
+				t.fromCache = true
+			}
+		}
+	}
 	go t.reader()
 	return t, nil
 }
