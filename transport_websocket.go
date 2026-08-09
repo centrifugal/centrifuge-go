@@ -344,6 +344,15 @@ func (t *websocketTransport) reader() {
 					if !t.fromCache {
 						t.dictionaryIn.Add(t.dictWireBytes)
 					}
+				} else if reply.Connect != nil &&
+					reply.Connect.Flag&connectionFlagDictionaryCompression == 0 {
+					// A codec installed from cache before connecting, on a
+					// connection the server then declined to compress. It marks
+					// this reply so it could be read, and nothing after it - so
+					// keeping the codec would mean stripping a marker off frames
+					// that do not have one.
+					t.codec = nil
+					t.pendingCodec = nil
 				} else if t.unusableDict {
 					// The server named a dictionary this client does not hold, so
 					// nothing after this frame can be decoded. Forget the id and
