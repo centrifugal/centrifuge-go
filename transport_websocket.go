@@ -87,7 +87,10 @@ type websocketTransport struct {
 	compressedIn   atomic.Int64
 	uncompressedIn atomic.Int64
 	dictionaryIn   atomic.Int64
-	framesIn       atomic.Int64
+	// dictWireBytes is the encoded size of the dictionary as it arrived, set
+	// while decoding it and read once by the frame that carried it.
+	dictWireBytes int64
+	framesIn      atomic.Int64
 }
 
 // compressionStats returns what this connection measured about compression.
@@ -147,15 +150,23 @@ func (t *websocketTransport) dictionaryFrom(d *protocol.Dictionary, cacheable bo
 	// Protobuf connections carry the dictionary as raw bytes; JSON connections
 	// have to base64 it, because a bytes field carries raw JSON in that protocol.
 	// Exactly one is set, so prefer the cheap one and fall back.
+	//
+	// dictWireBytes is measured here, on the encoded form, because that is what
+	// actually crossed the wire: the content is deflated, and on JSON it is
+	// base64 on top of that. Charging the inflated size instead - which is what
+	// the codec holds - overstated the cost of the structure dictionary by most
+	// of its size, and did so in the operator's dashboards as well as the SDK's.
 	var raw []byte
 	if len(d.Data) > 0 {
 		raw = d.Data
+		t.dictWireBytes = int64(len(d.Data))
 	} else {
 		decoded, err := base64.StdEncoding.DecodeString(d.DataB64)
 		if err != nil || len(decoded) == 0 {
 			return nil
 		}
 		raw = decoded
+		t.dictWireBytes = int64(len(d.DataB64))
 	}
 	// Content is always deflated: the frame carrying it cannot be compressed,
 	// because nothing is installed yet to compress it against.
@@ -331,7 +342,7 @@ func (t *websocketTransport) reader() {
 					// connection, so it is recorded and later subtracted from bytes
 					// saved. One reused from the cache crossed no wire and is not.
 					if !t.fromCache {
-						t.dictionaryIn.Add(int64(len(c.Dict())))
+						t.dictionaryIn.Add(t.dictWireBytes)
 					}
 				} else if t.unusableDict {
 					// The server named a dictionary this client does not hold, so
