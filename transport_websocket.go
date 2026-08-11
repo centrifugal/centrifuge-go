@@ -120,17 +120,15 @@ const maxDictionarySize = 1 * 1024 * 1024
 // dictionaryFrom builds a codec from a Dictionary the server sent, returning
 // nil when there is nothing usable in it.
 //
-// cacheable says whether the dictionary is worth keeping past this connection.
-// The one that arrives in the connect reply is: it belongs to this client's
-// profile and changes only when the server publishes a new version, so keeping
-// it turns the next connect into an id and no transfer. One that arrives later
-// in a push is connection-scoped and is not kept.
+// What it builds is always worth keeping past this connection: a dictionary
+// belongs to this client's profile and changes only when the server publishes a
+// new version, so caching it turns the next connect into an id and no transfer.
 //
 // A dictionary with an id but no content means "use the one you already have" -
 // the server recognised the id this client advertised at connect, so there was
 // nothing to send. An id is a hash of the content, so a match is byte identical
 // by construction.
-func (t *websocketTransport) dictionaryFrom(d *protocol.Dictionary, cacheable bool) *protocol.DeflateFrameCodec {
+func (t *websocketTransport) dictionaryFrom(d *protocol.Dictionary) *protocol.DeflateFrameCodec {
 	if d == nil {
 		return nil
 	}
@@ -175,7 +173,7 @@ func (t *websocketTransport) dictionaryFrom(d *protocol.Dictionary, cacheable bo
 		return nil
 	}
 	raw = inflated
-	if cacheable && t.cache != nil && d.Id != "" {
+	if t.cache != nil && d.Id != "" {
 		t.cache.put(d.Id, raw)
 	}
 	t.fromCache = false
@@ -317,8 +315,8 @@ func (t *websocketTransport) reader() {
 				// Compression is set up by the connect reply, which is the frame
 				// that carries the dictionary. A push may replace it later, which
 				// the protocol allows but the server does not currently do.
-				offered, cacheable := offeredDictionary(reply)
-				if c := t.dictionaryFrom(offered, cacheable); c != nil {
+				offered := offeredDictionary(reply)
+				if c := t.dictionaryFrom(offered); c != nil {
 					// Applied after this frame completes - see pendingCodec.
 					t.pendingCodec = c
 					// A dictionary that had to be sent is a real cost paid on this
@@ -356,18 +354,15 @@ func (t *websocketTransport) reader() {
 	}
 }
 
-// offeredDictionary returns the dictionary a reply carries, if any, and whether
-// it is worth caching past this connection. Unknown ConnectionState fields are
-// ignored on purpose: the message is meant to carry further connection-level
-// state in future without breaking older clients.
-func offeredDictionary(reply *protocol.Reply) (*protocol.Dictionary, bool) {
+// offeredDictionary returns the dictionary a reply carries, if any. Only the
+// connect reply carries one: there is no way to replace a dictionary
+// mid-connection, since the frame announcing a new one would have to be encoded
+// against the old.
+func offeredDictionary(reply *protocol.Reply) *protocol.Dictionary {
 	if reply.Connect != nil && reply.Connect.Dict != nil {
-		return reply.Connect.Dict, true
+		return reply.Connect.Dict
 	}
-	if reply.Push != nil && reply.Push.State != nil && reply.Push.State.Dict != nil {
-		return reply.Push.State.Dict, false
-	}
-	return nil, false
+	return nil
 }
 
 func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration) error {

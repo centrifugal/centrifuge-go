@@ -229,10 +229,9 @@ type CompressionStats struct {
 	BytesReceived int64
 	// BytesDecompressed is what they expanded to.
 	BytesDecompressed int64
-	// DictionaryID names the dictionary in use. The built-in protocol structure
-	// dictionary reports protocol.BuiltinDictionaryID; a dictionary learned from a
-	// channel's traffic reports a content hash. Distinguishing them matters: the
-	// first is free and immediate, the second has to be earned and transferred.
+	// DictionaryID names the dictionary in use. It is a hash of the dictionary
+	// content, so the same id always means the same bytes - which is what makes
+	// it safe to cache one across connections.
 	DictionaryID string
 
 	// DictionaryBytes is what the dictionary itself cost to receive. It is a real
