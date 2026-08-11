@@ -3,7 +3,7 @@ module github.com/centrifugal/centrifuge-go
 go 1.25.0
 
 require (
-	github.com/centrifugal/protocol v0.19.2
+	github.com/centrifugal/protocol v0.20.1-0.20260811164823-815457ed4d09
 	github.com/gorilla/websocket v1.5.3
 	github.com/jpillora/backoff v1.0.0
 	github.com/shadowspore/fossil-delta v0.0.0-20241213113458-1d797d70cbe3
@@ -19,5 +19,3 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 )
-
-replace github.com/centrifugal/protocol => ../protocol
