@@ -2,10 +2,21 @@ package centrifuge
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"testing"
 
 	"github.com/centrifugal/protocol"
 )
+
+// testDictionaryID is the derivation the protocol fixes for Dictionary.id:
+// SHA-256 of the content, first 12 bytes, base64url unpadded. This SDK never
+// computes one in earnest - its cache lives in memory, so there is nothing to
+// verify - but a test needs an id a server would actually have issued.
+func testDictionaryID(dict []byte) string {
+	sum := sha256.Sum256(dict)
+	return base64.RawURLEncoding.EncodeToString(sum[:12])
+}
 
 // A server that recognises the id a client advertised compresses the connect
 // reply itself, since both sides already hold the dictionary. The client must
@@ -19,7 +30,7 @@ import (
 // same way.
 func TestWebsocketTransport_DecodesCompressedConnectReply(t *testing.T) {
 	dict := []byte(`{"push":{"channel":"","pub":{"data":{"k":null}}}}`)
-	id := protocol.DictionaryID(dict)
+	id := testDictionaryID(dict)
 
 	cache := newDictionaryCache()
 	cache.put(id, dict)
