@@ -1710,17 +1710,17 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 	})
 }
 
-// CompressionStats returns what this connection measured about dictionary
-// compression. It is zero valued when the transport does not support it or the
+// DictionaryCompressionStats returns what this connection measured. It is zero
+// valued when the transport does not support dictionary compression or the
 // server never enabled it.
-func (c *Client) CompressionStats() CompressionStats {
+func (c *Client) DictionaryCompressionStats() DictionaryCompressionStats {
 	c.mu.RLock()
 	t := c.transport
 	c.mu.RUnlock()
 	if wt, ok := t.(*websocketTransport); ok {
-		return wt.compressionStats()
+		return wt.dictionaryCompressionStats()
 	}
-	return CompressionStats{}
+	return DictionaryCompressionStats{}
 }
 
 type StreamPosition struct {

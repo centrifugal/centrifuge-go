@@ -83,7 +83,7 @@ type websocketTransport struct {
 	unusableDict bool
 
 	// Compression accounting. Written by the reader goroutine, read by callers
-	// of Client.CompressionStats, hence atomics.
+	// of Client.DictionaryCompressionStats, hence atomics.
 	compressedIn   atomic.Int64
 	uncompressedIn atomic.Int64
 	dictionaryIn   atomic.Int64
@@ -94,12 +94,12 @@ type websocketTransport struct {
 }
 
 // compressionStats returns what this connection measured about compression.
-func (t *websocketTransport) compressionStats() CompressionStats {
+func (t *websocketTransport) dictionaryCompressionStats() DictionaryCompressionStats {
 	id := ""
 	if t.codec != nil {
 		id = t.codec.ID()
 	}
-	return CompressionStats{
+	return DictionaryCompressionStats{
 		Active:            t.codec != nil,
 		DictionaryID:      id,
 		Frames:            t.framesIn.Load(),

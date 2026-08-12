@@ -203,8 +203,8 @@ func (c *Client) OnLeave(handler ServerLeaveHandler) {
 	c.events.onServerLeave = handler
 }
 
-// CompressionStats reports what a connection measured about dictionary
-// compression on the frames it received.
+// DictionaryCompressionStats reports what a connection measured on the frames
+// it decoded against a dictionary.
 //
 // The byte counts are exact at the protocol frame level: BytesReceived is what
 // arrived in compressed WebSocket messages, BytesDecompressed is what those
@@ -219,7 +219,7 @@ func (c *Client) OnLeave(handler ServerLeaveHandler) {
 //
 // Frames received before compression was activated are not counted at all, so
 // this reports the steady state rather than the whole connection.
-type CompressionStats struct {
+type DictionaryCompressionStats struct {
 	// Active reports whether the connection is currently decoding compressed
 	// frames.
 	Active bool
@@ -242,13 +242,13 @@ type CompressionStats struct {
 // BytesSaved is the net saving: what these frames would have cost uncompressed,
 // less what they actually cost, less the dictionary transfer. It can be negative
 // on a connection that received too little traffic to earn the dictionary back.
-func (s CompressionStats) BytesSaved() int64 {
+func (s DictionaryCompressionStats) BytesSaved() int64 {
 	return s.BytesDecompressed - s.BytesReceived - s.DictionaryBytes
 }
 
 // Ratio is uncompressed over compressed for the frames received, ignoring the
 // dictionary transfer. Zero when nothing was received.
-func (s CompressionStats) Ratio() float64 {
+func (s DictionaryCompressionStats) Ratio() float64 {
 	if s.BytesReceived == 0 {
 		return 0
 	}
