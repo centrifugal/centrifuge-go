@@ -1343,6 +1343,9 @@ func (c *Client) startReconnecting() error {
 			})
 		}
 		c.state = StateConnected
+		if wt, ok := t.(*websocketTransport); ok {
+			wt.accepted.Store(res.Flag&connectionFlagDictionaryCompression != 0)
+		}
 
 		if res.Expires {
 			c.refreshTimer = time.AfterFunc(time.Duration(res.Ttl)*time.Second, c.sendRefresh)
@@ -1711,8 +1714,7 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 
 // DictionaryCompressionStats returns what this connection measured. It is zero
 // valued when the transport does not support dictionary compression or the
-// server never enabled it, so Active also answers "did the server turn this on"
-// - including from inside an OnConnected handler.
+// server never enabled it.
 func (c *Client) DictionaryCompressionStats() DictionaryCompressionStats {
 	c.mu.RLock()
 	t := c.transport

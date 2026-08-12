@@ -73,6 +73,11 @@ type websocketTransport struct {
 	// plain pointer.
 	codec        atomic.Pointer[protocol.DeflateFrameCodec]
 	pendingCodec atomic.Pointer[protocol.DeflateFrameCodec]
+	// accepted records that the server confirmed dictionary compression in the
+	// connect reply. It answers a different question from codec being set: this
+	// one is known as soon as the reply is read, which is when a caller in an
+	// OnConnected handler asks.
+	accepted atomic.Bool
 	// cache remembers the structure dictionary across this client's connections,
 	// so a reconnect costs an id rather than a transfer. It is shared with the
 	// Client and touched only by the reader goroutine plus connect setup.
@@ -98,11 +103,6 @@ type websocketTransport struct {
 }
 
 // dictionaryCompressionStats returns what this connection measured.
-//
-// A dictionary counts as active from the moment it is installed, not from the
-// frame it starts decoding: the connect reply that carries it is itself
-// uncompressed, so a caller asking during OnConnected would otherwise be told
-// no while the server had already switched compression on.
 func (t *websocketTransport) dictionaryCompressionStats() DictionaryCompressionStats {
 	codec := t.codec.Load()
 	if codec == nil {
@@ -113,6 +113,7 @@ func (t *websocketTransport) dictionaryCompressionStats() DictionaryCompressionS
 		id = codec.ID()
 	}
 	return DictionaryCompressionStats{
+		Accepted:          t.accepted.Load(),
 		Active:            codec != nil,
 		DictionaryID:      id,
 		Frames:            t.framesIn.Load(),

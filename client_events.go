@@ -215,8 +215,15 @@ func (c *Client) OnLeave(handler ServerLeaveHandler) {
 // Frames received before compression was activated are not counted at all, so
 // this reports the steady state rather than the whole connection.
 type DictionaryCompressionStats struct {
+	// Accepted reports whether the server enabled dictionary compression for this
+	// connection. The SDK always advertises support and the server decides, so
+	// this is how to tell whether it was taken up - and it is true as soon as the
+	// connect reply is read, including inside an OnConnected handler.
+	Accepted bool
 	// Active reports whether the connection is currently decoding compressed
-	// frames.
+	// frames. It lags Accepted by one frame: the connect reply that carries the
+	// dictionary is itself uncompressed, so decoding starts with the frame after
+	// it.
 	Active bool
 	// Frames is how many compressed frames were received.
 	Frames int64
