@@ -46,9 +46,10 @@ type Client struct {
 	token        string
 	data         protocol.Raw
 	transport    transport
-	// dictionaries survives reconnects, so the structure dictionary is fetched
-	// once per client rather than once per connection.
-	dictionaries   *dictionaryCache
+	// dictionary survives reconnects, so a returning connection costs an id
+	// rather than a transfer. One entry: a client holds the latest dictionary,
+	// not a set of them.
+	dictionary     *dictionaryCache
 	disconnectedCh chan struct{}
 	state          State
 	subs           map[string]*Subscription
@@ -213,7 +214,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		data:              config.Data,
 		logCh:             make(chan LogEntry, 256),
 		logCloseCh:        make(chan struct{}),
-		dictionaries:      newDictionaryCache(),
+		dictionary:        newDictionaryCache(),
 	}
 
 	// Queue to run callbacks on.
@@ -1158,7 +1159,7 @@ func (c *Client) startReconnecting() error {
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "creating new transport", nil)
 	}
-	t, err := newWebsocketTransport(u, c.protocolType, wsConfig, c.dictionaries)
+	t, err := newWebsocketTransport(u, c.protocolType, wsConfig, c.dictionary)
 	if err != nil {
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "error creating new transport", map[string]string{
@@ -1680,7 +1681,7 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 	// Dictionaries kept from earlier connections. The server answers with an id
 	// alone for anything it recognises, so a returning client is compressed from
 	// its first frame without paying for the transfer again.
-	req.Dict = c.dictionaries.advertise()
+	req.Dict = c.dictionary.advertise()
 	req.Profile = c.config.Profile
 
 	if len(c.serverSubs) > 0 {
