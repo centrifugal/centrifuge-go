@@ -60,11 +60,6 @@ type ConnectedEvent struct {
 	ClientID string
 	Version  string
 	Data     []byte
-	// DictionaryCompression reports whether the server enabled dictionary
-	// compression for this connection. The SDK always advertises support, but the
-	// server decides, so this is the only way to tell whether it is actually in
-	// use - handy when checking that a bandwidth optimisation is live.
-	DictionaryCompression bool
 }
 
 // ConnectingEvent is a connecting event context passed to OnConnecting callback.

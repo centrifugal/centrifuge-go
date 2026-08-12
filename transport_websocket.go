@@ -65,10 +65,14 @@ type websocketTransport struct {
 	// codec decodes frames once the server activated dictionary compression.
 	// pendingCodec holds a dictionary seen inside the frame currently being
 	// decoded; it is promoted only after that frame is fully consumed, because
-	// the frame carrying a dictionary is itself sent uncompressed. Both are
-	// touched only by the reader goroutine.
-	codec        *protocol.DeflateFrameCodec
-	pendingCodec *protocol.DeflateFrameCodec
+	// the frame carrying a dictionary is itself sent uncompressed.
+	//
+	// Both are written by the reader goroutine and read by callers of
+	// Client.DictionaryCompressionStats, so both are atomic - the counters
+	// beneath were already, and these were the same shared state wearing a
+	// plain pointer.
+	codec        atomic.Pointer[protocol.DeflateFrameCodec]
+	pendingCodec atomic.Pointer[protocol.DeflateFrameCodec]
 	// cache remembers the structure dictionary across this client's connections,
 	// so a reconnect costs an id rather than a transfer. It is shared with the
 	// Client and touched only by the reader goroutine plus connect setup.
@@ -93,14 +97,23 @@ type websocketTransport struct {
 	framesIn      atomic.Int64
 }
 
-// compressionStats returns what this connection measured about compression.
+// dictionaryCompressionStats returns what this connection measured.
+//
+// A dictionary counts as active from the moment it is installed, not from the
+// frame it starts decoding: the connect reply that carries it is itself
+// uncompressed, so a caller asking during OnConnected would otherwise be told
+// no while the server had already switched compression on.
 func (t *websocketTransport) dictionaryCompressionStats() DictionaryCompressionStats {
+	codec := t.codec.Load()
+	if codec == nil {
+		codec = t.pendingCodec.Load()
+	}
 	id := ""
-	if t.codec != nil {
-		id = t.codec.ID()
+	if codec != nil {
+		id = codec.ID()
 	}
 	return DictionaryCompressionStats{
-		Active:            t.codec != nil,
+		Active:            codec != nil,
 		DictionaryID:      id,
 		Frames:            t.framesIn.Load(),
 		BytesReceived:     t.compressedIn.Load(),
@@ -279,9 +292,9 @@ func (t *websocketTransport) reader() {
 			t.disconnect = disconnect
 			return
 		}
-		if t.codec != nil {
+		if codec := t.codec.Load(); codec != nil {
 			compressedLen := len(data)
-			data, err = t.codec.Decompress(nil, data, maxDecompressedFrameSize)
+			data, err = codec.Decompress(nil, data, maxDecompressedFrameSize)
 			if err != nil {
 				// A cached dictionary that cannot decode is a stale or corrupted
 				// entry: drop it and retry, or the client would advertise it again
@@ -289,7 +302,7 @@ func (t *websocketTransport) reader() {
 				// protocol error and is not worth retrying.
 				retry := false
 				if t.fromCache && t.cache != nil {
-					t.cache.forget(t.codec.ID())
+					t.cache.forget(codec.ID())
 					retry = true
 				}
 				t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "frame decode error", Reconnect: retry}
@@ -318,7 +331,7 @@ func (t *websocketTransport) reader() {
 				offered := offeredDictionary(reply)
 				if c := t.dictionaryFrom(offered); c != nil {
 					// Applied after this frame completes - see pendingCodec.
-					t.pendingCodec = c
+					t.pendingCodec.Store(c)
 					// A dictionary that had to be sent is a real cost paid on this
 					// connection, so it is recorded and later subtracted from bytes
 					// saved. One reused from the cache crossed no wire and is not.
@@ -347,9 +360,8 @@ func (t *websocketTransport) reader() {
 				}
 			}
 		}
-		if t.pendingCodec != nil {
-			t.codec = t.pendingCodec
-			t.pendingCodec = nil
+		if pending := t.pendingCodec.Swap(nil); pending != nil {
+			t.codec.Store(pending)
 		}
 	}
 }

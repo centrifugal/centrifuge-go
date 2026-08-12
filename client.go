@@ -1356,10 +1356,9 @@ func (c *Client) startReconnecting() error {
 		if c.events != nil && c.events.onConnected != nil {
 			handler := c.events.onConnected
 			ev := ConnectedEvent{
-				ClientID:              res.Client,
-				Version:               res.Version,
-				Data:                  res.Data,
-				DictionaryCompression: res.Flag&connectionFlagDictionaryCompression != 0,
+				ClientID: res.Client,
+				Version:  res.Version,
+				Data:     res.Data,
 			}
 			c.runHandlerSync(func() {
 				handler(ev)
@@ -1712,7 +1711,8 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 
 // DictionaryCompressionStats returns what this connection measured. It is zero
 // valued when the transport does not support dictionary compression or the
-// server never enabled it.
+// server never enabled it, so Active also answers "did the server turn this on"
+// - including from inside an OnConnected handler.
 func (c *Client) DictionaryCompressionStats() DictionaryCompressionStats {
 	c.mu.RLock()
 	t := c.transport

@@ -42,11 +42,12 @@ func TestWebsocketTransport_DecodesCompressedConnectReply(t *testing.T) {
 	// Mirrors what the constructor now does before the reader starts.
 	if held := cache.advertise(); held != "" {
 		if b, ok := cache.get(held); ok {
-			tr.codec = protocol.NewDeflateFrameCodec(held, b)
+			tr.codec.Store(protocol.NewDeflateFrameCodec(held, b))
 			tr.fromCache = true
 		}
 	}
-	if tr.codec == nil {
+	codec := tr.codec.Load()
+	if codec == nil {
 		t.Fatal("a client that advertises an id must be able to decode with it")
 	}
 
@@ -58,7 +59,7 @@ func TestWebsocketTransport_DecodesCompressedConnectReply(t *testing.T) {
 		t.Fatal("this test is meaningless unless the frame really is compressed")
 	}
 
-	got, err := tr.codec.Decompress(nil, onWire, maxDecompressedFrameSize)
+	got, err := codec.Decompress(nil, onWire, maxDecompressedFrameSize)
 	if err != nil {
 		t.Fatalf("a warm client must decode the compressed connect reply: %v", err)
 	}
