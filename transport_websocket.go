@@ -3,6 +3,7 @@ package centrifuge
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/centrifugal/protocol"
@@ -59,6 +61,137 @@ type websocketTransport struct {
 	disconnect     *disconnect
 	closed         bool
 	closeCh        chan struct{}
+
+	// codec decodes frames once the server activated dictionary compression.
+	// pendingCodec holds a dictionary seen inside the frame currently being
+	// decoded; it is promoted only after that frame is fully consumed, because
+	// the frame carrying a dictionary is itself sent uncompressed.
+	//
+	// Both are written by the reader goroutine and read by callers of
+	// Client.DictionaryCompressionStats, so both are atomic - the counters
+	// beneath were already, and these were the same shared state wearing a
+	// plain pointer.
+	codec        atomic.Pointer[protocol.DeflateFrameCodec]
+	pendingCodec atomic.Pointer[protocol.DeflateFrameCodec]
+	// accepted records that the server confirmed dictionary compression in the
+	// connect reply. It answers a different question from codec being set: this
+	// one is known as soon as the reply is read, which is when a caller in an
+	// OnConnected handler asks.
+	accepted atomic.Bool
+	// cache remembers the structure dictionary across this client's connections,
+	// so a reconnect costs an id rather than a transfer. It is shared with the
+	// Client and touched only by the reader goroutine plus connect setup.
+	cache *dictionaryCache
+	// fromCache records that the codec in use came from the cache, so a decode
+	// failure can be attributed to a stale entry and retried rather than treated
+	// as an unrecoverable protocol error.
+	fromCache bool
+	// unusableDict is set when the server named a dictionary this client does not
+	// have. Nothing after that frame can be decoded, so the connection has to be
+	// restarted rather than left to misread everything.
+	unusableDict bool
+
+	// Compression accounting. Written by the reader goroutine, read by callers
+	// of Client.DictionaryCompressionStats, hence atomics.
+	compressedIn   atomic.Int64
+	uncompressedIn atomic.Int64
+	dictionaryIn   atomic.Int64
+	// dictWireBytes is the encoded size of the dictionary as it arrived, set
+	// while decoding it and read once by the frame that carried it.
+	dictWireBytes int64
+	framesIn      atomic.Int64
+}
+
+// dictionaryCompressionStats returns what this connection measured.
+func (t *websocketTransport) dictionaryCompressionStats() DictionaryCompressionStats {
+	codec := t.codec.Load()
+	if codec == nil {
+		codec = t.pendingCodec.Load()
+	}
+	id := ""
+	if codec != nil {
+		id = codec.ID()
+	}
+	return DictionaryCompressionStats{
+		Accepted:          t.accepted.Load(),
+		Active:            codec != nil,
+		DictionaryID:      id,
+		Frames:            t.framesIn.Load(),
+		BytesReceived:     t.compressedIn.Load(),
+		BytesDecompressed: t.uncompressedIn.Load(),
+		DictionaryBytes:   t.dictionaryIn.Load(),
+	}
+}
+
+// maxDecompressedFrameSize bounds a frame after decompression so that a small
+// crafted frame can not be inflated into an unbounded allocation.
+const maxDecompressedFrameSize = 16 * 1024 * 1024
+
+// maxDictionarySize bounds a dictionary after inflation, for the same reason.
+// Useful dictionaries are a few kilobytes; this leaves generous headroom.
+const maxDictionarySize = 1 * 1024 * 1024
+
+// dictionaryFrom builds a codec from a Dictionary the server sent, returning
+// nil when there is nothing usable in it.
+//
+// What it builds is always worth keeping past this connection: a dictionary
+// belongs to this client's profile and changes only when the server publishes a
+// new version, so caching it turns the next connect into an id and no transfer.
+//
+// A dictionary with an id but no content means "use the one you already have" -
+// the server recognised the id this client advertised at connect, so there was
+// nothing to send. An id is a hash of the content, so a match is byte identical
+// by construction.
+func (t *websocketTransport) dictionaryFrom(d *protocol.Dictionary) *protocol.DeflateFrameCodec {
+	if d == nil {
+		return nil
+	}
+	if len(d.Data) == 0 && d.DataB64 == "" {
+		if t.cache != nil {
+			if dict, ok := t.cache.get(d.Id); ok {
+				t.fromCache = true
+				return protocol.NewDeflateFrameCodec(d.Id, dict)
+			}
+		}
+		// The server named something this client does not have - it was evicted
+		// between advertising it and now, or the server is confused. Either way
+		// nothing after this frame can be decoded.
+		t.unusableDict = true
+		return nil
+	}
+	// Protobuf connections carry the dictionary as raw bytes; JSON connections
+	// have to base64 it, because a bytes field carries raw JSON in that protocol.
+	// Exactly one is set, so prefer the cheap one and fall back.
+	//
+	// dictWireBytes is measured here, on the encoded form, because that is what
+	// actually crossed the wire: the content is deflated, and on JSON it is
+	// base64 on top of that. Charging the inflated size instead - which is what
+	// the codec holds - overstated the cost of the structure dictionary by most
+	// of its size, and did so in the operator's dashboards as well as the SDK's.
+	var raw []byte
+	if len(d.Data) > 0 {
+		raw = d.Data
+		t.dictWireBytes = int64(len(d.Data))
+	} else {
+		decoded, err := base64.StdEncoding.DecodeString(d.DataB64)
+		if err != nil || len(decoded) == 0 {
+			return nil
+		}
+		raw = decoded
+		t.dictWireBytes = int64(len(d.DataB64))
+	}
+	// Content is always deflated: the frame carrying it cannot be compressed,
+	// because nothing is installed yet to compress it against.
+	inflated, err := protocol.InflateDictionary(raw, maxDictionarySize)
+	if err != nil {
+		return nil
+	}
+	raw = inflated
+	if t.cache != nil && d.Id != "" {
+		t.cache.put(d.Id, raw)
+	}
+	t.fromCache = false
+	return protocol.NewDeflateFrameCodec(d.Id, raw)
 }
 
 // websocketConfig configures Websocket transport.
@@ -95,7 +228,7 @@ type websocketConfig struct {
 	Header http.Header
 }
 
-func newWebsocketTransport(url string, protocolType protocol.Type, config websocketConfig) (transport, error) {
+func newWebsocketTransport(url string, protocolType protocol.Type, config websocketConfig, cache *dictionaryCache) (transport, error) {
 	wsHeaders := config.Header
 
 	dialer := &websocket.Dialer{}
@@ -119,6 +252,7 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 	if err != nil {
 		return nil, fmt.Errorf("error dial: %v", err)
 	}
+
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		return nil, fmt.Errorf("wrong status code while connecting to server: %d", resp.StatusCode)
 	}
@@ -130,6 +264,7 @@ func newWebsocketTransport(url string, protocolType protocol.Type, config websoc
 		closeCh:        make(chan struct{}),
 		commandEncoder: newCommandEncoder(protocolType),
 		protocolType:   protocolType,
+		cache:          cache,
 	}
 	go t.reader()
 	return t, nil
@@ -158,6 +293,26 @@ func (t *websocketTransport) reader() {
 			t.disconnect = disconnect
 			return
 		}
+		if codec := t.codec.Load(); codec != nil {
+			compressedLen := len(data)
+			data, err = codec.Decompress(nil, data, maxDecompressedFrameSize)
+			if err != nil {
+				// A cached dictionary that cannot decode is a stale or corrupted
+				// entry: drop it and retry, or the client would advertise it again
+				// on every reconnect and never recover. Anything else is a real
+				// protocol error and is not worth retrying.
+				retry := false
+				if t.fromCache && t.cache != nil {
+					t.cache.forget(codec.ID())
+					retry = true
+				}
+				t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "frame decode error", Reconnect: retry}
+				return
+			}
+			t.framesIn.Add(1)
+			t.compressedIn.Add(int64(compressedLen))
+			t.uncompressedIn.Add(int64(len(data)))
+		}
 		//println("<----", strings.Trim(string(data), "\n"))
 	loop:
 		for {
@@ -171,6 +326,31 @@ func (t *websocketTransport) reader() {
 					t.disconnect = &disconnect{Code: disconnectBadProtocol, Reason: "decode error", Reconnect: false}
 					return
 				}
+				// Compression is set up by the connect reply, which is the frame
+				// that carries the dictionary. A push may replace it later, which
+				// the protocol allows but the server does not currently do.
+				offered := offeredDictionary(reply)
+				if c := t.dictionaryFrom(offered); c != nil {
+					// Applied after this frame completes - see pendingCodec.
+					t.pendingCodec.Store(c)
+					// A dictionary that had to be sent is a real cost paid on this
+					// connection, so it is recorded and later subtracted from bytes
+					// saved. One reused from the cache crossed no wire and is not.
+					if !t.fromCache {
+						t.dictionaryIn.Add(t.dictWireBytes)
+					}
+				} else if t.unusableDict {
+					// The server named a dictionary this client does not hold, so
+					// nothing after this frame can be decoded. Forget the id and
+					// start over rather than misread everything that follows.
+					t.unusableDict = false
+					if t.cache != nil && offered != nil {
+						t.cache.forget(offered.Id)
+					}
+					t.disconnect = &disconnect{Code: disconnectBadProtocol,
+						Reason: "unknown dictionary", Reconnect: true}
+					return
+				}
 				select {
 				case <-t.closeCh:
 					return
@@ -181,7 +361,21 @@ func (t *websocketTransport) reader() {
 				}
 			}
 		}
+		if pending := t.pendingCodec.Swap(nil); pending != nil {
+			t.codec.Store(pending)
+		}
 	}
+}
+
+// offeredDictionary returns the dictionary a reply carries, if any. Only the
+// connect reply carries one: there is no way to replace a dictionary
+// mid-connection, since the frame announcing a new one would have to be encoded
+// against the old.
+func offeredDictionary(reply *protocol.Reply) *protocol.Dictionary {
+	if reply.Connect != nil && reply.Connect.Dict != nil {
+		return reply.Connect.Dict
+	}
+	return nil
 }
 
 func (t *websocketTransport) Write(cmd *protocol.Command, timeout time.Duration) error {

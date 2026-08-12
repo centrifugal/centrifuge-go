@@ -197,3 +197,62 @@ func (c *Client) OnJoin(handler ServerJoinHandler) {
 func (c *Client) OnLeave(handler ServerLeaveHandler) {
 	c.events.onServerLeave = handler
 }
+
+// DictionaryCompressionStats reports what a connection measured on the frames
+// it decoded against a dictionary.
+//
+// The byte counts are exact at the protocol frame level: BytesReceived is what
+// arrived in compressed WebSocket messages, BytesDecompressed is what those
+// frames expanded to. Two caveats when reading them as a network saving:
+//
+//   - They compare against sending the same frames uncompressed, not against
+//     permessage-deflate, which is the alternative most deployments would
+//     otherwise be using.
+//   - They are measured on WebSocket message payloads, so they exclude WebSocket
+//     and TCP framing. Compression shrinks those slightly too, which makes the
+//     figure a small underestimate of bytes actually taken off the wire.
+//
+// Frames received before compression was activated are not counted at all, so
+// this reports the steady state rather than the whole connection.
+type DictionaryCompressionStats struct {
+	// Accepted reports whether the server enabled dictionary compression for this
+	// connection. The SDK always advertises support and the server decides, so
+	// this is how to tell whether it was taken up - and it is true as soon as the
+	// connect reply is read, including inside an OnConnected handler.
+	Accepted bool
+	// Active reports whether the connection is currently decoding compressed
+	// frames. It lags Accepted by one frame: the connect reply that carries the
+	// dictionary is itself uncompressed, so decoding starts with the frame after
+	// it.
+	Active bool
+	// Frames is how many compressed frames were received.
+	Frames int64
+	// BytesReceived is the compressed size of those frames.
+	BytesReceived int64
+	// BytesDecompressed is what they expanded to.
+	BytesDecompressed int64
+	// DictionaryID names the dictionary in use. It is a hash of the dictionary
+	// content, so the same id always means the same bytes - which is what makes
+	// it safe to cache one across connections.
+	DictionaryID string
+
+	// DictionaryBytes is what the dictionary itself cost to receive. It is a real
+	// cost of the feature, so BytesSaved subtracts it.
+	DictionaryBytes int64
+}
+
+// BytesSaved is the net saving: what these frames would have cost uncompressed,
+// less what they actually cost, less the dictionary transfer. It can be negative
+// on a connection that received too little traffic to earn the dictionary back.
+func (s DictionaryCompressionStats) BytesSaved() int64 {
+	return s.BytesDecompressed - s.BytesReceived - s.DictionaryBytes
+}
+
+// Ratio is uncompressed over compressed for the frames received, ignoring the
+// dictionary transfer. Zero when nothing was received.
+func (s DictionaryCompressionStats) Ratio() float64 {
+	if s.BytesReceived == 0 {
+		return 0
+	}
+	return float64(s.BytesDecompressed) / float64(s.BytesReceived)
+}

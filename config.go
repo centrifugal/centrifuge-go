@@ -31,6 +31,14 @@ type Config struct {
 	// Version allows setting client version. This is an application
 	// specific information. By default, no version set.
 	Version string
+	// Profile names the application context this connection belongs to, such as
+	// "trading-dashboard" or "mobile-feed". A server may use it to serve a
+	// compression dictionary built for connections of that kind.
+	//
+	// It describes the client, not the user: use a small fixed set of names, the
+	// same way as Name. The server decides what to do with it and may ignore or
+	// override it, so it must never be relied on to gate anything.
+	Profile string
 	// Proxy specifies a function to return a proxy for a given Request.
 	// If the function returns a non-nil error, the request is aborted with the
 	// provided error. If function returns a nil *URL, no proxy is used.
