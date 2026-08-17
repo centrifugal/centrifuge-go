@@ -1,5 +1,5 @@
-github.com/centrifugal/protocol v0.19.2 h1:wc1S75EJvX5/KczsqEG74Bt/Jw/XwECDUzWR/vE/E9U=
-github.com/centrifugal/protocol v0.19.2/go.mod h1:zFsp4f1ZRejq1dkyNUbabdPj4dMYOpK8RRXDwHGVpVY=
+github.com/centrifugal/protocol v0.21.0 h1:yagnxWBH7vK2+0+A0bmPAIOCaFqTvaLVWubkklS7Xyo=
+github.com/centrifugal/protocol v0.21.0/go.mod h1:3pinAfcb+bH8Yp8Ewhf9QTRTzsQ9veP/QOrCk5D5SSE=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
