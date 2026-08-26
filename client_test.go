@@ -5,12 +5,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/centrifugal/protocol"
 )
 
 type testEventHandler struct {
@@ -988,5 +991,65 @@ func TestLogLevel(t *testing.T) {
 				t.Errorf("expected %v got %v", tc.enabled, got)
 			}
 		})
+	}
+}
+
+// noopTransport is a transport whose Write always succeeds without actually
+// sending anything anywhere, so sendAsync's ReadTimeout goroutine gets
+// started without needing a real connection.
+type noopTransport struct{}
+
+func (noopTransport) Read() (*protocol.Reply, *disconnect, error)  { return nil, nil, io.EOF }
+func (noopTransport) Write(*protocol.Command, time.Duration) error { return nil }
+func (noopTransport) Close() error                                 { return nil }
+
+// TestClient_RequestCallbackNotInvokedTwiceOnTimeoutRace is a regression test
+// for a race where a reply arriving at almost the same moment its ReadTimeout
+// fired could invoke the same request's callback twice: once from handle()
+// with the real reply, once from the sendAsync timeout goroutine with
+// ErrTimeout. Since callers resolve via a buffered channel of size 1, the
+// second invocation used to block forever, leaking a goroutine.
+//
+// The callback below sleeps briefly after being invoked to widen the window
+// between "request found pending" and "request removed from the map" -
+// before the fix that window spanned the callback's own execution, so any
+// concurrent racer would still find the request present and invoke it too.
+// With the fix, the request is popped from the map atomically before its
+// callback runs, so a concurrent racer always finds it already gone.
+func TestClient_RequestCallbackNotInvokedTwiceOnTimeoutRace(t *testing.T) {
+	config := Config{ReadTimeout: time.Microsecond}
+	c := NewJsonClient("ws://localhost:9000/connection/websocket", config)
+	c.transport = noopTransport{}
+	c.closeCh = make(chan struct{})
+
+	const iterations = 20
+	for i := 0; i < iterations; i++ {
+		cmd := &protocol.Command{Id: uint32(i + 1)}
+		var calls int32
+		done := make(chan struct{}, 2)
+		cb := func(reply *protocol.Reply, err error) {
+			atomic.AddInt32(&calls, 1)
+			time.Sleep(20 * time.Millisecond)
+			done <- struct{}{}
+		}
+
+		if err := c.sendAsync(cmd, cb); err != nil {
+			t.Fatalf("sendAsync: %v", err)
+		}
+		// Deliver the real reply concurrently with the sendAsync-spawned
+		// ReadTimeout goroutine, which fires almost immediately given the
+		// tiny ReadTimeout configured above.
+		c.handle(&protocol.Reply{Id: cmd.Id})
+
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("request %d: callback was never invoked", cmd.Id)
+		}
+		// Give the loser of the race a chance to (incorrectly) also fire.
+		time.Sleep(30 * time.Millisecond)
+		if got := atomic.LoadInt32(&calls); got != 1 {
+			t.Fatalf("request %d: callback invoked %d times, want 1", cmd.Id, got)
+		}
 	}
 }
