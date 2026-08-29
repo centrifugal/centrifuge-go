@@ -31,6 +31,7 @@ func extractDisconnectWebsocket(err error) *disconnect {
 					switch code {
 					case websocket.CloseMessageTooBig:
 						code = disconnectMessageSizeLimit
+						reconnect = false
 					default:
 						// We expose codes defined by Centrifuge protocol, hiding
 						// details about transport-specific error codes. We may have extra
