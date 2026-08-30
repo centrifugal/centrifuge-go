@@ -1032,9 +1032,9 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 				s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
 				return
 			}
+			s.emitError(SubscriptionRefreshError{Err: err})
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			s.emitError(SubscriptionRefreshError{Err: err})
 			s.scheduleSubRefresh(10)
 			return
 		}
