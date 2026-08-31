@@ -852,15 +852,10 @@ func (c *Client) handle(reply *protocol.Reply) {
 		if c.logLevelEnabled(LogLevelTrace) {
 			c.traceInReply(reply)
 		}
-		c.requestsMu.RLock()
-		req, ok := c.requests[reply.Id]
-		c.requestsMu.RUnlock()
-		if ok {
-			if req.cb != nil {
-				req.cb(reply, nil)
-			}
+		req, ok := c.popRequest(reply.Id)
+		if ok && req.cb != nil {
+			req.cb(reply, nil)
 		}
-		c.removeRequest(reply.Id)
 	} else {
 		if reply.Push == nil {
 			if c.logLevelEnabled(LogLevelTrace) {
@@ -2160,20 +2155,15 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 		c.mu.Lock()
 		closeCh := c.closeCh
 		c.mu.Unlock()
-		defer c.removeRequest(cmd.Id)
 		select {
 		case <-time.After(c.config.ReadTimeout):
-			c.requestsMu.RLock()
-			req, ok := c.requests[cmd.Id]
-			c.requestsMu.RUnlock()
+			req, ok := c.popRequest(cmd.Id)
 			if !ok {
 				return
 			}
 			req.cb(nil, ErrTimeout)
 		case <-closeCh:
-			c.requestsMu.RLock()
-			req, ok := c.requests[cmd.Id]
-			c.requestsMu.RUnlock()
+			req, ok := c.popRequest(cmd.Id)
 			if !ok {
 				return
 			}
@@ -2213,6 +2203,19 @@ func (c *Client) removeRequest(id uint32) {
 	c.requestsMu.Lock()
 	defer c.requestsMu.Unlock()
 	delete(c.requests, id)
+}
+
+// popRequest atomically looks up and removes the request with the given id,
+// so that only one caller (the actual reply, a timeout, or a close) can ever
+// observe it and invoke its callback.
+func (c *Client) popRequest(id uint32) (request, bool) {
+	c.requestsMu.Lock()
+	defer c.requestsMu.Unlock()
+	req, ok := c.requests[id]
+	if ok {
+		delete(c.requests, id)
+	}
+	return req, ok
 }
 
 type disconnect struct {
