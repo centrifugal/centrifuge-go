@@ -2199,12 +2199,6 @@ func (c *Client) addRequest(id uint32, cb func(*protocol.Reply, error)) {
 	c.requests[id] = request{cb}
 }
 
-func (c *Client) removeRequest(id uint32) {
-	c.requestsMu.Lock()
-	defer c.requestsMu.Unlock()
-	delete(c.requests, id)
-}
-
 // popRequest atomically looks up and removes the request with the given id,
 // so that only one caller (the actual reply, a timeout, or a close) can ever
 // observe it and invoke its callback.
