@@ -761,6 +761,14 @@ func (c *Client) invalidateConnectionState() {
 	for _, s := range c.subs {
 		subs = append(subs, s)
 	}
+	for _, s := range c.serverSubs {
+		// Reset cached recovery position to a deliberately unrecoverable one,
+		// same as for client-side subscriptions above: Recoverable stays as-is,
+		// but the next connect request must not ask the server to recover from
+		// a position that predates the state invalidation.
+		s.Offset = 0
+		s.Epoch = stateInvalidatedEpoch
+	}
 	c.mu.Unlock()
 	for _, s := range subs {
 		s.invalidateState()

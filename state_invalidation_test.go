@@ -67,6 +67,36 @@ func TestInvalidateConnectionStateClearsTokenAndAllSubs(t *testing.T) {
 	}
 }
 
+func TestInvalidateConnectionStateResetsServerSubRecoveryPosition(t *testing.T) {
+	server := NewFakeServer(t)
+	client := NewProtobufClient(server.URL(), Config{Token: "conn-token"})
+	t.Cleanup(client.Close)
+
+	client.mu.Lock()
+	client.serverSubs["ch"] = &serverSub{
+		Recoverable: true,
+		Offset:      10,
+		Epoch:       "e1",
+	}
+	client.mu.Unlock()
+
+	client.invalidateConnectionState()
+
+	client.mu.Lock()
+	sub := client.serverSubs["ch"]
+	client.mu.Unlock()
+	if sub == nil {
+		t.Fatal("server-side subscription must still be present")
+	}
+	// Recovery position is reset to the same unrecoverable sentinel used for
+	// client-side subscriptions, so the next connect request doesn't ask the
+	// server to recover from a position that predates the invalidation.
+	// Recoverable is left untouched.
+	if !sub.Recoverable || sub.Offset != 0 || sub.Epoch != stateInvalidatedEpoch {
+		t.Fatalf("server-side sub recovery position must be reset to the unrecoverable sentinel, got offset=%d epoch=%q recoverable=%v", sub.Offset, sub.Epoch, sub.Recoverable)
+	}
+}
+
 func TestUnsubscribe2502InvalidatesAndResubscribes(t *testing.T) {
 	server := NewFakeServer(t)
 	client := NewProtobufClient(server.URL(), Config{})
