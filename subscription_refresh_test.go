@@ -58,3 +58,61 @@ func TestSubRefreshErrorHandlerDoesNotDeadlock(t *testing.T) {
 	// reach the OnError handler without hanging.
 	waitCh(t, errCh, "refresh error")
 }
+
+// Regression test for sub refresh failures being reported as
+// SubscriptionSubscribeError: a failed sub_refresh command must surface as
+// SubscriptionRefreshError so apps can tell "my subscription token could not be
+// renewed" apart from "subscribing failed". The GetToken failure path in the
+// same flow already emitted SubscriptionRefreshError, and the connection-level
+// counterpart (Client.sendRefresh) consistently emits RefreshError.
+func TestSubRefreshErrorEmitsRefreshError(t *testing.T) {
+	server := NewFakeServer(t)
+	server.OnSubscribe = func(_ string, _ *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		return &protocol.SubscribeResult{Expires: true, Ttl: 1}
+	}
+	// Fail the sub_refresh command with a temporary server error: the
+	// subscription stays subscribed and the SDK retries, but the app must be
+	// told about the refresh failure.
+	server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.SubRefresh == nil {
+			return nil
+		}
+		return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{
+			Code: 108, Message: "not available", Temporary: true,
+		}}
+	}
+
+	client := NewProtobufClient(server.URL(), Config{})
+	t.Cleanup(client.Close)
+
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		GetToken: func(_ SubscriptionTokenEvent) (string, error) {
+			return "token", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+
+	subscribedCh := make(chan SubscribedEvent, 4)
+	errCh := make(chan SubscriptionErrorEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	sub.OnError(func(e SubscriptionErrorEvent) { errCh <- e })
+
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+
+	ev := waitCh(t, errCh, "refresh error")
+	var refreshErr SubscriptionRefreshError
+	if !errors.As(ev.Error, &refreshErr) {
+		t.Fatalf("expected SubscriptionRefreshError, got %T: %v", ev.Error, ev.Error)
+	}
+	var serverErr *Error
+	if !errors.As(ev.Error, &serverErr) || serverErr.Code != 108 {
+		t.Fatalf("expected wrapped server error with code 108, got %v", ev.Error)
+	}
+	if state := sub.State(); state != SubStateSubscribed {
+		t.Fatalf("expected subscription to stay subscribed after temporary refresh error, got %s", state)
+	}
+}

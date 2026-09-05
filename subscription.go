@@ -1045,7 +1045,7 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 
 		s.centrifuge.sendSubRefresh(s.Channel, token, func(result *protocol.SubRefreshResult, err error) {
 			if err != nil {
-				s.emitError(SubscriptionSubscribeError{Err: err})
+				s.emitError(SubscriptionRefreshError{Err: err})
 				var serverError *Error
 				if errors.As(err, &serverError) {
 					if serverError.Temporary {
