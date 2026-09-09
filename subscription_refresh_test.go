@@ -11,6 +11,7 @@ package centrifuge
 
 import (
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -114,5 +115,74 @@ func TestSubRefreshErrorEmitsRefreshError(t *testing.T) {
 	}
 	if state := sub.State(); state != SubStateSubscribed {
 		t.Fatalf("expected subscription to stay subscribed after temporary refresh error, got %s", state)
+	}
+}
+
+// Regression test for the refreshed subscription token not being cached: the
+// token obtained during a sub refresh must replace the previously cached one,
+// so a later resubscribe (after a reconnect) sends the fresh token. Before the
+// fix the subscription kept the token it first subscribed with, and every
+// resubscribe after a refresh sent an expired token — the server rejected it
+// with error 109, the SDK emitted a spurious SubscriptionSubscribeError and
+// only then retried with a new token. centrifuge-js caches it (subscription.ts
+// _refresh), as does Client.sendRefresh here for the connection token.
+func TestSubRefreshCachesRefreshedToken(t *testing.T) {
+	server := NewFakeServer(t)
+	server.OnSubscribe = func(_ string, _ *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		// Expiring subscription: the SDK schedules a refresh in 1 second.
+		return &protocol.SubscribeResult{Expires: true, Ttl: 1}
+	}
+	refreshedCh := make(chan string, 4)
+	server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.SubRefresh == nil {
+			return nil
+		}
+		select {
+		case refreshedCh <- cmd.SubRefresh.Token:
+		default:
+		}
+		// Non-expiring result — no further refresh is scheduled.
+		return &protocol.Reply{Id: cmd.Id, SubRefresh: &protocol.SubRefreshResult{}}
+	}
+
+	client := NewProtobufClient(server.URL(), Config{})
+	t.Cleanup(client.Close)
+
+	var tokenCalls int32
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		GetToken: func(_ SubscriptionTokenEvent) (string, error) {
+			return fmt.Sprintf("token-%d", atomic.AddInt32(&tokenCalls, 1)), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+
+	subscribedCh := make(chan SubscribedEvent, 4)
+	errCh := make(chan SubscriptionErrorEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	sub.OnError(func(e SubscriptionErrorEvent) { errCh <- e })
+
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+
+	refreshedToken := waitCh(t, refreshedCh, "sub refresh")
+	if refreshedToken != "token-2" {
+		t.Fatalf("expected refresh with token-2, got %q", refreshedToken)
+	}
+
+	// Drop the connection: the client reconnects and resubscribes, and must
+	// use the refreshed token rather than the one it initially subscribed with.
+	server.CloseConnection()
+	waitCh(t, subscribedCh, "resubscribed")
+
+	if token := server.LastSubscribe().Token; token != refreshedToken {
+		t.Fatalf("resubscribe must use the refreshed token %q, got %q", refreshedToken, token)
+	}
+	select {
+	case ev := <-errCh:
+		t.Fatalf("unexpected subscription error: %v", ev.Error)
+	default:
 	}
 }
