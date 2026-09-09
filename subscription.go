@@ -1042,6 +1042,13 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
 			return
 		}
+		// Cache the refreshed token: a resubscribe (for example after a
+		// reconnect) reuses the cached token and sending the previous — by
+		// then expired — one would make the server reject the subscribe with
+		// error 109. Same as Client.sendRefresh does for the connection token.
+		s.mu.Lock()
+		s.token = token
+		s.mu.Unlock()
 
 		s.centrifuge.sendSubRefresh(s.Channel, token, func(result *protocol.SubRefreshResult, err error) {
 			if err != nil {
