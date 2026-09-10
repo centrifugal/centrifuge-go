@@ -1606,12 +1606,15 @@ func (c *Client) sendRefresh() {
 				c.mu.Unlock()
 				return
 			}
+			c.mu.Unlock()
 			if r.Error.Temporary {
-				c.handleError(RefreshError{err})
-				c.refreshTimer = time.AfterFunc(10*time.Second, c.sendRefresh)
-				c.mu.Unlock()
+				// Must not hold c.mu here: handleError takes c.mu to reach the
+				// callback queue and waits for the OnError handler to run.
+				c.handleError(RefreshError{errorFromProto(r.Error)})
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				c.handleRefreshError()
 			} else {
-				c.mu.Unlock()
 				c.moveToDisconnected(r.Error.Code, r.Error.Message)
 			}
 			return
