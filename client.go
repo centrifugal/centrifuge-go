@@ -1190,6 +1190,9 @@ func (c *Client) startReconnecting() error {
 		}
 		newToken, err := c.refreshToken()
 		if err != nil {
+			// The transport was dialed before requesting the token and won't be
+			// used for this attempt, close it so the connection does not leak.
+			_ = t.Close()
 			if errors.Is(err, ErrUnauthorized) {
 				if c.logLevelEnabled(LogLevelDebug) {
 					c.log(LogLevelDebug, "unauthorized error, move to disconnected", nil)
@@ -1210,7 +1213,6 @@ func (c *Client) startReconnecting() error {
 						"state": string(c.state),
 					})
 				}
-				_ = t.Close()
 				c.mu.Unlock()
 				return nil
 			}
@@ -1226,6 +1228,7 @@ func (c *Client) startReconnecting() error {
 						"state": string(c.state),
 					})
 				}
+				_ = t.Close()
 				c.mu.Unlock()
 				return nil
 			}
