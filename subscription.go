@@ -180,6 +180,10 @@ type Subscription struct {
 	// Guarded by mu.
 	subscribeAttempt uint64
 
+	// invalidations changes on each state invalidation, so a GetToken or
+	// GetState result obtained before it is discarded. Guarded by mu.
+	invalidations uint64
+
 	// subscribedSession changes each time the subscription becomes subscribed,
 	// so a token refresh started in an earlier subscribed session stops.
 	// Guarded by mu.
@@ -505,6 +509,13 @@ func (s *Subscription) Subscribe() error {
 
 func (s *Subscription) moveToUnsubscribed(code uint32, reason string) {
 	s.mu.Lock()
+	s.moveToUnsubscribedLocked(code, reason, ErrSubscriptionUnsubscribed)
+}
+
+// moveToUnsubscribedLocked is moveToUnsubscribed for a caller holding the lock,
+// so that it can check the subscription in the same lock hold. Calls waiting
+// for the subscription fail with futuresErr. It releases the lock.
+func (s *Subscription) moveToUnsubscribedLocked(code uint32, reason string, futuresErr error) {
 	s.subscribeAttempt++
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
@@ -517,7 +528,7 @@ func (s *Subscription) moveToUnsubscribed(code uint32, reason string) {
 	needEvent := s.state != SubStateUnsubscribed
 	// Calls waiting for the subscription (Publish, History, ...) fail now
 	// instead of at their timeout.
-	s.resolveSubFutures(ErrSubscriptionUnsubscribed)
+	s.resolveSubFutures(futuresErr)
 	s.state = SubStateUnsubscribed
 	// Channel compaction ID is no longer valid once unsubscribed. Cleared under
 	// s.mu, atomically with the state transition (see moveToSubscribed).
@@ -773,10 +784,12 @@ func (s *Subscription) scheduleResubscribe() {
 	})
 }
 
-func (s *Subscription) subscribeError(err error) {
-	s.mu.Lock()
-	if s.state != SubStateSubscribing {
-		s.mu.Unlock()
+// subscribeError handles the failure of the given subscribe attempt. Each state
+// change happens in the same lock hold as the check that the attempt is still
+// current: after an Unsubscribe and Subscribe the error is outdated and a new
+// subscribe is sent instead (see moveToSubscribed).
+func (s *Subscription) subscribeError(err error, attempt uint64) {
+	if !s.lockCurrentAttempt(attempt) {
 		return
 	}
 	s.mu.Unlock()
@@ -787,10 +800,13 @@ func (s *Subscription) subscribeError(err error) {
 	}
 
 	var serverError *Error
-	if errors.As(err, &serverError) && serverError.Code == errorCodeUnrecoverablePosition && s.getState != nil {
+	isServerError := errors.As(err, &serverError)
+	if isServerError && serverError.Code == errorCodeUnrecoverablePosition && s.getState != nil {
 		// Unrecoverable position with GetState: reset position so the next
 		// subscribe attempt calls GetState to reload app state from scratch.
-		s.mu.Lock()
+		if !s.lockCurrentAttempt(attempt) {
+			return
+		}
 		s.recover = false
 		s.offset = 0
 		s.epoch = ""
@@ -802,27 +818,35 @@ func (s *Subscription) subscribeError(err error) {
 
 	s.emitError(SubscriptionSubscribeError{Err: err})
 
-	if errors.As(err, &serverError) {
-		if serverError.Code == 109 { // Token expired.
-			s.mu.Lock()
-			s.token = ""
-			s.scheduleResubscribe()
-			s.mu.Unlock()
-		} else if serverError.Temporary {
-			s.mu.Lock()
-			s.scheduleResubscribe()
-			s.mu.Unlock()
-		} else {
-			s.mu.Lock()
-			s.resolveSubFutures(err)
-			s.mu.Unlock()
-			s.unsubscribe(serverError.Code, serverError.Message, false)
-		}
-	} else {
-		s.mu.Lock()
-		s.scheduleResubscribe()
-		s.mu.Unlock()
+	if !s.lockCurrentAttempt(attempt) {
+		return
 	}
+	if isServerError && serverError.Code != 109 && !serverError.Temporary {
+		s.moveToUnsubscribedLocked(serverError.Code, serverError.Message, err)
+		return
+	}
+	if isServerError && serverError.Code == 109 { // Token expired.
+		s.token = ""
+	}
+	s.scheduleResubscribe()
+	s.mu.Unlock()
+}
+
+// lockCurrentAttempt locks the subscription and reports whether it is still
+// subscribing with the given attempt, keeping the lock only then. An outdated
+// attempt (Unsubscribe and Subscribe were called since) is followed by a new
+// subscribe.
+func (s *Subscription) lockCurrentAttempt(attempt uint64) bool {
+	s.mu.Lock()
+	if s.state == SubStateSubscribing && s.subscribeAttempt == attempt {
+		return true
+	}
+	outdated := s.state == SubStateSubscribing
+	s.mu.Unlock()
+	if outdated {
+		s.resubscribe()
+	}
+	return false
 }
 
 // Lock must be held outside.
@@ -941,6 +965,7 @@ func (s *Subscription) invalidateState() {
 	if s.getToken != nil {
 		s.token = ""
 	}
+	s.invalidations++
 	s.offset = 0
 	s.epoch = stateInvalidatedEpoch
 	s.prevData = nil
@@ -989,27 +1014,32 @@ func (s *Subscription) resubscribe() {
 }
 
 func (s *Subscription) getStateAndResubscribe() {
+	s.mu.Lock()
+	attempt, invalidations := s.subscribeAttempt, s.invalidations
+	s.mu.Unlock()
 	sp, err := s.getState(SubscriptionGetStateEvent{Channel: s.Channel})
-	if err != nil {
-		s.inflight.Store(false)
-		s.mu.Lock()
-		if s.state != SubStateSubscribing {
-			s.mu.Unlock()
-			return
-		}
-		s.mu.Unlock()
-		s.emitError(SubscriptionGetStateError{Err: err})
-		s.mu.Lock()
-		if s.state == SubStateSubscribing {
-			s.scheduleResubscribe()
-		}
-		s.mu.Unlock()
-		return
-	}
 	s.mu.Lock()
 	if s.state != SubStateSubscribing {
 		s.inflight.Store(false)
 		s.mu.Unlock()
+		return
+	}
+	if s.subscribeAttempt != attempt || s.invalidations != invalidations {
+		// Unsubscribe and Subscribe, or a state invalidation, happened while
+		// GetState ran: its result is outdated, ask again.
+		s.inflight.Store(false)
+		s.mu.Unlock()
+		s.resubscribe()
+		return
+	}
+	if err != nil {
+		s.inflight.Store(false)
+		s.mu.Unlock()
+		s.emitError(SubscriptionGetStateError{Err: err})
+		if s.lockCurrentAttempt(attempt) {
+			s.scheduleResubscribe()
+			s.mu.Unlock()
+		}
 		return
 	}
 	s.recover = true
@@ -1026,6 +1056,7 @@ func (s *Subscription) getStateAndResubscribe() {
 func (s *Subscription) continueResubscribe(async bool) {
 	s.mu.Lock()
 	token := s.token
+	attempt, invalidations := s.subscribeAttempt, s.invalidations
 	s.mu.Unlock()
 
 	if token == "" && s.getToken != nil {
@@ -1037,21 +1068,33 @@ func (s *Subscription) continueResubscribe(async bool) {
 		}
 		var err error
 		token, err = s.getSubscriptionToken(s.Channel)
-		if err != nil {
-			if errors.Is(err, ErrUnauthorized) {
-				s.inflight.Store(false)
-				s.unsubscribe(unsubscribedUnauthorized, "unauthorized", false)
-				return
-			}
+		s.mu.Lock()
+		if s.state != SubStateSubscribing {
 			s.inflight.Store(false)
-			s.subscribeError(err)
+			s.mu.Unlock()
 			return
 		}
-		s.mu.Lock()
-		if token == "" {
-			s.mu.Unlock()
+		if s.subscribeAttempt != attempt || s.invalidations != invalidations {
+			// Unsubscribe and Subscribe, or a state invalidation, happened while
+			// GetToken ran: its result is outdated, ask again.
 			s.inflight.Store(false)
-			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", false)
+			s.mu.Unlock()
+			s.resubscribe()
+			return
+		}
+		if err != nil {
+			s.inflight.Store(false)
+			if errors.Is(err, ErrUnauthorized) {
+				s.moveToUnsubscribedLocked(unsubscribedUnauthorized, "unauthorized", ErrSubscriptionUnsubscribed)
+				return
+			}
+			s.mu.Unlock()
+			s.subscribeError(err, attempt)
+			return
+		}
+		if token == "" {
+			s.inflight.Store(false)
+			s.moveToUnsubscribedLocked(unsubscribedUnauthorized, "unauthorized", ErrSubscriptionUnsubscribed)
 			return
 		}
 		s.token = token
@@ -1062,6 +1105,13 @@ func (s *Subscription) continueResubscribe(async bool) {
 	defer s.mu.Unlock()
 	if s.state != SubStateSubscribing {
 		s.inflight.Store(false)
+		return
+	}
+	if s.subscribeAttempt != attempt || s.invalidations != invalidations {
+		// Changed since this subscribe started, e.g. a state invalidation
+		// cleared the token: start over.
+		s.inflight.Store(false)
+		go s.resubscribe()
 		return
 	}
 	if !s.centrifuge.connected.Load() {
@@ -1098,20 +1148,11 @@ func (s *Subscription) continueResubscribe(async bool) {
 	// between this capture and the send only causes a benign discard-and-retry
 	// of an otherwise valid reply.
 	connGeneration := s.centrifuge.connGeneration.Load()
-	attempt := s.subscribeAttempt
 
 	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, s.tagsFilter, flag, func(res *protocol.SubscribeResult, err error) {
 		s.inflight.Store(false)
 		if err != nil {
-			s.mu.Lock()
-			outdated := s.subscribeAttempt != attempt
-			s.mu.Unlock()
-			if outdated {
-				// See moveToSubscribed.
-				s.resubscribe()
-				return
-			}
-			s.subscribeError(err)
+			s.subscribeError(err, attempt)
 			return
 		}
 		s.moveToSubscribed(res, connGeneration, attempt)
