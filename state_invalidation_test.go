@@ -370,6 +370,136 @@ func TestUnsubscribe2502DiscardsPendingGetState(t *testing.T) {
 	}
 }
 
+func TestResubscribePushAfterUnsubscribeKeepsUnsubscribed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code uint32
+	}{
+		{name: "resubscribe", code: 2500},
+		{name: "state invalidated", code: unsubscribedStateInvalidated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewFakeServer(t)
+			client := connectFakeClient(t, server, Config{})
+			sub, err := client.NewSubscription("ch")
+			if err != nil {
+				t.Fatalf("new subscription: %v", err)
+			}
+			subscribedCh := make(chan SubscribedEvent, 4)
+			sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+			_ = sub.Subscribe()
+			waitCh(t, subscribedCh, "subscribed")
+
+			// The application unsubscribes while a server unsubscribe push that
+			// asks to resubscribe is already on its way.
+			if err := sub.Unsubscribe(); err != nil {
+				t.Fatal(err)
+			}
+			server.UnsubscribePush("ch", tc.code, "resubscribe")
+
+			// The server writes the push before this subscribe's reply, so the
+			// client has handled the push once the marker is subscribed.
+			marker, err := client.NewSubscription("marker")
+			if err != nil {
+				t.Fatalf("new subscription: %v", err)
+			}
+			markerCh := make(chan SubscribedEvent, 1)
+			marker.OnSubscribed(func(e SubscribedEvent) { markerCh <- e })
+			_ = marker.Subscribe()
+			waitCh(t, markerCh, "marker subscribed")
+
+			if state := sub.State(); state != SubStateUnsubscribed {
+				t.Fatalf("a resubscribe push handled after Unsubscribe brought the subscription back: state %s", state)
+			}
+		})
+	}
+}
+
+func TestTeardownAfterUnsubscribeKeepsUnsubscribed(t *testing.T) {
+	server := NewFakeServer(t)
+	client := NewProtobufClient(server.URL(), Config{})
+	t.Cleanup(client.Close)
+	sub, err := client.NewSubscription("ch")
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	_ = sub.Subscribe()
+	// A teardown collects the subscriptions that aren't unsubscribed and moves
+	// them to subscribing after releasing the client lock: an Unsubscribe in
+	// between must not be undone.
+	if err := sub.Unsubscribe(); err != nil {
+		t.Fatal(err)
+	}
+	sub.moveToSubscribing(subscribingTransportClosed, "transport closed")
+	if state := sub.State(); state != SubStateUnsubscribed {
+		t.Fatalf("a teardown undid Unsubscribe: state %s", state)
+	}
+}
+
+func TestStateInvalidationDiscardsPendingRefreshToken(t *testing.T) {
+	server := NewFakeServer(t)
+	server.OnSubscribe = func(string, *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		return &protocol.SubscribeResult{Expires: true, Ttl: 1}
+	}
+	server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.SubRefresh != nil {
+			return &protocol.Reply{Id: cmd.Id, SubRefresh: &protocol.SubRefreshResult{}}
+		}
+		return nil
+	}
+	client := connectFakeClient(t, server, Config{})
+	refreshStarted := make(chan struct{}, 1)
+	refreshReturned := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var released atomic.Bool
+	releaseRefresh := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}
+	t.Cleanup(releaseRefresh)
+	var calls atomic.Int32
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		GetToken: func(SubscriptionTokenEvent) (string, error) {
+			if calls.Add(1) != 2 {
+				return "subscribe-token", nil
+			}
+			refreshStarted <- struct{}{}
+			<-release
+			refreshReturned <- struct{}{}
+			return "refreshed-before-invalidation", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	subscribedCh := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+
+	// The state is invalidated while the refresh's GetToken runs, before the
+	// subscription moves to subscribing (as between invalidateState and
+	// moveToSubscribing on a 2502 or a 3014).
+	waitCh(t, refreshStarted, "the token refresh")
+	sub.invalidateState()
+	releaseRefresh()
+	waitCh(t, refreshReturned, "the refresh's GetToken to return")
+	time.Sleep(100 * time.Millisecond)
+
+	sub.mu.Lock()
+	token := sub.token
+	sub.mu.Unlock()
+	if token == "refreshed-before-invalidation" {
+		t.Fatal("the token of a refresh started before the state invalidation was cached")
+	}
+	for _, cmd := range server.Received() {
+		if cmd.SubRefresh != nil {
+			t.Fatal("a refresh started before the state invalidation was sent")
+		}
+	}
+}
+
 func TestUnsubscribeBelow2500DoesNotInvalidate(t *testing.T) {
 	server := NewFakeServer(t)
 	client := NewProtobufClient(server.URL(), Config{})

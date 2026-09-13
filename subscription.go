@@ -551,6 +551,12 @@ func (s *Subscription) moveToUnsubscribedLocked(code uint32, reason string, futu
 
 func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 	s.mu.Lock()
+	if s.state == SubStateUnsubscribed {
+		// Unsubscribe was called after the teardown or the server push that led
+		// here started: the subscription stays unsubscribed.
+		s.mu.Unlock()
+		return
+	}
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
 		s.resubscribeTimer.Stop()
@@ -1195,11 +1201,14 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 // refresh as not subscribed, and after the resubscribe it would run next to the
 // new session's own refresh.
 func (s *Subscription) refresh(session uint64) {
-	if !s.isRefreshCurrent(session) {
+	s.mu.RLock()
+	invalidations := s.invalidations
+	s.mu.RUnlock()
+	if !s.isRefreshCurrent(session, invalidations) {
 		return
 	}
 	token, err := s.getSubscriptionToken(s.Channel)
-	if !s.isRefreshCurrent(session) {
+	if !s.isRefreshCurrent(session, invalidations) {
 		return
 	}
 	if err != nil {
@@ -1224,7 +1233,7 @@ func (s *Subscription) refresh(session uint64) {
 	// then expired — one would make the server reject the subscribe with
 	// error 109. Same as Client.sendRefresh does for the connection token.
 	s.mu.Lock()
-	if s.state != SubStateSubscribed || s.subscribedSession != session {
+	if !s.isRefreshCurrentLocked(session, invalidations) {
 		s.mu.Unlock()
 		return
 	}
@@ -1232,7 +1241,7 @@ func (s *Subscription) refresh(session uint64) {
 	s.mu.Unlock()
 
 	s.centrifuge.sendSubRefresh(s.Channel, token, func(result *protocol.SubRefreshResult, err error) {
-		if !s.isRefreshCurrent(session) {
+		if !s.isRefreshCurrent(session, invalidations) {
 			// E.g. failed with ErrClientDisconnected by a reconnect.
 			return
 		}
@@ -1262,8 +1271,15 @@ func (s *Subscription) refresh(session uint64) {
 
 // isRefreshCurrent reports whether the subscription is still in the subscribed
 // session a refresh was scheduled in.
-func (s *Subscription) isRefreshCurrent(session uint64) bool {
+func (s *Subscription) isRefreshCurrent(session, invalidations uint64) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.state == SubStateSubscribed && s.subscribedSession == session
+	return s.isRefreshCurrentLocked(session, invalidations)
+}
+
+// isRefreshCurrentLocked is isRefreshCurrent that also requires no state
+// invalidation since the refresh started: its token was obtained before it.
+// Lock must be held outside.
+func (s *Subscription) isRefreshCurrentLocked(session, invalidations uint64) bool {
+	return s.state == SubStateSubscribed && s.subscribedSession == session && s.invalidations == invalidations
 }
