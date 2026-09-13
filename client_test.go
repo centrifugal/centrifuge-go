@@ -655,6 +655,132 @@ func TestHandlePublishFossil(t *testing.T) {
 	})
 }
 
+func TestDeltaErrorDisconnectsWithBadProtocol(t *testing.T) {
+	brokenDelta := []byte("not a fossil delta")
+	for _, tc := range []struct {
+		name      string
+		recovered bool
+		offset    uint64
+	}{
+		{name: "live publication", offset: 6},
+		{name: "recovered publication", recovered: true, offset: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewFakeServer(t)
+			s.OnSubscribe = func(ch string, req *protocol.SubscribeRequest) *protocol.SubscribeResult {
+				res := &protocol.SubscribeResult{Delta: true, Recoverable: true, Epoch: "e1", Offset: 5}
+				if tc.recovered {
+					res.WasRecovering = true
+					res.Recovered = true
+					res.Publications = []*protocol.Publication{{Offset: 5, Data: brokenDelta, Delta: true}}
+				}
+				return res
+			}
+			client := NewProtobufClient(s.URL(), Config{})
+			defer client.Close()
+			errCh := make(chan error, 8)
+			client.OnError(func(e ErrorEvent) { errCh <- e.Error })
+			disconnectedCh := make(chan DisconnectedEvent, 1)
+			client.OnDisconnected(func(e DisconnectedEvent) { disconnectedCh <- e })
+
+			sub, err := client.NewSubscription("news", SubscriptionConfig{Delta: DeltaTypeFossil, Recoverable: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			subscribedCh := make(chan struct{}, 1)
+			sub.OnSubscribed(func(SubscribedEvent) { subscribedCh <- struct{}{} })
+			publicationCh := make(chan PublicationEvent, 1)
+			sub.OnPublication(func(e PublicationEvent) { publicationCh <- e })
+			_ = sub.Subscribe()
+			_ = client.Connect()
+
+			if !tc.recovered {
+				select {
+				case <-subscribedCh:
+				case <-time.After(3 * time.Second):
+					t.Fatal("timeout waiting for subscribed")
+				}
+				s.SendPush(&protocol.Push{Channel: "news", Pub: &protocol.Publication{Offset: tc.offset, Data: brokenDelta, Delta: true}})
+			}
+
+			deadline := time.After(3 * time.Second)
+			for found := false; !found; {
+				select {
+				case err := <-errCh:
+					var deltaErr DeltaError
+					if errors.As(err, &deltaErr) {
+						if deltaErr.Channel != "news" || deltaErr.Offset != tc.offset {
+							t.Fatalf("unexpected delta error: %v", deltaErr)
+						}
+						found = true
+					}
+				case <-deadline:
+					t.Fatal("timeout waiting for DeltaError")
+				}
+			}
+			select {
+			case e := <-disconnectedCh:
+				if e.Code != disconnectBadProtocol {
+					t.Fatalf("expected disconnect code %d, got %d", disconnectBadProtocol, e.Code)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("timeout waiting for disconnected")
+			}
+			select {
+			case e := <-publicationCh:
+				t.Fatalf("publication with a broken delta delivered: %v", e)
+			case <-subscribedCh:
+				if tc.recovered {
+					t.Fatal("subscribed emitted for a subscribe reply with a broken delta")
+				}
+			case <-time.After(300 * time.Millisecond):
+			}
+			if state := client.State(); state != StateDisconnected {
+				t.Fatalf("expected client to stay disconnected, got %s", state)
+			}
+			connects := 0
+			for _, cmd := range s.Received() {
+				if cmd.Connect != nil {
+					connects++
+				}
+			}
+			if connects != 1 {
+				t.Fatalf("expected no reconnect, got %d connect commands", connects)
+			}
+		})
+	}
+}
+
+func TestApplyDeltaErrorsReturned(t *testing.T) {
+	jsonClient := NewJsonClient("ws://localhost:8000/connection/websocket", Config{})
+	defer jsonClient.Close()
+	protobufClient := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
+	defer protobufClient.Close()
+	for _, tc := range []struct {
+		name   string
+		client *Client
+		pub    *protocol.Publication
+	}{
+		// With delta negotiated over JSON, publication data must be a JSON string.
+		{name: "json delta not a string", client: jsonClient, pub: &protocol.Publication{Data: []byte(`{"not":"a string"}`), Delta: true}},
+		{name: "json data not a string", client: jsonClient, pub: &protocol.Publication{Data: []byte(`{"not":"a string"}`)}},
+		{name: "copy without base", client: protobufClient, pub: &protocol.Publication{Data: []byte("3\n3@0,"), Delta: true}},
+		// Makes the fossil library slice past the end of the delta.
+		{name: "insert past end of delta", client: protobufClient, pub: &protocol.Publication{Data: []byte("3\n3:a"), Delta: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sub, err := tc.client.NewSubscription(tc.name, SubscriptionConfig{Delta: DeltaTypeFossil})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sub.deltaNegotiated = true
+			if _, err := sub.applyDeltaLocked(tc.pub, PublicationEvent{}); err == nil {
+				t.Fatalf("expected an error for publication %v", tc.pub)
+			}
+		})
+	}
+}
+
 // fastReconnectConfig returns a Config with short reconnect delays so stress
 // tests do not spend most of their time waiting for backoff timers.
 func fastReconnectConfig() Config {

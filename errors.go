@@ -97,6 +97,23 @@ func (s SubscriptionGetStateError) Unwrap() error {
 	return s.Err
 }
 
+// DeltaError is reported through Client.OnError when a publication's delta
+// can't be applied. The client then disconnects with a bad protocol code and
+// doesn't reconnect: a broken delta chain would give the application wrong data.
+type DeltaError struct {
+	Channel string
+	Offset  uint64
+	Err     error
+}
+
+func (d DeltaError) Error() string {
+	return fmt.Sprintf("delta error: channel %s, offset %d: %v", d.Channel, d.Offset, d.Err)
+}
+
+func (d DeltaError) Unwrap() error {
+	return d.Err
+}
+
 type SubscriptionRefreshError struct {
 	Err error
 }
