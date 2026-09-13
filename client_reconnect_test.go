@@ -200,6 +200,85 @@ func TestNoCommandBeforeConnectOnNewTransport(t *testing.T) {
 	}
 }
 
+func TestSubscriptionDoesNotSubscribeWhileClientConnects(t *testing.T) {
+	s := NewFakeServer(t)
+	var connects atomic.Int32
+	connectReceived := make(chan struct{}, 1)
+	releaseConnect := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseConnect) }) }
+	t.Cleanup(release)
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Connect != nil && connects.Add(1) == 2 {
+			connectReceived <- struct{}{}
+			<-releaseConnect
+		}
+		return nil
+	}
+	client := connectFakeClient(t, s, Config{MinReconnectDelay: 10 * time.Millisecond, MaxReconnectDelay: 20 * time.Millisecond})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribed := make(chan struct{}, 1)
+	sub.OnSubscribed(func(SubscribedEvent) {
+		select {
+		case subscribed <- struct{}{}:
+		default:
+		}
+	})
+	_ = sub.Subscribe()
+	waitCh(t, subscribed, "subscribed")
+
+	// Reconnect, and keep the connect reply pending once the connect frame is sent.
+	s.CloseConnection()
+	waitCh(t, connectReceived, "reconnect")
+	waitCondition(t, "the new transport", func() bool {
+		client.transportMu.RLock()
+		defer client.transportMu.RUnlock()
+		return client.transport != nil
+	})
+	// A resubscribe timer fires meanwhile (as after a subscribe error), then
+	// the application unsubscribes.
+	sub.resubscribe()
+	if err := sub.Unsubscribe(); err != nil {
+		t.Fatal(err)
+	}
+	release()
+
+	// A subscribe of another channel after the connect: its reply means the
+	// server has processed everything the client sent before.
+	marker, err := client.NewSubscription("marker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	markerSubscribed := make(chan struct{}, 1)
+	marker.OnSubscribed(func(SubscribedEvent) {
+		select {
+		case markerSubscribed <- struct{}{}:
+		default:
+		}
+	})
+	waitCondition(t, "connected", func() bool { return client.State() == StateConnected })
+	_ = marker.Subscribe()
+	waitCh(t, markerSubscribed, "marker subscribed")
+
+	var subscribes, unsubscribes, connectsSeen int
+	for _, cmd := range s.Received() {
+		switch {
+		case cmd.Connect != nil:
+			connectsSeen++
+		case connectsSeen == 2 && cmd.Subscribe != nil && cmd.Subscribe.Channel == "news":
+			subscribes++
+		case connectsSeen == 2 && cmd.Unsubscribe != nil && cmd.Unsubscribe.Channel == "news":
+			unsubscribes++
+		}
+	}
+	if subscribes != unsubscribes {
+		t.Fatalf("the server keeps a subscription the client unsubscribed: %d subscribe(s) and %d unsubscribe(s) after the reconnect", subscribes, unsubscribes)
+	}
+}
+
 // Subscription tokens fetched when subscriptions resubscribe on connect. That
 // resubscribe runs while the connect reply callback holds the client mutex, so
 // GetToken must not run there: a failure is reported through event handlers,

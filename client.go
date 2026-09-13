@@ -57,8 +57,12 @@ type Client struct {
 	transport      transport
 	disconnectedCh chan struct{}
 	state          State
-	subs           map[string]*Subscription
-	serverSubs     map[string]*serverSub
+	// connected mirrors state == StateConnected (see setStateLocked) for
+	// subscriptions, which check it under their own lock, sometimes with mu
+	// held as well.
+	connected  atomic.Bool
+	subs       map[string]*Subscription
+	serverSubs map[string]*serverSub
 	// Channel compaction: numeric channel ID → subscription, used to route pushes
 	// that carry an ID instead of the string channel name. Guarded by its own leaf
 	// mutex (never held while calling into Client or Subscription methods) because
@@ -401,6 +405,12 @@ func (c *Client) isConnected() bool {
 	return c.state == StateConnected
 }
 
+// setStateLocked changes the client state. Lock must be held outside.
+func (c *Client) setStateLocked(state State) {
+	c.state = state
+	c.connected.Store(state == StateConnected)
+}
+
 func (c *Client) isClosed() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -475,7 +485,7 @@ func (c *Client) moveToDisconnectedFrom(t transport, code uint32, reason string)
 	}
 
 	prevState := c.state
-	c.state = StateDisconnected
+	c.setStateLocked(StateDisconnected)
 	c.clearConnectedState()
 	c.resolveConnectFutures(ErrClientDisconnected)
 
@@ -574,7 +584,7 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 		c.setTransportLocked(nil)
 	}
 
-	c.state = StateConnecting
+	c.setStateLocked(StateConnecting)
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "client moved to connecting state", nil)
 	}
@@ -686,7 +696,7 @@ func (c *Client) moveToClosed() {
 		c.mu.Unlock()
 		return
 	}
-	c.state = StateClosed
+	c.setStateLocked(StateClosed)
 
 	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
@@ -1461,7 +1471,7 @@ func (c *Client) startReconnecting() error {
 				"client_id": res.Client,
 			})
 		}
-		c.state = StateConnected
+		c.setStateLocked(StateConnected)
 
 		if res.Expires {
 			c.scheduleRefreshLocked(time.Duration(res.Ttl) * time.Second)
@@ -1664,7 +1674,7 @@ func (c *Client) startConnecting() error {
 	if c.closeCh == nil {
 		c.closeCh = make(chan struct{})
 	}
-	c.state = StateConnecting
+	c.setStateLocked(StateConnecting)
 	c.mu.Unlock()
 
 	var handler ConnectingHandler

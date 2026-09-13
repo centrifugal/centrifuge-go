@@ -1064,6 +1064,14 @@ func (s *Subscription) continueResubscribe(async bool) {
 		s.inflight.Store(false)
 		return
 	}
+	if !s.centrifuge.connected.Load() {
+		// E.g. a resubscribe timer, or a GetToken or GetState that spanned a
+		// reconnect. Sent while the client connects, the subscribe isn't undone
+		// by an Unsubscribe meanwhile, and its request isn't failed if that
+		// connect fails. The connect resubscribes what is still subscribing.
+		s.inflight.Store(false)
+		return
+	}
 
 	var isRecover bool
 	var sp StreamPosition
