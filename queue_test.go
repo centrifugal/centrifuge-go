@@ -79,6 +79,37 @@ func TestCbQueue_OrderPreservation(t *testing.T) {
 	}
 }
 
+func TestCbQueue_CloseFromCallback(t *testing.T) {
+	q := newTestQueue()
+	go q.dispatch()
+
+	closeReturned := make(chan struct{})
+	q.push(func(d time.Duration) {
+		q.close()
+		close(closeReturned)
+	})
+	select {
+	case <-closeReturned:
+	case <-time.After(time.Second):
+		t.Fatal("close() called from a callback never returned")
+	}
+	q.waitClose()
+	assertTrue(t, !q.push(func(d time.Duration) {}), "push after close must report that the callback won't run")
+}
+
+func TestCbQueue_InDispatch(t *testing.T) {
+	q := newTestQueue()
+	go q.dispatch()
+
+	inCallback := make(chan bool, 1)
+	q.push(func(d time.Duration) {
+		inCallback <- q.inDispatch()
+	})
+	assertTrue(t, <-inCallback, "inDispatch must be true inside a callback")
+	assertTrue(t, !q.inDispatch(), "inDispatch must be false outside callbacks")
+	q.close()
+}
+
 func TestCbQueue_Close(t *testing.T) {
 	q := newTestQueue()
 

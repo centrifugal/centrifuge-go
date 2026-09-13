@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -950,6 +951,135 @@ func TestSubscriptionCallFailsWhenUnsubscribedWhileSubscribing(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Publish still waiting 1s after Unsubscribe()")
+	}
+}
+
+// Client calls from event handlers, and Close with handlers still queued.
+// Handlers run on the callback queue's goroutine, so a call made there must not
+// wait for the queue.
+
+// returnsWithin reports whether fn returns within d.
+func returnsWithin(d time.Duration, fn func()) bool {
+	done := make(chan struct{})
+	go func() {
+		fn()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+func TestConnectFromDisconnectedHandler(t *testing.T) {
+	s := NewFakeServer(t)
+	client := NewProtobufClient(s.URL(), Config{})
+	closeOnCleanup(t, client)
+	client.OnConnecting(func(ConnectingEvent) {})
+	connectedCh := make(chan struct{}, 4)
+	client.OnConnected(func(ConnectedEvent) { connectedCh <- struct{}{} })
+	handlerReturned := make(chan struct{}, 1)
+	var once sync.Once
+	client.OnDisconnected(func(DisconnectedEvent) {
+		once.Do(func() {
+			_ = client.Connect()
+			handlerReturned <- struct{}{}
+		})
+	})
+	_ = client.Connect()
+	waitCh(t, connectedCh, "connected")
+
+	s.DisconnectPush(3500, "terminal disconnect")
+	select {
+	case <-handlerReturned:
+	case <-time.After(time.Second):
+		t.Fatal("Connect() called from OnDisconnected with OnConnecting set never returned")
+	}
+	waitCh(t, connectedCh, "connected again")
+}
+
+func TestConnectFromHandlerWithDialErrorReported(t *testing.T) {
+	s := NewFakeServer(t)
+	var failDial atomic.Bool
+	client := NewProtobufClient(s.URL(), Config{
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if failDial.Load() {
+				return nil, errors.New("dial refused")
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+		MinReconnectDelay: time.Second,
+	})
+	closeOnCleanup(t, client)
+	errorCh := make(chan error, 8)
+	client.OnError(func(e ErrorEvent) {
+		select {
+		case errorCh <- e.Error:
+		default:
+		}
+	})
+	connectedCh := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) { connectedCh <- struct{}{} })
+	handlerReturned := make(chan struct{}, 1)
+	var once sync.Once
+	client.OnDisconnected(func(DisconnectedEvent) {
+		once.Do(func() {
+			failDial.Store(true)
+			_ = client.Connect()
+			handlerReturned <- struct{}{}
+		})
+	})
+	_ = client.Connect()
+	waitCh(t, connectedCh, "connected")
+
+	s.DisconnectPush(3500, "terminal disconnect")
+	select {
+	case <-handlerReturned:
+	case <-time.After(time.Second):
+		t.Fatal("Connect() called from OnDisconnected with a failing dial and OnError set never returned")
+	}
+	var transportErr TransportError
+	if err := waitCh(t, errorCh, "dial error"); !errors.As(err, &transportErr) {
+		t.Fatalf("expected TransportError, got %v", err)
+	}
+}
+
+func TestCloseFromEventHandler(t *testing.T) {
+	s := NewFakeServer(t)
+	client := NewProtobufClient(s.URL(), Config{})
+	closeReturned := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		client.Close()
+		closeReturned <- struct{}{}
+	})
+	_ = client.Connect()
+	select {
+	case <-closeReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() called from OnConnected never returned")
+	}
+	if state := client.State(); state != StateClosed {
+		t.Fatalf("expected closed, got %s", state)
+	}
+}
+
+func TestCloseWithQueuedHandlerCallingClient(t *testing.T) {
+	s := NewFakeServer(t)
+	client := NewProtobufClient(s.URL(), Config{})
+	connectedCh := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) { connectedCh <- struct{}{} })
+	client.OnDisconnected(func(DisconnectedEvent) {
+		// Runs while Close waits for the queued handlers.
+		time.Sleep(10 * time.Millisecond)
+		_ = client.State()
+	})
+	_ = client.Connect()
+	waitCh(t, connectedCh, "connected")
+
+	if !returnsWithin(2*time.Second, client.Close) {
+		t.Fatal("Close() blocked while a queued OnDisconnected handler called client.State()")
 	}
 }
 
