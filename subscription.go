@@ -179,6 +179,11 @@ type Subscription struct {
 	// the reply to a subscribe sent before that is recognized as outdated.
 	// Guarded by mu.
 	subscribeAttempt uint64
+
+	// subscribedSession changes each time the subscription becomes subscribed,
+	// so a token refresh started in an earlier subscribed session stops.
+	// Guarded by mu.
+	subscribedSession uint64
 }
 
 func (s *Subscription) State() SubState {
@@ -602,6 +607,7 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 		recoveredEvents = append(recoveredEvents, publicationEvent)
 	}
 	s.state = SubStateSubscribed
+	s.subscribedSession++
 	if res.Expires {
 		s.scheduleSubRefresh(res.Ttl)
 	}
@@ -909,16 +915,17 @@ func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
 
 // invalidateState resets cached subscription state on "state invalidated"
 // (unsubscribe code 2502 or connection disconnect code 3014) so the resubscribe
-// re-syncs: it clears the subscription token (so the next subscribe fetches a
-// fresh one via GetToken), the fossil delta base (a stale base would corrupt
-// decoding of the first publication after resubscribe), and the channel-
-// compaction ID mapping. The recovery position is reset to a sentinel epoch the
-// server can never match (offset 0); the recover flag is left untouched. So for
-// a recoverable subscription the resubscribe reply reports WasRecovering=true,
-// Recovered=false — letting the app reload via its existing recovery-failure
-// path rather than looking like a brand-new first subscribe — while a non-
-// recoverable subscription simply resubscribes (the sentinel is not sent). The
-// real epoch/offset are adopted from the subscribe reply.
+// re-syncs. With GetToken set it clears the subscription token, so the next
+// subscribe fetches a fresh one; a token without GetToken is kept, and the
+// server rejects it if it's no longer valid. It clears the fossil delta base (a
+// stale base would corrupt decoding of the first publication after resubscribe)
+// and the channel-compaction ID mapping. The recovery position is reset to a
+// sentinel epoch the server can never match (offset 0); the recover flag is left
+// untouched. So for a recoverable subscription the resubscribe reply reports
+// WasRecovering=true, Recovered=false — letting the app reload via its existing
+// recovery-failure path rather than looking like a brand-new first subscribe —
+// while a non-recoverable subscription simply resubscribes (the sentinel is not
+// sent). The real epoch/offset are adopted from the subscribe reply.
 //
 // TODO: when map / shared-poll subscription types are added (as in centrifuge-js),
 // reset their cached buffers and restart them from scratch here instead.
@@ -929,7 +936,9 @@ func (s *Subscription) invalidateState() {
 		s.centrifuge.updateSubscriptionPushID(s, s.pushID, 0)
 		s.pushID = 0
 	}
-	s.token = ""
+	if s.getToken != nil {
+		s.token = ""
+	}
 	s.offset = 0
 	s.epoch = stateInvalidatedEpoch
 	s.prevData = nil
@@ -1114,69 +1123,96 @@ func (s *Subscription) getSubscriptionToken(channel string) (string, error) {
 	return "", errors.New("GetToken must be set to get subscription token")
 }
 
-// Lock must be held outside.
+// scheduleSubRefresh arms the token refresh for the current subscribed session,
+// replacing a refresh armed before. Lock must be held outside.
 func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 	if s.state != SubStateSubscribed {
 		return
 	}
+	if s.refreshTimer != nil {
+		s.refreshTimer.Stop()
+	}
+	session := s.subscribedSession
 	s.refreshTimer = time.AfterFunc(time.Duration(ttl)*time.Second, func() {
-		s.mu.Lock()
-		if s.state != SubStateSubscribed {
-			s.mu.Unlock()
-			return
-		}
-		s.mu.Unlock()
+		s.refresh(session)
+	})
+}
 
-		token, err := s.getSubscriptionToken(s.Channel)
-		if err != nil {
-			if errors.Is(err, ErrUnauthorized) {
-				s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
-				return
-			}
-			s.emitError(SubscriptionRefreshError{Err: err})
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			s.scheduleSubRefresh(10)
-			return
-		}
-		if token == "" {
+// refresh gets a new subscription token and sends it to the server, for the
+// subscribed session it was scheduled in. It stops as soon as that session has
+// ended: sent while the subscription resubscribes, the server rejects the
+// refresh as not subscribed, and after the resubscribe it would run next to the
+// new session's own refresh.
+func (s *Subscription) refresh(session uint64) {
+	if !s.isRefreshCurrent(session) {
+		return
+	}
+	token, err := s.getSubscriptionToken(s.Channel)
+	if !s.isRefreshCurrent(session) {
+		return
+	}
+	if err != nil {
+		if errors.Is(err, ErrUnauthorized) {
 			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
 			return
 		}
-		// Cache the refreshed token: a resubscribe (for example after a
-		// reconnect) reuses the cached token and sending the previous — by
-		// then expired — one would make the server reject the subscribe with
-		// error 109. Same as Client.sendRefresh does for the connection token.
+		s.emitError(SubscriptionRefreshError{Err: err})
 		s.mu.Lock()
-		s.token = token
+		defer s.mu.Unlock()
+		if s.subscribedSession == session {
+			s.scheduleSubRefresh(10)
+		}
+		return
+	}
+	if token == "" {
+		s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
+		return
+	}
+	// Cache the refreshed token: a resubscribe (for example after a
+	// reconnect) reuses the cached token and sending the previous — by
+	// then expired — one would make the server reject the subscribe with
+	// error 109. Same as Client.sendRefresh does for the connection token.
+	s.mu.Lock()
+	if s.state != SubStateSubscribed || s.subscribedSession != session {
 		s.mu.Unlock()
+		return
+	}
+	s.token = token
+	s.mu.Unlock()
 
-		s.centrifuge.sendSubRefresh(s.Channel, token, func(result *protocol.SubRefreshResult, err error) {
-			if err != nil {
-				s.emitError(SubscriptionRefreshError{Err: err})
-				var serverError *Error
-				if errors.As(err, &serverError) {
-					if serverError.Temporary {
-						s.mu.Lock()
-						defer s.mu.Unlock()
-						s.scheduleSubRefresh(10)
-						return
-					} else {
-						s.unsubscribe(serverError.Code, serverError.Message, true)
-						return
-					}
-				} else {
-					s.mu.Lock()
-					defer s.mu.Unlock()
-					s.scheduleSubRefresh(10)
-					return
-				}
+	s.centrifuge.sendSubRefresh(s.Channel, token, func(result *protocol.SubRefreshResult, err error) {
+		if !s.isRefreshCurrent(session) {
+			// E.g. failed with ErrClientDisconnected by a reconnect.
+			return
+		}
+		if err != nil {
+			s.emitError(SubscriptionRefreshError{Err: err})
+			var serverError *Error
+			if errors.As(err, &serverError) && !serverError.Temporary {
+				s.unsubscribe(serverError.Code, serverError.Message, true)
+				return
 			}
-			if result.Expires {
-				s.mu.Lock()
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.subscribedSession == session {
+				s.scheduleSubRefresh(10)
+			}
+			return
+		}
+		if result.Expires {
+			s.mu.Lock()
+			if s.subscribedSession == session {
 				s.scheduleSubRefresh(result.Ttl)
-				s.mu.Unlock()
 			}
-		})
+			s.mu.Unlock()
+		}
 	})
+}
+
+// isRefreshCurrent reports whether the subscription is still in the subscribed
+// session a refresh was scheduled in.
+func (s *Subscription) isRefreshCurrent(session uint64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state == SubStateSubscribed && s.subscribedSession == session
 }

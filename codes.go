@@ -46,12 +46,13 @@ const errorCodeUnrecoverablePosition uint32 = 112
 // them and re-sync.
 const (
 	// unsubscribedStateInvalidated is sent in an Unsubscribe push for a single
-	// subscription. The client clears the subscription token and cached state
-	// and resubscribes (it's >= 2500, so resubscribe applies).
+	// subscription. The client clears cached state (and the subscription token
+	// when GetToken can replace it) and resubscribes (it's >= 2500, so
+	// resubscribe applies).
 	unsubscribedStateInvalidated uint32 = 2502
 	// disconnectedStateInvalidated is sent in a Disconnect push for the whole
-	// connection. The client clears the connection token (to force getToken),
-	// invalidates all subscriptions' state, and reconnects.
+	// connection. The client clears the connection token when GetToken can
+	// replace it, invalidates all subscriptions' state, and reconnects.
 	disconnectedStateInvalidated uint32 = 3014
 )
 
