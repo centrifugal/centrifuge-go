@@ -1254,6 +1254,44 @@ func TestCloseStopsConnectionEstablishedDuringClose(t *testing.T) {
 	}
 }
 
+func TestOutdatedSubscribeErrorDoesNotUnsubscribeNewAttempt(t *testing.T) {
+	s := NewFakeServer(t)
+	var subscribes atomic.Int32
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Subscribe != nil && subscribes.Add(1) == 1 {
+			return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 103, Message: "permission denied"}}
+		}
+		return nil
+	}
+	client := connectFakeClient(t, s, Config{})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	sub.OnError(func(SubscriptionErrorEvent) {
+		// While the first subscribe's permanent error is handled, the
+		// application unsubscribes and subscribes again.
+		once.Do(func() {
+			_ = sub.Unsubscribe()
+			_ = sub.Subscribe()
+		})
+	})
+	subscribed := make(chan struct{}, 1)
+	sub.OnSubscribed(func(SubscribedEvent) {
+		select {
+		case subscribed <- struct{}{}:
+		default:
+		}
+	})
+	_ = sub.Subscribe()
+	waitCh(t, subscribed, "subscribed by the new attempt")
+	time.Sleep(50 * time.Millisecond)
+	if state := sub.State(); state != SubStateSubscribed {
+		t.Fatalf("the error of the old subscribe was applied to the new attempt: state %s", state)
+	}
+}
+
 func TestCallCompletesWithReplyReceivedBeforeTimeout(t *testing.T) {
 	s := NewFakeServer(t)
 	const readTimeout = 150 * time.Millisecond
