@@ -1121,7 +1121,7 @@ func TestCallReturnsWhenSendFailsDuringTeardown(t *testing.T) {
 	}
 	client.mu.Lock()
 	client.state = StateConnected
-	client.transport = ft
+	client.setTransportLocked(ft)
 	client.mu.Unlock()
 
 	done := make(chan error, 1)
@@ -1139,6 +1139,37 @@ func TestCallReturnsWhenSendFailsDuringTeardown(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Publish never returned after its send failed during a teardown, despite its 1s context")
 	}
+}
+
+func TestSendDoesNotRaceWithDisconnect(t *testing.T) {
+	client := NewProtobufClient("ws://127.0.0.1:1/connection/websocket", Config{
+		MinReconnectDelay: 10 * time.Second,
+		MaxReconnectDelay: 20 * time.Second,
+	})
+	closeOnCleanup(t, client)
+	client.mu.Lock()
+	client.state = StateConnected
+	client.setTransportLocked(noopTransport{})
+	client.mu.Unlock()
+
+	// send runs without the client lock (Send, calls of subscriptions) while
+	// Disconnect clears the transport. The goroutine shares no lock with the
+	// test, so with -race an unsynchronized read of the transport is reported
+	// whatever the timing.
+	ready := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		close(ready)
+		for i := 0; i < 100; i++ {
+			_ = client.send(&protocol.Command{Send: &protocol.SendRequest{Data: []byte(`{}`)}})
+		}
+	}()
+	<-ready
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	<-done
 }
 
 func TestCallCompletesWithReplyReceivedBeforeTimeout(t *testing.T) {
