@@ -781,6 +781,178 @@ func TestApplyDeltaErrorsReturned(t *testing.T) {
 	}
 }
 
+// holdFirstSubscribe makes s wait with its reply to the first subscribe command
+// until release is called, like a server under latency: later commands on the
+// connection wait behind it, in order. release also runs when the test ends.
+func holdFirstSubscribe(t *testing.T, s *FakeServer) (received chan struct{}, release func()) {
+	received = make(chan struct{})
+	releaseCh := make(chan struct{})
+	var releaseOnce, holdOnce sync.Once
+	release = func() { releaseOnce.Do(func() { close(releaseCh) }) }
+	t.Cleanup(release)
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Subscribe != nil {
+			held := false
+			holdOnce.Do(func() { held = true })
+			if held {
+				close(received)
+				<-releaseCh
+			}
+		}
+		return nil
+	}
+	return received, release
+}
+
+// subscriptionCommands lists the subscribe and unsubscribe commands the server
+// received for channel, in order.
+func subscriptionCommands(s *FakeServer, channel string) []string {
+	var commands []string
+	for _, cmd := range s.Received() {
+		switch {
+		case cmd.Subscribe != nil && cmd.Subscribe.Channel == channel:
+			commands = append(commands, "subscribe")
+		case cmd.Unsubscribe != nil && cmd.Unsubscribe.Channel == channel:
+			commands = append(commands, "unsubscribe")
+		}
+	}
+	return commands
+}
+
+func connectFakeClient(t *testing.T, s *FakeServer, config Config) *Client {
+	t.Helper()
+	client := NewProtobufClient(s.URL(), config)
+	t.Cleanup(client.Close)
+	connectedCh := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		select {
+		case connectedCh <- struct{}{}:
+		default:
+		}
+	})
+	_ = client.Connect()
+	waitCh(t, connectedCh, "connected")
+	return client
+}
+
+func TestSubscribeAfterUnsubscribeWithSubscribePending(t *testing.T) {
+	s := NewFakeServer(t)
+	subscribeReceived, releaseSubscribe := holdFirstSubscribe(t, s)
+	client := connectFakeClient(t, s, Config{})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribedCh := make(chan struct{}, 4)
+	sub.OnSubscribed(func(SubscribedEvent) { subscribedCh <- struct{}{} })
+
+	_ = sub.Subscribe()
+	waitCh(t, subscribeReceived, "subscribe command")
+	_ = sub.Unsubscribe()
+	_ = sub.Subscribe()
+	releaseSubscribe()
+	waitCh(t, subscribedCh, "subscribed")
+	time.Sleep(200 * time.Millisecond)
+
+	commands := subscriptionCommands(s, "news")
+	if len(commands) == 0 || commands[len(commands)-1] != "subscribe" {
+		t.Fatalf("client subscribed, but the server received %v: it has no subscription", commands)
+	}
+	if state := sub.State(); state != SubStateSubscribed {
+		t.Fatalf("expected subscribed, got %s", state)
+	}
+}
+
+func TestServerUnsubscribeWithSubscribePendingCleansUp(t *testing.T) {
+	s := NewFakeServer(t)
+	subscribeReceived, releaseSubscribe := holdFirstSubscribe(t, s)
+	client := connectFakeClient(t, s, Config{})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsubscribedCh := make(chan UnsubscribedEvent, 2)
+	sub.OnUnsubscribed(func(e UnsubscribedEvent) { unsubscribedCh <- e })
+
+	_ = sub.Subscribe()
+	waitCh(t, subscribeReceived, "subscribe command")
+	s.UnsubscribePush("news", 2000, "unsubscribed by server")
+	waitCh(t, unsubscribedCh, "unsubscribed")
+	releaseSubscribe()
+	time.Sleep(200 * time.Millisecond)
+
+	commands := subscriptionCommands(s, "news")
+	if len(commands) == 0 || commands[len(commands)-1] != "unsubscribe" {
+		t.Fatalf("the server applied the pending subscribe and received %v after it: it keeps a subscription the client doesn't track", commands)
+	}
+	if state := sub.State(); state != SubStateUnsubscribed {
+		t.Fatalf("expected unsubscribed, got %s", state)
+	}
+}
+
+func TestJoinLeaveNotEmittedWhenNotSubscribed(t *testing.T) {
+	s := NewFakeServer(t)
+	client := connectFakeClient(t, s, Config{})
+	sub, err := client.NewSubscription("news", SubscriptionConfig{JoinLeave: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribedCh := make(chan struct{}, 1)
+	sub.OnSubscribed(func(SubscribedEvent) { subscribedCh <- struct{}{} })
+	joinCh := make(chan JoinEvent, 4)
+	sub.OnJoin(func(e JoinEvent) { joinCh <- e })
+	leaveCh := make(chan LeaveEvent, 4)
+	sub.OnLeave(func(e LeaveEvent) { leaveCh <- e })
+	join := &protocol.Push{Channel: "news", Join: &protocol.Join{Info: &protocol.ClientInfo{Client: "other"}}}
+	leave := &protocol.Push{Channel: "news", Leave: &protocol.Leave{Info: &protocol.ClientInfo{Client: "other"}}}
+
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+	s.SendPush(join)
+	waitCh(t, joinCh, "join while subscribed")
+
+	_ = sub.Unsubscribe()
+	s.SendPush(join)
+	s.SendPush(leave)
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-joinCh:
+		t.Fatal("join emitted after unsubscribe")
+	case <-leaveCh:
+		t.Fatal("leave emitted after unsubscribe")
+	default:
+	}
+}
+
+func TestSubscriptionCallFailsWhenUnsubscribedWhileSubscribing(t *testing.T) {
+	s := NewFakeServer(t)
+	subscribeReceived, _ := holdFirstSubscribe(t, s)
+	client := connectFakeClient(t, s, Config{ReadTimeout: 3 * time.Second})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sub.Subscribe()
+	waitCh(t, subscribeReceived, "subscribe command")
+
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := sub.Publish(context.Background(), []byte(`{}`))
+		resultCh <- err
+	}()
+	// Let Publish wait for the subscription.
+	time.Sleep(50 * time.Millisecond)
+	_ = sub.Unsubscribe()
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, ErrSubscriptionUnsubscribed) {
+			t.Fatalf("expected ErrSubscriptionUnsubscribed, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Publish still waiting 1s after Unsubscribe()")
+	}
+}
+
 // fastReconnectConfig returns a Config with short reconnect delays so stress
 // tests do not spend most of their time waiting for backoff timers.
 func fastReconnectConfig() Config {
