@@ -7,6 +7,7 @@ package centrifuge
 
 import (
 	"testing"
+	"time"
 
 	"github.com/centrifugal/protocol"
 )
@@ -16,7 +17,10 @@ func TestInvalidateStateClearsTokenAndDeltaBase(t *testing.T) {
 	client := NewProtobufClient(server.URL(), Config{})
 	t.Cleanup(client.Close)
 
-	sub, err := client.NewSubscription("ch", SubscriptionConfig{Token: "sub-token"})
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		Token:    "sub-token",
+		GetToken: func(SubscriptionTokenEvent) (string, error) { return "new-sub-token", nil },
+	})
 	if err != nil {
 		t.Fatalf("new subscription: %v", err)
 	}
@@ -41,12 +45,39 @@ func TestInvalidateStateClearsTokenAndDeltaBase(t *testing.T) {
 	}
 }
 
-func TestInvalidateConnectionStateClearsTokenAndAllSubs(t *testing.T) {
+func TestInvalidateStateKeepsTokenWithoutGetToken(t *testing.T) {
 	server := NewFakeServer(t)
-	client := NewProtobufClient(server.URL(), Config{Token: "conn-token"})
+	client := NewProtobufClient(server.URL(), Config{})
 	t.Cleanup(client.Close)
 
 	sub, err := client.NewSubscription("ch", SubscriptionConfig{Token: "sub-token"})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	sub.prevData = []byte("stale-delta-base")
+
+	sub.invalidateState()
+
+	if sub.token != "sub-token" {
+		t.Fatalf("a token without GetToken can't be replaced and must be kept, got %q", sub.token)
+	}
+	if sub.prevData != nil {
+		t.Fatalf("delta base must be cleared, got %q", sub.prevData)
+	}
+}
+
+func TestInvalidateConnectionStateClearsTokenAndAllSubs(t *testing.T) {
+	server := NewFakeServer(t)
+	client := NewProtobufClient(server.URL(), Config{
+		Token:    "conn-token",
+		GetToken: func(ConnectionTokenEvent) (string, error) { return "new-conn-token", nil },
+	})
+	t.Cleanup(client.Close)
+
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		Token:    "sub-token",
+		GetToken: func(SubscriptionTokenEvent) (string, error) { return "new-sub-token", nil },
+	})
 	if err != nil {
 		t.Fatalf("new subscription: %v", err)
 	}
@@ -146,13 +177,78 @@ func TestDisconnect3014ResetsServerSubRecoveryPositionOnWire(t *testing.T) {
 	}
 }
 
+func TestStateInvalidationWithoutGetTokenReconnectsWithCurrentToken(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{name: "static token", token: "static-token"},
+		{name: "anonymous"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewFakeServer(t)
+			client := NewProtobufClient(server.URL(), Config{
+				Token:             tc.token,
+				MinReconnectDelay: 10 * time.Millisecond,
+				MaxReconnectDelay: 20 * time.Millisecond,
+			})
+			t.Cleanup(client.Close)
+			errCh := make(chan error, 4)
+			client.OnError(func(e ErrorEvent) {
+				select {
+				case errCh <- e.Error:
+				default:
+				}
+			})
+			disconnectedCh := make(chan DisconnectedEvent, 1)
+			client.OnDisconnected(func(e DisconnectedEvent) { disconnectedCh <- e })
+
+			sub, err := client.NewSubscription("ch", SubscriptionConfig{Token: "sub-token"})
+			if err != nil {
+				t.Fatalf("new subscription: %v", err)
+			}
+			subscribedCh := make(chan SubscribedEvent, 4)
+			sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+
+			_ = client.Connect()
+			_ = sub.Subscribe()
+			waitCh(t, subscribedCh, "subscribed")
+
+			server.DisconnectPush(disconnectedStateInvalidated, "state invalidated")
+			select {
+			case <-subscribedCh:
+			case e := <-disconnectedCh:
+				t.Fatalf("client without GetToken disconnected after 3014 (code %d, %q) instead of reconnecting", e.Code, e.Reason)
+			case <-time.After(3 * time.Second):
+				t.Fatal("timeout waiting for resubscribe after 3014")
+			}
+			received := server.Received()
+			for i := len(received) - 1; i >= 0; i-- {
+				if received[i].Connect != nil {
+					if token := received[i].Connect.Token; token != tc.token {
+						t.Fatalf("reconnect after 3014 must use the client's token %q, got %q", tc.token, token)
+					}
+					break
+				}
+			}
+			if token := server.LastSubscribe().Token; token != "sub-token" {
+				t.Fatalf("resubscribe after 3014 must use the subscription's token, got %q", token)
+			}
+			select {
+			case err := <-errCh:
+				t.Fatalf("unexpected error: %v", err)
+			default:
+			}
+		})
+	}
+}
+
 func TestUnsubscribe2502InvalidatesAndResubscribes(t *testing.T) {
 	server := NewFakeServer(t)
 	client := NewProtobufClient(server.URL(), Config{})
 	t.Cleanup(client.Close)
 
-	// Initial token, no GetToken — so after invalidation the token stays empty
-	// (nothing repopulates it), letting us observe the clear deterministically.
+	// A token without GetToken can't be replaced, so it's kept.
 	sub, err := client.NewSubscription("ch", SubscriptionConfig{Token: "sub-token"})
 	if err != nil {
 		t.Fatalf("new subscription: %v", err)
@@ -175,8 +271,11 @@ func TestUnsubscribe2502InvalidatesAndResubscribes(t *testing.T) {
 	sub.mu.Lock()
 	token, prevData := sub.token, sub.prevData
 	sub.mu.Unlock()
-	if token != "" {
-		t.Fatalf("subscription token must be cleared by 2502, got %q", token)
+	if token != "sub-token" {
+		t.Fatalf("a token without GetToken must be kept after 2502, got %q", token)
+	}
+	if resubscribeToken := server.LastSubscribe().Token; resubscribeToken != "sub-token" {
+		t.Fatalf("resubscribe after 2502 must send the kept token, got %q", resubscribeToken)
 	}
 	if prevData != nil {
 		t.Fatalf("delta base must be cleared by 2502, got %q", prevData)

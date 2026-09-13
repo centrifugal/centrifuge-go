@@ -794,13 +794,17 @@ func (c *Client) clearConnectedState() {
 }
 
 // invalidateConnectionState handles a "state invalidated" disconnect (code
-// 3014): it drops the connection token (so a fresh one is fetched via GetToken
-// on reconnect, via refreshRequired) and invalidates every subscription's
-// cached state. The actual reconnect is performed by the caller.
+// 3014): a client with GetToken drops the connection token (so a fresh one is
+// fetched on reconnect, via refreshRequired), and every subscription's cached
+// state is invalidated. A client without GetToken reconnects with the token it
+// has; the server rejects it if it's no longer valid. The actual reconnect is
+// performed by the caller.
 func (c *Client) invalidateConnectionState() {
 	c.mu.Lock()
-	c.token = ""
-	c.refreshRequired = true
+	if c.config.GetToken != nil {
+		c.token = ""
+		c.refreshRequired = true
+	}
 	subs := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
 		subs = append(subs, s)
@@ -1457,7 +1461,7 @@ func (c *Client) startReconnecting() error {
 		c.state = StateConnected
 
 		if res.Expires {
-			c.refreshTimer = time.AfterFunc(time.Duration(res.Ttl)*time.Second, c.sendRefresh)
+			c.scheduleRefreshLocked(time.Duration(res.Ttl) * time.Second)
 		}
 		c.resolveConnectFutures(nil)
 		if c.logLevelEnabled(LogLevelDebug) {
@@ -1691,8 +1695,18 @@ func (c *Client) refreshToken() (string, error) {
 	return handler(ConnectionTokenEvent{})
 }
 
-func (c *Client) sendRefresh() {
+// sendRefresh refreshes the connection token for the connected session with the
+// given generation. It stops as soon as that session has ended: continued on a
+// newer connection it would run next to that connection's own refresh, and its
+// token could replace one set with SetToken in the meantime.
+func (c *Client) sendRefresh(generation int64) {
+	if !c.isRefreshCurrent(generation) {
+		return
+	}
 	token, err := c.refreshToken()
+	if !c.isRefreshCurrent(generation) {
+		return
+	}
 	if err != nil {
 		if errors.Is(err, ErrUnauthorized) {
 			c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
@@ -1701,10 +1715,20 @@ func (c *Client) sendRefresh() {
 		c.handleError(RefreshError{err})
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		c.handleRefreshError()
+		c.handleRefreshError(generation)
+		return
+	}
+	if token == "" {
+		// Like centrifuge-js: an empty token from GetToken during refresh means
+		// the client may not stay connected.
+		c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
 		return
 	}
 	c.mu.Lock()
+	if !c.isRefreshCurrentLocked(generation) {
+		c.mu.Unlock()
+		return
+	}
 	c.token = token
 	c.mu.Unlock()
 
@@ -1712,32 +1736,31 @@ func (c *Client) sendRefresh() {
 		Id: c.nextCmdID(),
 	}
 	params := &protocol.RefreshRequest{
-		Token: c.token,
+		Token: token,
 	}
 	cmd.Refresh = params
 
 	_ = c.sendAsync(cmd, func(r *protocol.Reply, err error) {
+		if !c.isRefreshCurrent(generation) {
+			// E.g. failed with ErrClientDisconnected by the teardown of the
+			// connection the refresh was sent on.
+			return
+		}
 		if err != nil {
 			c.handleError(RefreshError{err})
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			c.handleRefreshError()
+			c.handleRefreshError(generation)
 			return
 		}
 		if r.Error != nil {
-			c.mu.Lock()
-			if c.state != StateConnected {
-				c.mu.Unlock()
-				return
-			}
-			c.mu.Unlock()
 			if r.Error.Temporary {
 				// Must not hold c.mu here: handleError takes c.mu to reach the
 				// callback queue and waits for the OnError handler to run.
 				c.handleError(RefreshError{errorFromProto(r.Error)})
 				c.mu.Lock()
 				defer c.mu.Unlock()
-				c.handleRefreshError()
+				c.handleRefreshError(generation)
 			} else {
 				c.moveToDisconnected(r.Error.Code, r.Error.Message)
 			}
@@ -1747,8 +1770,8 @@ func (c *Client) sendRefresh() {
 		ttl := r.Refresh.Ttl
 		if expires {
 			c.mu.Lock()
-			if c.state == StateConnected {
-				c.refreshTimer = time.AfterFunc(time.Duration(ttl)*time.Second, c.sendRefresh)
+			if c.isRefreshCurrentLocked(generation) {
+				c.scheduleRefreshLocked(time.Duration(ttl) * time.Second)
 			}
 			c.mu.Unlock()
 		}
@@ -1756,11 +1779,37 @@ func (c *Client) sendRefresh() {
 }
 
 // Lock must be held outside.
-func (c *Client) handleRefreshError() {
-	if c.state != StateConnected {
+func (c *Client) handleRefreshError(generation int64) {
+	if !c.isRefreshCurrentLocked(generation) {
 		return
 	}
-	c.refreshTimer = time.AfterFunc(10*time.Second, c.sendRefresh)
+	c.scheduleRefreshLocked(10 * time.Second)
+}
+
+// scheduleRefreshLocked arms the connection token refresh for the current
+// connected session, replacing a refresh armed before. Lock must be held
+// outside.
+func (c *Client) scheduleRefreshLocked(delay time.Duration) {
+	if c.refreshTimer != nil {
+		c.refreshTimer.Stop()
+	}
+	generation := c.connGeneration.Load()
+	c.refreshTimer = time.AfterFunc(delay, func() {
+		c.sendRefresh(generation)
+	})
+}
+
+// isRefreshCurrent reports whether the connected session with the given
+// generation is still the current one.
+func (c *Client) isRefreshCurrent(generation int64) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.isRefreshCurrentLocked(generation)
+}
+
+// Lock must be held outside.
+func (c *Client) isRefreshCurrentLocked(generation int64) bool {
+	return c.state == StateConnected && c.connGeneration.Load() == generation
 }
 
 func (c *Client) sendSubRefresh(channel string, token string, fn func(*protocol.SubRefreshResult, error)) {
