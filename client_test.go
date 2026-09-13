@@ -1083,6 +1083,103 @@ func TestCloseWithQueuedHandlerCallingClient(t *testing.T) {
 	}
 }
 
+// failingWriteTransport fails every write after running beforeFail, a hook to
+// interleave a teardown with the failing write.
+type failingWriteTransport struct {
+	beforeFail func()
+}
+
+func (t *failingWriteTransport) Read() (*protocol.Reply, *disconnect, error) {
+	select {}
+}
+
+func (t *failingWriteTransport) Write(*protocol.Command, time.Duration) error {
+	if t.beforeFail != nil {
+		t.beforeFail()
+	}
+	return errors.New("write failed")
+}
+
+func (t *failingWriteTransport) Close() error {
+	return nil
+}
+
+func TestCallReturnsWhenSendFailsDuringTeardown(t *testing.T) {
+	client := NewProtobufClient("ws://127.0.0.1:1/connection/websocket", Config{
+		MinReconnectDelay: 10 * time.Second,
+		MaxReconnectDelay: 20 * time.Second,
+	})
+	closeOnCleanup(t, client)
+	ft := &failingWriteTransport{}
+	ft.beforeFail = func() {
+		// The connection is torn down while the command is written: the
+		// teardown fails every pending request, this one included.
+		client.mu.Lock()
+		client.clearConnectedState()
+		client.mu.Unlock()
+		time.Sleep(50 * time.Millisecond)
+	}
+	client.mu.Lock()
+	client.state = StateConnected
+	client.transport = ft
+	client.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := client.Publish(ctx, "ch", []byte(`{}`))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error for a publish whose send failed")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Publish never returned after its send failed during a teardown, despite its 1s context")
+	}
+}
+
+func TestCallCompletesWithReplyReceivedBeforeTimeout(t *testing.T) {
+	s := NewFakeServer(t)
+	const readTimeout = 150 * time.Millisecond
+	client := connectFakeClient(t, s, Config{ReadTimeout: readTimeout})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribedCh := make(chan struct{}, 1)
+	sub.OnSubscribed(func(SubscribedEvent) { subscribedCh <- struct{}{} })
+	inHandler := make(chan struct{}, 1)
+	releaseHandler := make(chan struct{})
+	var once sync.Once
+	sub.OnPublication(func(PublicationEvent) {
+		once.Do(func() {
+			inHandler <- struct{}{}
+			<-releaseHandler
+		})
+	})
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+
+	// Keep the reader busy, like a suspended process: the publish reply waits
+	// unprocessed while the call's timeout fires.
+	s.PublishChannel("news", []byte(`{}`))
+	waitCh(t, inHandler, "publication handler")
+	resultCh := make(chan error, 1)
+	go func() {
+		_, err := client.Publish(context.Background(), "x", []byte(`{}`))
+		resultCh <- err
+	}()
+	time.Sleep(readTimeout + 25*time.Millisecond)
+	close(releaseHandler)
+
+	if err := waitCh(t, resultCh, "publish result"); err != nil {
+		t.Fatalf("publish failed with %v although its reply was received when the timeout fired", err)
+	}
+}
+
 // fastReconnectConfig returns a Config with short reconnect delays so stress
 // tests do not spend most of their time waiting for backoff timers.
 func fastReconnectConfig() Config {

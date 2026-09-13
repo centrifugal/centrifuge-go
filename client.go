@@ -2328,11 +2328,21 @@ func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, erro
 	}
 }
 
+// callTimeoutGrace is how long a call whose timeout fired still waits for a
+// reply that was received but not processed yet.
+const callTimeoutGrace = 50 * time.Millisecond
+
 func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error)) error {
 	c.addRequest(cmd.Id, cb)
 
 	err := c.send(cmd)
 	if err != nil {
+		// The caller handles the error, so cb must not run as well. A teardown
+		// racing with the failed send may have taken the request already and
+		// run cb with ErrClientDisconnected: then the caller must not handle it.
+		if _, ok := c.popRequest(cmd.Id); !ok {
+			return nil
+		}
 		return err
 	}
 	go func() {
@@ -2341,6 +2351,11 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 		c.mu.Unlock()
 		select {
 		case <-time.After(c.config.ReadTimeout):
+			// The reply may have been received already but not processed yet,
+			// e.g. when a suspended process resumes and this overdue timer runs
+			// before the reader handles the data waiting in the socket. Let that
+			// data be processed first, like centrifuge-js does.
+			time.Sleep(callTimeoutGrace)
 			req, ok := c.popRequest(cmd.Id)
 			if !ok {
 				return
