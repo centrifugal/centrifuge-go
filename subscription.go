@@ -919,6 +919,7 @@ func (s *Subscription) resubscribe() {
 	// with a valid saved position we skip GetState and let the server try
 	// recovery — GetState is only called again if recovery fails.
 	needGetState := s.getState != nil && !s.recover
+	needToken := s.token == "" && s.getToken != nil
 	s.inflight.Store(true)
 	s.mu.Unlock()
 
@@ -930,7 +931,13 @@ func (s *Subscription) resubscribe() {
 		go s.getStateAndResubscribe()
 		return
 	}
-	s.continueResubscribe()
+	if needToken {
+		// GetToken runs on its own goroutine for the same reasons. Its failure
+		// is also reported through event handlers, which take the client mutex.
+		go s.continueResubscribe(true)
+		return
+	}
+	s.continueResubscribe(false)
 }
 
 func (s *Subscription) getStateAndResubscribe() {
@@ -961,18 +968,25 @@ func (s *Subscription) getStateAndResubscribe() {
 	s.offset = sp.Offset
 	s.epoch = sp.Epoch
 	s.mu.Unlock()
-	s.continueResubscribe()
+	s.continueResubscribe(true)
 }
 
 // continueResubscribe is the part of the subscribe flow after the optional
 // GetState step: token retrieval and sending the subscribe command. Called
-// with inflight already set to true.
-func (s *Subscription) continueResubscribe() {
+// with inflight already set to true. async means it runs on its own
+// goroutine, the only place where GetToken may be called.
+func (s *Subscription) continueResubscribe(async bool) {
 	s.mu.Lock()
 	token := s.token
 	s.mu.Unlock()
 
 	if token == "" && s.getToken != nil {
+		if !async {
+			// The token was cleared (e.g. by state invalidation) after
+			// resubscribe checked it.
+			go s.continueResubscribe(true)
+			return
+		}
 		var err error
 		token, err = s.getSubscriptionToken(s.Channel)
 		if err != nil {
