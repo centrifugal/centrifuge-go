@@ -1785,13 +1785,17 @@ func TestDeltaAfterRecoveryWithoutPublications(t *testing.T) {
 	if _, err := publisher.Publish(context.Background(), channel, []byte(deltaTestPayload(2))); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if got := waitCh(t, publications, "publication after the recovery"); got != deltaTestPayload(2) {
-		t.Fatalf("publication decoded to %q, published %q", got, deltaTestPayload(2))
-	}
 	select {
+	case got := <-publications:
+		if got != deltaTestPayload(2) {
+			t.Fatalf("publication decoded to %q, published %q", got, deltaTestPayload(2))
+		}
 	case err := <-errCh:
-		t.Fatalf("unexpected error: %v", err)
-	default:
+		// E.g. a DeltaError: the server sent a delta against a publication the
+		// client never received.
+		t.Fatalf("error instead of the publication after the recovery: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for the publication after the recovery")
 	}
 	if state := client.State(); state != StateConnected {
 		t.Fatalf("expected connected, got %s", state)
