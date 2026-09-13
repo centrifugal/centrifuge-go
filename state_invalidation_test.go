@@ -6,6 +6,7 @@ package centrifuge
 // re-synced. Exercised against the in-process FakeServer.
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -279,6 +280,93 @@ func TestUnsubscribe2502InvalidatesAndResubscribes(t *testing.T) {
 	}
 	if prevData != nil {
 		t.Fatalf("delta base must be cleared by 2502, got %q", prevData)
+	}
+}
+
+// blockFirstCall returns a channel signalled when the first call starts and a
+// release function that lets it return; release also runs on cleanup.
+func blockFirstCall(t *testing.T) (chan struct{}, <-chan struct{}, func()) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var released atomic.Bool
+	releaseFn := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}
+	t.Cleanup(releaseFn)
+	return started, release, releaseFn
+}
+
+// invalidateWhilePending sends a 2502 for ch once the subscription's first
+// GetToken or GetState call started, and lets that call return afterwards.
+func invalidateWhilePending(t *testing.T, server *FakeServer, sub *Subscription, started chan struct{}, release func()) {
+	t.Helper()
+	waitCh(t, started, "the first call")
+	server.UnsubscribePush(sub.Channel, unsubscribedStateInvalidated, "state invalidated")
+	waitCondition(t, "the state invalidation", func() bool {
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		return sub.epoch == stateInvalidatedEpoch
+	})
+	release()
+}
+
+func TestUnsubscribe2502DiscardsPendingSubscriptionToken(t *testing.T) {
+	server := NewFakeServer(t)
+	client := connectFakeClient(t, server, Config{})
+	started, release, releaseFn := blockFirstCall(t)
+	var calls atomic.Int32
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		GetToken: func(SubscriptionTokenEvent) (string, error) {
+			if calls.Add(1) == 1 {
+				started <- struct{}{}
+				<-release
+				return "token-before-invalidation", nil
+			}
+			return "token-after-invalidation", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	subscribedCh := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	_ = sub.Subscribe()
+
+	invalidateWhilePending(t, server, sub, started, releaseFn)
+	waitCh(t, subscribedCh, "subscribed")
+	if token := server.LastSubscribe().Token; token != "token-after-invalidation" {
+		t.Fatalf("the subscribe must use a token obtained after the invalidation, got %q", token)
+	}
+}
+
+func TestUnsubscribe2502DiscardsPendingGetState(t *testing.T) {
+	server := NewFakeServer(t)
+	client := connectFakeClient(t, server, Config{})
+	started, release, releaseFn := blockFirstCall(t)
+	var calls atomic.Int32
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		GetState: func(SubscriptionGetStateEvent) (StreamPosition, error) {
+			if calls.Add(1) == 1 {
+				started <- struct{}{}
+				<-release
+				return StreamPosition{Offset: 5, Epoch: "before"}, nil
+			}
+			return StreamPosition{Offset: 7, Epoch: "after"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	subscribedCh := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	_ = sub.Subscribe()
+
+	invalidateWhilePending(t, server, sub, started, releaseFn)
+	waitCh(t, subscribedCh, "subscribed")
+	if req := server.LastSubscribe(); !req.Recover || req.Offset != 7 || req.Epoch != "after" {
+		t.Fatalf("the subscribe must use the position GetState returned after the invalidation, got recover=%v offset=%d epoch=%q", req.Recover, req.Offset, req.Epoch)
 	}
 }
 
