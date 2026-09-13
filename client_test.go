@@ -1292,6 +1292,68 @@ func TestOutdatedSubscribeErrorDoesNotUnsubscribeNewAttempt(t *testing.T) {
 	}
 }
 
+func TestCloseDuringConnectFailsWaitingCallsAndReportsDisconnect(t *testing.T) {
+	s := NewFakeServer(t)
+	connectReceived := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseConnect := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseConnect)
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Connect != nil {
+			select {
+			case connectReceived <- struct{}{}:
+			default:
+			}
+			<-release
+		}
+		return nil
+	}
+	client := NewProtobufClient(s.URL(), Config{ReadTimeout: 3 * time.Second})
+	events := make(chan string, 4)
+	client.OnDisconnected(func(DisconnectedEvent) { events <- "disconnected" })
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub.OnUnsubscribed(func(UnsubscribedEvent) { events <- "unsubscribed" })
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, connectReceived, "connect")
+
+	callErr := make(chan error, 1)
+	client.onConnect(func(err error) { callErr <- err })
+	// The closing step of Close runs while the client connects, as after a
+	// Connect from another goroutine inside Close.
+	client.moveToClosed()
+	select {
+	case err := <-callErr:
+		if !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("expected ErrClientClosed for a call waiting for the connect, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a call waiting for the connect wasn't failed by Close")
+	}
+	// Reported like Close's own disconnect step: disconnected, then unsubscribed.
+	if ev := waitCh(t, events, "the disconnected event"); ev != "disconnected" {
+		t.Fatalf("expected the disconnected event first, got %s", ev)
+	}
+	if ev := waitCh(t, events, "the unsubscribed event"); ev != "unsubscribed" {
+		t.Fatalf("expected the unsubscribed event after disconnected, got %s", ev)
+	}
+
+	// A call racing with Close that gets to the client after it.
+	client.onConnect(func(err error) { callErr <- err })
+	select {
+	case err := <-callErr:
+		if !errors.Is(err, ErrClientClosed) {
+			t.Fatalf("expected ErrClientClosed for a call after Close, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a call after Close waits instead of failing")
+	}
+}
+
 func TestCallCompletesWithReplyReceivedBeforeTimeout(t *testing.T) {
 	s := NewFakeServer(t)
 	const readTimeout = 150 * time.Millisecond

@@ -279,6 +279,69 @@ func TestSubscriptionDoesNotSubscribeWhileClientConnects(t *testing.T) {
 	}
 }
 
+func TestStaleConnectErrorDoesNotDisconnectNewerConnection(t *testing.T) {
+	s := NewFakeServer(t)
+	var connects atomic.Int32
+	connectReceived := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReply := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseReply)
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Connect != nil && connects.Add(1) == 1 {
+			connectReceived <- struct{}{}
+			<-release
+			return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 101, Message: "unauthorized"}}
+		}
+		return nil
+	}
+	client := NewProtobufClient(s.URL(), Config{})
+	closeOnCleanup(t, client)
+	connected := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+
+	_ = client.Connect()
+	waitCh(t, connectReceived, "first connect")
+	waitCondition(t, "the first transport", func() bool {
+		client.transportMu.RLock()
+		defer client.transportMu.RUnlock()
+		return client.transport != nil
+	})
+	client.transportMu.RLock()
+	first := client.transport.(*websocketTransport)
+	client.transportMu.RUnlock()
+
+	// Closing the first transport, which the handling of its permanent connect
+	// error does after its attempt check, now waits for the test, as a close
+	// frame write on a stalled network does.
+	first.mu.Lock()
+	releaseReply()
+	waitCondition(t, "the connect error to be handled", func() bool {
+		client.transportMu.RLock()
+		defer client.transportMu.RUnlock()
+		return client.transport == nil
+	})
+	// Meanwhile the application reconnects.
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	waitCh(t, connected, "the newer connection")
+	first.mu.Unlock()
+
+	time.Sleep(200 * time.Millisecond)
+	if state := client.State(); state != StateConnected {
+		t.Fatalf("the error of an abandoned connect attempt ended the newer connection: state %s", state)
+	}
+}
+
 // Subscription tokens fetched when subscriptions resubscribe on connect. That
 // resubscribe runs while the connect reply callback holds the client mutex, so
 // GetToken must not run there: a failure is reported through event handlers,
