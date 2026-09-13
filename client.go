@@ -57,8 +57,12 @@ type Client struct {
 	transport      transport
 	disconnectedCh chan struct{}
 	state          State
-	subs           map[string]*Subscription
-	serverSubs     map[string]*serverSub
+	// connected mirrors state == StateConnected (see setStateLocked) for
+	// subscriptions, which check it under their own lock, sometimes with mu
+	// held as well.
+	connected  atomic.Bool
+	subs       map[string]*Subscription
+	serverSubs map[string]*serverSub
 	// Channel compaction: numeric channel ID → subscription, used to route pushes
 	// that carry an ID instead of the string channel name. Guarded by its own leaf
 	// mutex (never held while calling into Client or Subscription methods) because
@@ -401,6 +405,12 @@ func (c *Client) isConnected() bool {
 	return c.state == StateConnected
 }
 
+// setStateLocked changes the client state. Lock must be held outside.
+func (c *Client) setStateLocked(state State) {
+	c.state = state
+	c.connected.Store(state == StateConnected)
+}
+
 func (c *Client) isClosed() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -475,7 +485,7 @@ func (c *Client) moveToDisconnectedFrom(t transport, code uint32, reason string)
 	}
 
 	prevState := c.state
-	c.state = StateDisconnected
+	c.setStateLocked(StateDisconnected)
 	c.clearConnectedState()
 	c.resolveConnectFutures(ErrClientDisconnected)
 
@@ -574,7 +584,7 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 		c.setTransportLocked(nil)
 	}
 
-	c.state = StateConnecting
+	c.setStateLocked(StateConnecting)
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "client moved to connecting state", nil)
 	}
@@ -686,7 +696,16 @@ func (c *Client) moveToClosed() {
 		c.mu.Unlock()
 		return
 	}
-	c.state = StateClosed
+	c.setStateLocked(StateClosed)
+	// Close disconnects before it gets here, but a Connect from another
+	// goroutine or an event handler may have connected since: stop that
+	// connection too, or waiting for its reader below never ends.
+	c.connectAttempt++
+	if c.transport != nil {
+		_ = c.transport.Close()
+		c.setTransportLocked(nil)
+	}
+	c.clearConnectedState()
 
 	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
@@ -1461,7 +1480,7 @@ func (c *Client) startReconnecting() error {
 				"client_id": res.Client,
 			})
 		}
-		c.state = StateConnected
+		c.setStateLocked(StateConnected)
 
 		if res.Expires {
 			c.scheduleRefreshLocked(time.Duration(res.Ttl) * time.Second)
@@ -1499,6 +1518,14 @@ func (c *Client) startReconnecting() error {
 
 		for channel, subRes := range res.Subs {
 			c.mu.Lock()
+			if !c.isConnectedAttemptLocked(attempt) {
+				// A handler tore this connection down, and a newer connection may
+				// have stored its own server-side subscriptions since: this reply
+				// changes nothing more. Recovered publications not delivered are
+				// recovered on the next connect from the positions kept.
+				c.mu.Unlock()
+				break
+			}
 			sub, ok := c.serverSubs[channel]
 			if ok {
 				sub.Epoch = subRes.Epoch
@@ -1514,14 +1541,7 @@ func (c *Client) startReconnecting() error {
 				sub.Offset = subRes.Offset
 			}
 			c.serverSubs[channel] = sub
-			current := c.isConnectedAttemptLocked(attempt)
 			c.mu.Unlock()
-			if !current {
-				// A handler tore this connection down: positions are still stored,
-				// but no more events of this connection are emitted. Recovered
-				// publications not delivered are recovered on the next connect.
-				continue
-			}
 
 			if subscribeHandler != nil {
 				c.runHandlerSync(func() {
@@ -1568,6 +1588,10 @@ func (c *Client) startReconnecting() error {
 		// them so they are not recovered on next connect and a later subscribe
 		// push for the same channel is not ignored.
 		c.mu.Lock()
+		if !c.isConnectedAttemptLocked(attempt) {
+			c.mu.Unlock()
+			return
+		}
 		serverUnsubscribedChannels := make([]string, 0)
 		for ch := range c.serverSubs {
 			if _, ok := res.Subs[ch]; !ok {
@@ -1659,7 +1683,7 @@ func (c *Client) startConnecting() error {
 	if c.closeCh == nil {
 		c.closeCh = make(chan struct{})
 	}
-	c.state = StateConnecting
+	c.setStateLocked(StateConnecting)
 	c.mu.Unlock()
 
 	var handler ConnectingHandler
