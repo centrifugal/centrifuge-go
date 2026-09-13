@@ -1499,6 +1499,14 @@ func (c *Client) startReconnecting() error {
 
 		for channel, subRes := range res.Subs {
 			c.mu.Lock()
+			if !c.isConnectedAttemptLocked(attempt) {
+				// A handler tore this connection down, and a newer connection may
+				// have stored its own server-side subscriptions since: this reply
+				// changes nothing more. Recovered publications not delivered are
+				// recovered on the next connect from the positions kept.
+				c.mu.Unlock()
+				break
+			}
 			sub, ok := c.serverSubs[channel]
 			if ok {
 				sub.Epoch = subRes.Epoch
@@ -1514,14 +1522,7 @@ func (c *Client) startReconnecting() error {
 				sub.Offset = subRes.Offset
 			}
 			c.serverSubs[channel] = sub
-			current := c.isConnectedAttemptLocked(attempt)
 			c.mu.Unlock()
-			if !current {
-				// A handler tore this connection down: positions are still stored,
-				// but no more events of this connection are emitted. Recovered
-				// publications not delivered are recovered on the next connect.
-				continue
-			}
 
 			if subscribeHandler != nil {
 				c.runHandlerSync(func() {
@@ -1568,6 +1569,10 @@ func (c *Client) startReconnecting() error {
 		// them so they are not recovered on next connect and a later subscribe
 		// push for the same channel is not ignored.
 		c.mu.Lock()
+		if !c.isConnectedAttemptLocked(attempt) {
+			c.mu.Unlock()
+			return
+		}
 		serverUnsubscribedChannels := make([]string, 0)
 		for ch := range c.serverSubs {
 			if _, ok := res.Subs[ch]; !ok {
