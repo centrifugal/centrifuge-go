@@ -260,7 +260,6 @@ func (c *Client) Close() {
 	if c.isClosed() {
 		return
 	}
-	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
 	c.moveToClosed()
 	c.logCloseOnce.Do(func() {
 		close(c.logCloseCh)
@@ -700,19 +699,19 @@ func (c *Client) moveToClosed() {
 		c.mu.Unlock()
 		return
 	}
+	// Close is one transition: the closed state is set in the same lock hold as
+	// the connection is ended, so no Connect can start a new connection in
+	// between. Subscriptions are then unsubscribed and the disconnect reported,
+	// in that order, without moving through subscribing.
 	prevState := c.state
 	c.setStateLocked(StateClosed)
-	// Close disconnects before it gets here, but a Connect from another
-	// goroutine or an event handler may have started since: end that
-	// connection too (or waiting for its reader below never ends), fail the
-	// calls waiting for it and report the disconnect.
 	c.connectAttempt++
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.setTransportLocked(nil)
 	}
 	c.clearConnectedState()
-	c.resolveConnectFutures(ErrClientClosed)
+	c.resolveConnectFutures(ErrClientDisconnected)
 
 	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
@@ -730,20 +729,6 @@ func (c *Client) moveToClosed() {
 	}
 	c.mu.Unlock()
 
-	if prevState != StateDisconnected {
-		// The disconnect of a connection started during Close: reported before
-		// the unsubscribed events below, like Close's own disconnect step does.
-		var handler DisconnectHandler
-		if c.events != nil && c.events.onDisconnected != nil {
-			handler = c.events.onDisconnected
-		}
-		if handler != nil {
-			c.runHandlerAsync(func() {
-				handler(DisconnectedEvent{Code: disconnectedDisconnectCalled, Reason: "disconnect called"})
-			})
-		}
-	}
-
 	for _, s := range subsToUnsubscribe {
 		s.moveToUnsubscribed(unsubscribedClientClosed, "client closed")
 	}
@@ -758,6 +743,18 @@ func (c *Client) moveToClosed() {
 				serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
 			}
 		})
+	}
+
+	if prevState != StateDisconnected {
+		var handler DisconnectHandler
+		if c.events != nil && c.events.onDisconnected != nil {
+			handler = c.events.onDisconnected
+		}
+		if handler != nil {
+			c.runHandlerAsync(func() {
+				handler(DisconnectedEvent{Code: disconnectedDisconnectCalled, Reason: "disconnect called"})
+			})
+		}
 	}
 
 	c.mu.RLock()

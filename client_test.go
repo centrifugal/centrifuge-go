@@ -1233,21 +1233,68 @@ func TestSubscribeReplyDoesNotHoldSubscriptionLockForWaitingCalls(t *testing.T) 
 	}
 }
 
-func TestCloseStopsConnectionEstablishedDuringClose(t *testing.T) {
+func TestCloseUnsubscribesThenReportsDisconnect(t *testing.T) {
 	s := NewFakeServer(t)
-	client := connectFakeClient(t, s, Config{})
-	// Close disconnects and then closes. A Connect from another goroutine or an
-	// OnDisconnected handler can connect in between: the client is connected
-	// again when the closing step runs, which must stop that connection too.
-	done := make(chan struct{})
-	go func() {
-		client.moveToClosed()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("closing never returns for a connection established during Close")
+	s.ConnectResult = &protocol.ConnectResult{
+		Client: "fake-client",
+		Subs:   map[string]*protocol.SubscribeResult{"server-side": {}},
+	}
+	client := NewProtobufClient(s.URL(), Config{})
+	t.Cleanup(client.Close)
+
+	var closing atomic.Bool
+	events := make(chan string, 8)
+	record := func(event string) {
+		if closing.Load() {
+			events <- event
+		}
+	}
+	connected := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+	client.OnDisconnected(func(DisconnectedEvent) { record("client disconnected") })
+	client.OnSubscribing(func(ServerSubscribingEvent) { record("server-side subscribing") })
+	client.OnUnsubscribed(func(ServerUnsubscribedEvent) { record("server-side unsubscribed") })
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribed := make(chan struct{}, 1)
+	sub.OnSubscribed(func(SubscribedEvent) {
+		select {
+		case subscribed <- struct{}{}:
+		default:
+		}
+	})
+	sub.OnSubscribing(func(SubscribingEvent) { record("sub subscribing") })
+	sub.OnUnsubscribed(func(UnsubscribedEvent) { record("sub unsubscribed") })
+
+	_ = client.Connect()
+	waitCh(t, connected, "connected")
+	_ = sub.Subscribe()
+	waitCh(t, subscribed, "subscribed")
+
+	closing.Store(true)
+	client.Close()
+	close(events)
+	var got []string
+	for event := range events {
+		got = append(got, event)
+	}
+	// Close unsubscribes, then reports the disconnect, without moving the
+	// subscriptions through subscribing.
+	want := []string{"sub unsubscribed", "server-side unsubscribed", "client disconnected"}
+	if len(got) != len(want) {
+		t.Fatalf("events of Close: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("events of Close: got %v, want %v", got, want)
+		}
 	}
 	if state := client.State(); state != StateClosed {
 		t.Fatalf("expected closed state, got %s", state)
@@ -1323,23 +1370,21 @@ func TestCloseDuringConnectFailsWaitingCallsAndReportsDisconnect(t *testing.T) {
 
 	callErr := make(chan error, 1)
 	client.onConnect(func(err error) { callErr <- err })
-	// The closing step of Close runs while the client connects, as after a
-	// Connect from another goroutine inside Close.
-	client.moveToClosed()
+	client.Close()
 	select {
 	case err := <-callErr:
-		if !errors.Is(err, ErrClientClosed) {
-			t.Fatalf("expected ErrClientClosed for a call waiting for the connect, got %v", err)
+		if !errors.Is(err, ErrClientDisconnected) {
+			t.Fatalf("expected ErrClientDisconnected for a call waiting for the connect, got %v", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("a call waiting for the connect wasn't failed by Close")
 	}
-	// Reported like Close's own disconnect step: disconnected, then unsubscribed.
-	if ev := waitCh(t, events, "the disconnected event"); ev != "disconnected" {
-		t.Fatalf("expected the disconnected event first, got %s", ev)
-	}
+	// Close unsubscribes first, then reports the disconnect.
 	if ev := waitCh(t, events, "the unsubscribed event"); ev != "unsubscribed" {
-		t.Fatalf("expected the unsubscribed event after disconnected, got %s", ev)
+		t.Fatalf("expected the unsubscribed event first, got %s", ev)
+	}
+	if ev := waitCh(t, events, "the disconnected event"); ev != "disconnected" {
+		t.Fatalf("expected the disconnected event after unsubscribed, got %s", ev)
 	}
 
 	// A call racing with Close that gets to the client after it.
