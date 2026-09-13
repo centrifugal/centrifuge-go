@@ -197,13 +197,13 @@ func TestStaleSubscribeReplyDiscarded(t *testing.T) {
 	// Mechanism check: a reply stamped with the pre-teardown generation is
 	// discarded — the subscription stays subscribing.
 	res := &protocol.SubscribeResult{}
-	sub.moveToSubscribed(res, generationBeforeTeardown)
+	sub.moveToSubscribed(res, generationBeforeTeardown, sub.subscribeAttempt)
 	if sub.State() != SubStateSubscribing {
 		t.Fatalf("stale reply must be discarded, got state %s", sub.State())
 	}
 
 	// The same reply stamped with the current generation applies normally.
-	sub.moveToSubscribed(res, client.connGeneration.Load())
+	sub.moveToSubscribed(res, client.connGeneration.Load(), sub.subscribeAttempt)
 	if sub.State() != SubStateSubscribed {
 		t.Fatalf("reply with current generation must apply, got state %s", sub.State())
 	}
