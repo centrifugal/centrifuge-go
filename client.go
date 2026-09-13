@@ -36,11 +36,16 @@ const (
 // Close method to clean up state when you don't need client instance
 // anymore.
 type Client struct {
-	futureID       uint64
-	cmdID          uint32
-	mu             sync.RWMutex
-	endpoints      []string
-	round          int
+	futureID  uint64
+	cmdID     uint32
+	mu        sync.RWMutex
+	endpoints []string
+	round     int
+	// connectAttempt identifies the connect attempt in progress. It changes
+	// when a new attempt starts, when the transport of the attempt closes and
+	// when the client disconnects, so a superseded attempt stops at its next
+	// check instead of connecting. Guarded by mu.
+	connectAttempt uint64
 	protocolType   protocol.Type
 	config         Config
 	token          string
@@ -447,11 +452,19 @@ func (c *Client) sendRPC(ctx context.Context, method string, data []byte, fn fun
 }
 
 func (c *Client) moveToDisconnected(code uint32, reason string) {
+	c.moveToDisconnectedFrom(nil, code, reason)
+}
+
+// moveToDisconnectedFrom is moveToDisconnected for a disconnect reported for
+// transport t (nil when not tied to a transport). It does nothing when t is no
+// longer the client's current transport.
+func (c *Client) moveToDisconnectedFrom(t transport, code uint32, reason string) {
 	c.mu.Lock()
-	if c.state == StateDisconnected || c.state == StateClosed {
+	if c.state == StateDisconnected || c.state == StateClosed || (t != nil && c.transport != t) {
 		c.mu.Unlock()
 		return
 	}
+	c.connectAttempt++
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.transport = nil
@@ -509,6 +522,14 @@ func (c *Client) moveToDisconnected(code uint32, reason string) {
 }
 
 func (c *Client) moveToConnecting(code uint32, reason string) {
+	c.moveToConnectingFrom(nil, code, reason)
+}
+
+// moveToConnectingFrom is moveToConnecting for a disconnect reported for
+// transport t (nil when not tied to a transport). It does nothing when t is no
+// longer the client's current transport. When t belongs to the connect attempt
+// in progress, the attempt is retried right away: its connect reply won't come.
+func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "moving client to connecting state", map[string]string{
 			"code":   strconv.Itoa(int(code)),
@@ -516,6 +537,22 @@ func (c *Client) moveToConnecting(code uint32, reason string) {
 		})
 	}
 	c.mu.Lock()
+	if t != nil && c.transport != t {
+		c.mu.Unlock()
+		return
+	}
+	if t != nil && c.state == StateConnecting {
+		if c.logLevelEnabled(LogLevelDebug) {
+			c.log(LogLevelDebug, "transport closed while connecting, retry", nil)
+		}
+		c.connectAttempt++
+		c.transport = nil
+		_ = t.Close()
+		c.clearConnectedState()
+		c.scheduleReconnectLocked()
+		c.mu.Unlock()
+		return
+	}
 	if c.state == StateDisconnected || c.state == StateClosed || c.state == StateConnecting {
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "client already in state that does not require extra work", map[string]string{
@@ -776,11 +813,27 @@ func (c *Client) invalidateConnectionState() {
 }
 
 func (c *Client) handleDisconnect(d *disconnect) {
+	c.handleTransportDisconnect(nil, d)
+}
+
+// handleTransportDisconnect handles a disconnect reported for transport t (nil
+// when not tied to a transport). A report for a transport that was already
+// replaced or closed by a teardown is outdated: it must not tear down a newer
+// connection.
+func (c *Client) handleTransportDisconnect(t transport, d *disconnect) {
 	if d == nil {
 		d = &disconnect{
 			Code:      connectingTransportClosed,
 			Reason:    "transport closed",
 			Reconnect: true,
+		}
+	}
+	if t != nil {
+		c.mu.RLock()
+		current := c.transport == t
+		c.mu.RUnlock()
+		if !current {
+			return
 		}
 	}
 	if d.Code == disconnectedStateInvalidated {
@@ -789,19 +842,19 @@ func (c *Client) handleDisconnect(d *disconnect) {
 		c.invalidateConnectionState()
 	}
 	if d.Reconnect {
-		c.moveToConnecting(d.Code, d.Reason)
+		c.moveToConnectingFrom(t, d.Code, d.Reason)
 	} else {
-		c.moveToDisconnected(d.Code, d.Reason)
+		c.moveToDisconnectedFrom(t, d.Code, d.Reason)
 	}
 }
 
-func (c *Client) waitServerPing(disconnectCh chan struct{}, pingInterval uint32) {
+func (c *Client) waitServerPing(t transport, disconnectCh chan struct{}, pingInterval uint32) {
 	timeout := c.config.MaxServerPingDelay + time.Duration(pingInterval)*time.Second
 	for {
 		select {
 		case <-c.delayPing:
 		case <-time.After(timeout):
-			go c.handleDisconnect(&disconnect{Code: connectingNoPing, Reason: "no ping", Reconnect: true})
+			go c.handleTransportDisconnect(t, &disconnect{Code: connectingNoPing, Reason: "no ping", Reconnect: true})
 		case <-disconnectCh:
 			return
 		}
@@ -811,10 +864,10 @@ func (c *Client) waitServerPing(disconnectCh chan struct{}, pingInterval uint32)
 func (c *Client) readOnce(t transport) error {
 	reply, disconnect, err := t.Read()
 	if err != nil {
-		go c.handleDisconnect(disconnect)
+		go c.handleTransportDisconnect(t, disconnect)
 		return err
 	}
-	c.handle(reply)
+	c.handle(t, reply)
 	return nil
 }
 
@@ -855,7 +908,7 @@ func (c *Client) runHandlerAsync(fn func()) {
 	})
 }
 
-func (c *Client) handle(reply *protocol.Reply) {
+func (c *Client) handle(t transport, reply *protocol.Reply) {
 	if reply.Id > 0 {
 		if c.logLevelEnabled(LogLevelTrace) {
 			c.traceInReply(reply)
@@ -874,12 +927,15 @@ func (c *Client) handle(reply *protocol.Reply) {
 			case c.delayPing <- struct{}{}:
 			default:
 			}
+			// Answer on the transport the ping came from, and only while it is
+			// the client's current one: the server disconnects a connection
+			// that gets a pong it didn't ask for.
 			c.mu.RLock()
-			sendPong := c.sendPong
+			sendPong := c.sendPong && c.transport == t
 			c.mu.RUnlock()
 			if sendPong {
 				cmd := &protocol.Command{}
-				_ = c.send(cmd)
+				_ = c.sendOn(t, cmd)
 			}
 			return
 		}
@@ -887,7 +943,7 @@ func (c *Client) handle(reply *protocol.Reply) {
 			c.traceInPush(reply.Push)
 		}
 		c.mu.Lock()
-		if c.state != StateConnected {
+		if c.state != StateConnected || c.transport != t {
 			c.mu.Unlock()
 			return
 		}
@@ -1138,6 +1194,14 @@ func (c *Client) startReconnecting() error {
 		c.mu.Unlock()
 		return nil
 	}
+	// A new attempt supersedes an attempt still in progress: that one stops at
+	// its next check, and its transport is closed here.
+	c.connectAttempt++
+	attempt := c.connectAttempt
+	if c.transport != nil {
+		_ = c.transport.Close()
+		c.transport = nil
+	}
 	refreshRequired := c.refreshRequired
 	token := c.token
 	getTokenFunc := c.config.GetToken
@@ -1166,9 +1230,9 @@ func (c *Client) startReconnecting() error {
 		}
 		c.handleError(TransportError{err})
 		c.mu.Lock()
-		if c.state != StateConnecting {
+		if !c.isCurrentAttemptLocked(attempt) {
 			if c.logLevelEnabled(LogLevelDebug) {
-				c.log(LogLevelDebug, "not in connecting state, no need to reconnect", map[string]string{
+				c.log(LogLevelDebug, "connect attempt is not current anymore, no need to reconnect", map[string]string{
 					"state": string(c.state),
 				})
 			}
@@ -1194,6 +1258,12 @@ func (c *Client) startReconnecting() error {
 			// used for this attempt, close it so the connection does not leak.
 			_ = t.Close()
 			if errors.Is(err, ErrUnauthorized) {
+				c.mu.Lock()
+				current := c.isCurrentAttemptLocked(attempt)
+				c.mu.Unlock()
+				if !current {
+					return nil
+				}
 				if c.logLevelEnabled(LogLevelDebug) {
 					c.log(LogLevelDebug, "unauthorized error, move to disconnected", nil)
 				}
@@ -1207,9 +1277,9 @@ func (c *Client) startReconnecting() error {
 			}
 			c.handleError(RefreshError{err})
 			c.mu.Lock()
-			if c.state != StateConnecting {
+			if !c.isCurrentAttemptLocked(attempt) {
 				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "not in connecting state, no need to continue", map[string]string{
+					c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
 						"state": string(c.state),
 					})
 				}
@@ -1221,10 +1291,12 @@ func (c *Client) startReconnecting() error {
 			return err
 		} else {
 			c.mu.Lock()
-			c.token = newToken
-			if c.state != StateConnecting {
+			if !c.isCurrentAttemptLocked(attempt) {
+				// Disconnect (and maybe SetToken and Connect) was called while the
+				// token was requested: the token belongs to an attempt that was
+				// abandoned and must not replace the current one.
 				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "got token, but not in connecting state anymore", map[string]string{
+					c.log(LogLevelDebug, "got token, but connect attempt is not current anymore", map[string]string{
 						"state": string(c.state),
 					})
 				}
@@ -1232,14 +1304,15 @@ func (c *Client) startReconnecting() error {
 				c.mu.Unlock()
 				return nil
 			}
+			c.token = newToken
 			c.mu.Unlock()
 		}
 	}
 
 	c.mu.Lock()
-	if c.state != StateConnecting {
+	if !c.isCurrentAttemptLocked(attempt) {
 		if c.logLevelEnabled(LogLevelDebug) {
-			c.log(LogLevelDebug, "not in connecting state, no need to reconnect", map[string]string{
+			c.log(LogLevelDebug, "connect attempt is not current anymore, no need to reconnect", map[string]string{
 				"state": string(c.state),
 			})
 		}
@@ -1262,13 +1335,14 @@ func (c *Client) startReconnecting() error {
 			c.log(LogLevelDebug, "connect result received", nil)
 		}
 		c.mu.Lock()
-		if c.state != StateConnecting {
+		if !c.isCurrentAttemptLocked(attempt) {
 			if c.logLevelEnabled(LogLevelDebug) {
-				c.log(LogLevelDebug, "not in connecting state, no need to continue", map[string]string{
+				c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
 					"state": string(c.state),
 				})
 			}
 			c.mu.Unlock()
+			_ = t.Close()
 			return
 		}
 		c.mu.Unlock()
@@ -1279,13 +1353,23 @@ func (c *Client) startReconnecting() error {
 				})
 			}
 			c.handleError(ConnectError{err})
+			c.mu.Lock()
+			if !c.isCurrentAttemptLocked(attempt) {
+				c.mu.Unlock()
+				_ = t.Close()
+				return
+			}
+			// The transport of this attempt won't be used: its close must not be
+			// handled as a disconnect of the client.
+			c.transport = nil
+			c.mu.Unlock()
 			_ = t.Close()
 			if isTokenExpiredError(err) {
 				c.mu.Lock()
 				defer c.mu.Unlock()
-				if c.state != StateConnecting {
+				if !c.isCurrentAttemptLocked(attempt) {
 					if c.logLevelEnabled(LogLevelDebug) {
-						c.log(LogLevelDebug, "not in connecting state, no need to continue", map[string]string{
+						c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
 							"state": string(c.state),
 						})
 					}
@@ -1316,9 +1400,9 @@ func (c *Client) startReconnecting() error {
 			} else {
 				c.mu.Lock()
 				defer c.mu.Unlock()
-				if c.state != StateConnecting {
+				if !c.isCurrentAttemptLocked(attempt) {
 					if c.logLevelEnabled(LogLevelDebug) {
-						c.log(LogLevelDebug, "not in connecting state, no need to continue", map[string]string{
+						c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
 							"state": string(c.state),
 						})
 					}
@@ -1329,9 +1413,9 @@ func (c *Client) startReconnecting() error {
 			}
 		}
 		c.mu.Lock()
-		if c.state != StateConnecting {
+		if !c.isCurrentAttemptLocked(attempt) {
 			if c.logLevelEnabled(LogLevelDebug) {
-				c.log(LogLevelDebug, "not in connecting state, no need to continue", map[string]string{
+				c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
 					"state": string(c.state),
 				})
 			}
@@ -1471,7 +1555,7 @@ func (c *Client) startReconnecting() error {
 			c.log(LogLevelDebug, "reset reconnect attempts counter", nil)
 		}
 
-		if c.state != StateConnected {
+		if c.state != StateConnected || c.connectAttempt != attempt {
 			if c.logLevelEnabled(LogLevelDebug) {
 				c.log(LogLevelDebug, "not in connected state, no need to continue", map[string]string{
 					"state": string(c.state),
@@ -1487,7 +1571,7 @@ func (c *Client) startReconnecting() error {
 				})
 			}
 			c.sendPong = res.Pong
-			go c.waitServerPing(disconnectCh, res.Ping)
+			go c.waitServerPing(t, disconnectCh, res.Ping)
 		}
 		c.resubscribe()
 		if c.logLevelEnabled(LogLevelDebug) {
@@ -1500,6 +1584,7 @@ func (c *Client) startReconnecting() error {
 				"error": err.Error(),
 			})
 		}
+		c.transport = nil
 		_ = t.Close()
 		c.scheduleReconnectLocked()
 	} else {
@@ -2202,15 +2287,25 @@ func (c *Client) send(cmd *protocol.Command) error {
 	if transport == nil {
 		return ErrClientDisconnected
 	}
+	return c.sendOn(transport, cmd)
+}
+
+// sendOn writes cmd to transport t.
+func (c *Client) sendOn(t transport, cmd *protocol.Command) error {
 	if c.logLevelEnabled(LogLevelTrace) {
 		c.traceOutCmd(cmd)
 	}
-	err := transport.Write(cmd, c.config.WriteTimeout)
+	err := t.Write(cmd, c.config.WriteTimeout)
 	if err != nil {
-		go c.handleDisconnect(&disconnect{Code: connectingTransportClosed, Reason: "write error", Reconnect: true})
+		go c.handleTransportDisconnect(t, &disconnect{Code: connectingTransportClosed, Reason: "write error", Reconnect: true})
 		return io.EOF
 	}
 	return nil
+}
+
+// Lock must be held outside.
+func (c *Client) isCurrentAttemptLocked(attempt uint64) bool {
+	return c.state == StateConnecting && c.connectAttempt == attempt
 }
 
 type request struct {

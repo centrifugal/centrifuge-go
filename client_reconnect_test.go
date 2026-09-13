@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/centrifugal/protocol"
 	"github.com/gorilla/websocket"
 )
 
@@ -314,5 +315,135 @@ func TestSlowSubscriptionTokensOnConnectDoNotBlockClient(t *testing.T) {
 	}
 	for i := 0; i < numSubs; i++ {
 		waitCh(t, subscribedCh, "subscribed")
+	}
+}
+
+// Connect attempts superseded by Disconnect and a new Connect, and transports
+// replaced by a newer connection. Callbacks of the old attempt or transport
+// must not act on the client's current connection.
+
+func countConnects(s *FakeServer) int {
+	connects := 0
+	for _, cmd := range s.Received() {
+		if cmd.Connect != nil {
+			connects++
+		}
+	}
+	return connects
+}
+
+func TestSupersededConnectAttemptKeepsNewToken(t *testing.T) {
+	s := NewFakeServer(t)
+	firstTokenRequested := make(chan struct{})
+	releaseFirstToken := make(chan struct{})
+	var tokenCalls atomic.Int32
+	client := NewProtobufClient(s.URL(), Config{
+		GetToken: func(ConnectionTokenEvent) (string, error) {
+			if tokenCalls.Add(1) == 1 {
+				close(firstTokenRequested)
+				<-releaseFirstToken
+				return "A", nil
+			}
+			return "unexpected", nil
+		},
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+	connectedCh := make(chan struct{}, 4)
+	client.OnConnected(func(ConnectedEvent) { connectedCh <- struct{}{} })
+
+	go func() { _ = client.Connect() }()
+	waitCh(t, firstTokenRequested, "first GetToken call")
+	// Switch the user while the first attempt waits for its token.
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	client.SetToken("B")
+	_ = client.Connect()
+	waitCh(t, connectedCh, "connected with token B")
+	close(releaseFirstToken)
+	time.Sleep(100 * time.Millisecond)
+
+	s.CloseConnection()
+	waitCh(t, connectedCh, "reconnected")
+	for _, cmd := range s.Received() {
+		if cmd.Connect != nil && cmd.Connect.Token != "B" {
+			t.Fatalf("connect sent with token %q after SetToken(\"B\")", cmd.Connect.Token)
+		}
+	}
+}
+
+func TestReplacedTransportCloseDoesNotTearDownNewConnection(t *testing.T) {
+	s := NewFakeServer(t)
+	client := NewProtobufClient(s.URL(), Config{
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribedCh := make(chan struct{}, 4)
+	sub.OnSubscribed(func(SubscribedEvent) { subscribedCh <- struct{}{} })
+	inHandler := make(chan struct{}, 1)
+	releaseHandler := make(chan struct{})
+	var once sync.Once
+	sub.OnPublication(func(PublicationEvent) {
+		once.Do(func() {
+			inHandler <- struct{}{}
+			<-releaseHandler
+		})
+	})
+	_ = sub.Subscribe()
+	_ = client.Connect()
+	waitCh(t, subscribedCh, "subscribed")
+
+	// The first connection's reader waits in the publication handler while the
+	// application reconnects.
+	s.PublishChannel("news", []byte(`{}`))
+	waitCh(t, inHandler, "publication handler")
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Connect()
+	waitCondition(t, "new connection", func() bool { return client.State() == StateConnected })
+	close(releaseHandler)
+	time.Sleep(300 * time.Millisecond)
+
+	if state := client.State(); state != StateConnected {
+		t.Fatalf("expected connected, got %s", state)
+	}
+	if connects := countConnects(s); connects != 2 {
+		t.Fatalf("expected 2 connect commands, got %d: the first connection's close tore down the second", connects)
+	}
+}
+
+func TestTransportClosedWhileConnectingRetriesWithoutConnectTimeout(t *testing.T) {
+	s := NewFakeServer(t)
+	var connects atomic.Int32
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Connect != nil && connects.Add(1) == 1 {
+			// Drop the first connection before its connect reply.
+			s.CloseConnection()
+		}
+		return nil
+	}
+	client := NewProtobufClient(s.URL(), Config{
+		ReadTimeout:       5 * time.Second,
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+	connectedCh := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) { connectedCh <- struct{}{} })
+
+	started := time.Now()
+	_ = client.Connect()
+	select {
+	case <-connectedCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("not connected %s after the connection closed while connecting: the client waits for the connect reply timeout (%s)", time.Since(started), client.config.ReadTimeout)
 	}
 }

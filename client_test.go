@@ -1165,7 +1165,7 @@ func TestClient_RequestCallbackNotInvokedTwiceOnTimeoutRace(t *testing.T) {
 		// Deliver the real reply concurrently with the sendAsync-spawned
 		// ReadTimeout goroutine, which fires almost immediately given the
 		// tiny ReadTimeout configured above.
-		c.handle(&protocol.Reply{Id: cmd.Id})
+		c.handle(nil, &protocol.Reply{Id: cmd.Id})
 
 		select {
 		case <-done:
