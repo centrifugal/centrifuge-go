@@ -697,6 +697,15 @@ func (c *Client) moveToClosed() {
 		return
 	}
 	c.setStateLocked(StateClosed)
+	// Close disconnects before it gets here, but a Connect from another
+	// goroutine or an event handler may have connected since: stop that
+	// connection too, or waiting for its reader below never ends.
+	c.connectAttempt++
+	if c.transport != nil {
+		_ = c.transport.Close()
+		c.setTransportLocked(nil)
+	}
+	c.clearConnectedState()
 
 	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {

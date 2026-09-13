@@ -1233,6 +1233,27 @@ func TestSubscribeReplyDoesNotHoldSubscriptionLockForWaitingCalls(t *testing.T) 
 	}
 }
 
+func TestCloseStopsConnectionEstablishedDuringClose(t *testing.T) {
+	s := NewFakeServer(t)
+	client := connectFakeClient(t, s, Config{})
+	// Close disconnects and then closes. A Connect from another goroutine or an
+	// OnDisconnected handler can connect in between: the client is connected
+	// again when the closing step runs, which must stop that connection too.
+	done := make(chan struct{})
+	go func() {
+		client.moveToClosed()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("closing never returns for a connection established during Close")
+	}
+	if state := client.State(); state != StateClosed {
+		t.Fatalf("expected closed state, got %s", state)
+	}
+}
+
 func TestCallCompletesWithReplyReceivedBeforeTimeout(t *testing.T) {
 	s := NewFakeServer(t)
 	const readTimeout = 150 * time.Millisecond
