@@ -3,12 +3,18 @@ package centrifuge
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
+	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1505,6 +1511,290 @@ func TestRepeatedRecoveryWithoutLivePublicationsHasNoDuplicates(t *testing.T) {
 		if n != i+1 {
 			t.Fatalf("publications out of order or duplicated: %v", received)
 		}
+	}
+}
+
+// testToken returns an HS256 connection token signed with the secret of the
+// docker-compose Centrifugo.
+func testToken(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	encode := func(v any) string {
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(data)
+	}
+	if _, ok := claims["exp"]; !ok {
+		claims["exp"] = time.Now().Add(time.Hour).Unix()
+	}
+	unsigned := encode(map[string]string{"alg": "HS256", "typ": "JWT"}) + "." + encode(claims)
+	mac := hmac.New(sha256.New, []byte("secret"))
+	mac.Write([]byte(unsigned))
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// testServerAPI calls the server API of the docker-compose Centrifugo and
+// returns the result.
+func testServerAPI(t *testing.T, method string, params any) json.RawMessage {
+	t.Helper()
+	body, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://localhost:8000/api/"+method, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "test-api-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("api %s: %v", method, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var reply struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		t.Fatalf("api %s: status %d: %v", method, resp.StatusCode, err)
+	}
+	if reply.Error != nil {
+		t.Fatalf("api %s: %d %s", method, reply.Error.Code, reply.Error.Message)
+	}
+	return reply.Result
+}
+
+// testServerVersion returns the version of the docker-compose Centrifugo.
+func testServerVersion(t *testing.T) (major, minor, patch int) {
+	t.Helper()
+	var info struct {
+		Nodes []struct {
+			Version string `json:"version"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal(testServerAPI(t, "info", map[string]any{}), &info); err != nil || len(info.Nodes) == 0 {
+		t.Fatalf("unexpected info result: %v", err)
+	}
+	if _, err := fmt.Sscanf(info.Nodes[0].Version, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		t.Fatalf("unexpected server version %q: %v", info.Nodes[0].Version, err)
+	}
+	return major, minor, patch
+}
+
+func TestUnrecoverablePositionWithoutGetStateReportsNotRecovered(t *testing.T) {
+	channel := "smallhistory:test_unrecoverable_" + randString(10)
+	publisher := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
+	defer publisher.Close()
+	_ = publisher.Connect()
+
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket", fastReconnectConfig())
+	defer client.Close()
+	sub, err := client.NewSubscription(channel, SubscriptionConfig{Recoverable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publications := make(chan string, 16)
+	sub.OnPublication(func(e PublicationEvent) { publications <- string(e.Data) })
+	subscribedCh := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+
+	publish := func(data string) {
+		t.Helper()
+		if _, err := publisher.Publish(context.Background(), channel, []byte(data)); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	publish(`{"n":1}`)
+	if got := waitCh(t, publications, "live publication"); got != `{"n":1}` {
+		t.Fatalf("unexpected publication %s", got)
+	}
+
+	// The channel's history keeps 2 publications: 5 published while
+	// disconnected make the position unrecoverable.
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	for n := 2; n <= 6; n++ {
+		publish(fmt.Sprintf(`{"n":%d}`, n))
+	}
+	_ = client.Connect()
+	if ev := waitCh(t, subscribedCh, "resubscribed"); !ev.WasRecovering || ev.Recovered {
+		t.Fatalf("expected a failed recovery (WasRecovering without Recovered), got %+v", ev)
+	}
+
+	publish(`{"n":7}`)
+	if got := waitCh(t, publications, "live publication after the failed recovery"); got != `{"n":7}` {
+		t.Fatalf("expected only live publications after a failed recovery, got %s", got)
+	}
+	if state := sub.State(); state != SubStateSubscribed {
+		t.Fatalf("expected subscribed, got %s", state)
+	}
+}
+
+// deltaTestPayload returns publication data that differs little between
+// consecutive n, so the server sends fossil deltas.
+func deltaTestPayload(n int) string {
+	return fmt.Sprintf(`{"n":%d,"text":"%s"}`, n, strings.Repeat("centrifugo ", 20))
+}
+
+func TestRecoveryWithFossilDeltaDeliversExactData(t *testing.T) {
+	channel := "test_delta_recovery_" + randString(10)
+	publisher := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
+	defer publisher.Close()
+	_ = publisher.Connect()
+
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket", fastReconnectConfig())
+	defer client.Close()
+	errCh := make(chan error, 4)
+	client.OnError(func(e ErrorEvent) {
+		select {
+		case errCh <- e.Error:
+		default:
+		}
+	})
+	sub, err := client.NewSubscription(channel, SubscriptionConfig{Recoverable: true, Delta: DeltaTypeFossil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var received []string
+	sub.OnPublication(func(e PublicationEvent) {
+		mu.Lock()
+		received = append(received, string(e.Data))
+		mu.Unlock()
+	})
+	subscribedCh := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+	sub.mu.Lock()
+	negotiated := sub.deltaNegotiated
+	sub.mu.Unlock()
+	if !negotiated {
+		t.Fatal("fossil delta wasn't negotiated")
+	}
+
+	var expected []string
+	publish := func(n int) {
+		t.Helper()
+		data := deltaTestPayload(n)
+		expected = append(expected, data)
+		if _, err := publisher.Publish(context.Background(), channel, []byte(data)); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	waitReceived := func(label string) {
+		t.Helper()
+		waitCondition(t, label, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(received) >= len(expected)
+		})
+	}
+
+	for n := 1; n <= 3; n++ {
+		publish(n)
+	}
+	waitReceived("live publications")
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	for n := 4; n <= 6; n++ {
+		publish(n)
+	}
+	_ = client.Connect()
+	if ev := waitCh(t, subscribedCh, "resubscribed"); !ev.WasRecovering || !ev.Recovered {
+		t.Fatalf("expected a successful recovery, got %+v", ev)
+	}
+	waitReceived("recovered publications")
+	for n := 7; n <= 9; n++ {
+		publish(n)
+	}
+	waitReceived("live publications after the recovery")
+	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case err := <-errCh:
+		t.Fatalf("unexpected error: %v", err)
+	default:
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != len(expected) {
+		t.Fatalf("expected %d publications, got %d", len(expected), len(received))
+	}
+	for i := range expected {
+		if received[i] != expected[i] {
+			t.Fatalf("publication %d decoded to %q, published %q", i+1, received[i], expected[i])
+		}
+	}
+}
+
+// A recovery that returns no publications, from a position whose publication
+// the client never received: the next publication must not be a delta against
+// it (centrifugal/centrifuge#629).
+func TestDeltaAfterRecoveryWithoutPublications(t *testing.T) {
+	if major, minor, patch := testServerVersion(t); major < 6 || (major == 6 && (minor < 9 || (minor == 9 && patch < 6))) {
+		t.Skipf("needs Centrifugo 6.9.6 or newer (centrifugal/centrifuge#629), got %d.%d.%d", major, minor, patch)
+	}
+	channel := "test_delta_empty_recovery_" + randString(10)
+	publisher := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
+	defer publisher.Close()
+	_ = publisher.Connect()
+	if _, err := publisher.Publish(context.Background(), channel, []byte(deltaTestPayload(1))); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket", fastReconnectConfig())
+	defer client.Close()
+	errCh := make(chan error, 4)
+	client.OnError(func(e ErrorEvent) {
+		select {
+		case errCh <- e.Error:
+		default:
+		}
+	})
+	sub, err := client.NewSubscription(channel, SubscriptionConfig{Recoverable: true, Delta: DeltaTypeFossil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publications := make(chan string, 4)
+	sub.OnPublication(func(e PublicationEvent) { publications <- string(e.Data) })
+	subscribedCh := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed at the stream top")
+
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Connect()
+	if ev := waitCh(t, subscribedCh, "resubscribed"); !ev.WasRecovering || !ev.Recovered {
+		t.Fatalf("expected a successful recovery, got %+v", ev)
+	}
+	if _, err := publisher.Publish(context.Background(), channel, []byte(deltaTestPayload(2))); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if got := waitCh(t, publications, "publication after the recovery"); got != deltaTestPayload(2) {
+		t.Fatalf("publication decoded to %q, published %q", got, deltaTestPayload(2))
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("unexpected error: %v", err)
+	default:
+	}
+	if state := client.State(); state != StateConnected {
+		t.Fatalf("expected connected, got %s", state)
 	}
 }
 
