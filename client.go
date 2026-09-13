@@ -1436,17 +1436,27 @@ func (c *Client) startReconnecting() error {
 			c.log(LogLevelDebug, "connect server-side subscriptions processed", nil)
 		}
 
+		// Server-side subscriptions not present in connect reply are gone: remove
+		// them so they are not recovered on next connect and a later subscribe
+		// push for the same channel is not ignored.
+		c.mu.Lock()
+		serverUnsubscribedChannels := make([]string, 0)
 		for ch := range c.serverSubs {
 			if _, ok := res.Subs[ch]; !ok {
-				var serverUnsubscribedHandler ServerUnsubscribedHandler
-				if c.events != nil && c.events.onServerUnsubscribed != nil {
-					serverUnsubscribedHandler = c.events.onServerUnsubscribed
-				}
-				if serverUnsubscribedHandler != nil {
-					c.runHandlerSync(func() {
-						serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
-					})
-				}
+				serverUnsubscribedChannels = append(serverUnsubscribedChannels, ch)
+				delete(c.serverSubs, ch)
+			}
+		}
+		c.mu.Unlock()
+		var serverUnsubscribedHandler ServerUnsubscribedHandler
+		if c.events != nil && c.events.onServerUnsubscribed != nil {
+			serverUnsubscribedHandler = c.events.onServerUnsubscribed
+		}
+		if serverUnsubscribedHandler != nil {
+			for _, ch := range serverUnsubscribedChannels {
+				c.runHandlerSync(func() {
+					serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
+				})
 			}
 		}
 		if c.logLevelEnabled(LogLevelDebug) {
