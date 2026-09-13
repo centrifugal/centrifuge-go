@@ -154,6 +154,52 @@ func TestReconnectClosesTransportWhenDisconnectedDuringGetToken(t *testing.T) {
 	server.assertAllConnsClosed(t)
 }
 
+func TestNoCommandBeforeConnectOnNewTransport(t *testing.T) {
+	s := NewFakeServer(t)
+	client := NewProtobufClient(s.URL(), Config{})
+	closeOnCleanup(t, client)
+	connected := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+
+	// Registering the connect request waits while the test holds requestsMu:
+	// the client stops right before writing the connect frame.
+	client.requestsMu.Lock()
+	go func() { _ = client.Connect() }()
+	waitCondition(t, "the client to dial", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.current != nil
+	})
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		client.transportMu.RLock()
+		visible := client.transport != nil
+		client.transportMu.RUnlock()
+		if visible {
+			break
+		}
+	}
+	// A command sent meanwhile without waiting for the connected state, as a
+	// subscription's resubscribe timer or GetToken goroutine does, must not use
+	// the new transport yet: a server closes a connection whose first frame
+	// isn't connect (3501).
+	_ = client.send(&protocol.Command{Id: client.nextCmdID(), Subscribe: &protocol.SubscribeRequest{Channel: "news"}})
+	client.requestsMu.Unlock()
+
+	waitCh(t, connected, "connected")
+	received := s.Received()
+	if len(received) == 0 {
+		t.Fatal("no commands received")
+	}
+	if received[0].Connect == nil {
+		t.Fatalf("the first command on the connection must be connect, got %v", received[0])
+	}
+}
+
 // Subscription tokens fetched when subscriptions resubscribe on connect. That
 // resubscribe runs while the connect reply callback holds the client mutex, so
 // GetToken must not run there: a failure is reported through event handlers,
