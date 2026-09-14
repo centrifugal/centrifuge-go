@@ -627,6 +627,7 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 	}
 	s.state = SubStateSubscribed
 	s.subscribedSession++
+	subscribedSession := s.subscribedSession
 	if res.Expires {
 		s.scheduleSubRefresh(res.Ttl)
 	}
@@ -678,7 +679,10 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 			for i := 0; i < len(pubs); i++ {
 				pub := res.Publications[i]
 				s.mu.Lock()
-				if s.state != SubStateSubscribed {
+				// A newer subscribed session (e.g. after a reconnect while a handler
+				// ran) recovers these publications itself: delivering them here
+				// would duplicate them and move its position back.
+				if s.state != SubStateSubscribed || s.subscribedSession != subscribedSession {
 					s.mu.Unlock()
 					return
 				}
