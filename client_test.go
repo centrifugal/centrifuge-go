@@ -1323,6 +1323,83 @@ func TestRecoveredPublicationsOfEndedSessionNotDeliveredAgain(t *testing.T) {
 	}
 }
 
+func TestSubscribeRacingUnsubscribeIsNotRejectedAsAlreadySubscribed(t *testing.T) {
+	s := NewFakeServer(t)
+	var serverMu sync.Mutex
+	serverSubscribed := false
+	var rejected atomic.Int32
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		serverMu.Lock()
+		defer serverMu.Unlock()
+		switch {
+		case cmd.Subscribe != nil:
+			// Like Centrifugo: a subscribe to a channel the connection is
+			// subscribed to already is rejected with 105.
+			if serverSubscribed {
+				rejected.Add(1)
+				return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 105, Message: "already subscribed"}}
+			}
+			serverSubscribed = true
+		case cmd.Unsubscribe != nil:
+			serverSubscribed = false
+		}
+		return nil
+	}
+	client := connectFakeClient(t, s, Config{})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribed := make(chan struct{}, 64)
+	sub.OnSubscribed(func(SubscribedEvent) {
+		select {
+		case subscribed <- struct{}{}:
+		default:
+		}
+	})
+	waitSubscribed := func() {
+		t.Helper()
+		for sub.State() != SubStateSubscribed {
+			if rejected.Load() > 0 {
+				// The server still has the subscription: reported below.
+				return
+			}
+			if sub.State() == SubStateUnsubscribed {
+				_ = sub.Subscribe()
+			}
+			select {
+			case <-subscribed:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("not subscribed, state %s", sub.State())
+			}
+		}
+	}
+
+	// Unsubscribe and Subscribe from two goroutines at once, many times: the
+	// subscribe must never reach the server before the unsubscribe.
+	for i := 0; i < 3000 && rejected.Load() == 0; i++ {
+		waitSubscribed()
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = sub.Unsubscribe()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = sub.Subscribe()
+		}()
+		close(start)
+		wg.Wait()
+	}
+	if n := rejected.Load(); n > 0 {
+		t.Fatalf("a subscribe reached the server before the unsubscribe of the same subscription and was rejected as already subscribed (%d times)", n)
+	}
+}
+
 func TestCloseUnsubscribesThenReportsDisconnect(t *testing.T) {
 	s := NewFakeServer(t)
 	s.ConnectResult = &protocol.ConnectResult{
