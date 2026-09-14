@@ -1239,6 +1239,90 @@ func TestSubscribeReplyDoesNotHoldSubscriptionLockForWaitingCalls(t *testing.T) 
 	}
 }
 
+func TestRecoveredPublicationsOfEndedSessionNotDeliveredAgain(t *testing.T) {
+	s := NewFakeServer(t)
+	var subscribes atomic.Int32
+	s.OnSubscribe = func(_ string, req *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		if subscribes.Add(1) == 1 {
+			return &protocol.SubscribeResult{Recoverable: true, Epoch: "e1", Offset: 5}
+		}
+		// Like Centrifugo, a successful recovery replies with the requested
+		// position and the publications after it.
+		return &protocol.SubscribeResult{
+			Recoverable: true, Epoch: "e1", Offset: req.Offset, WasRecovering: true, Recovered: true,
+			Publications: []*protocol.Publication{
+				{Offset: 6, Data: []byte(`{"n":6}`)},
+				{Offset: 7, Data: []byte(`{"n":7}`)},
+			},
+		}
+	}
+	// No OnConnected handler: while the subscribed handler below is blocked, a
+	// newer connection must get as far as resubscribing, and its connected event
+	// would wait for that handler.
+	client := NewProtobufClient(s.URL(), Config{MinReconnectDelay: 10 * time.Millisecond, MaxReconnectDelay: 20 * time.Millisecond})
+	closeOnCleanup(t, client)
+	_ = client.Connect()
+	waitCondition(t, "connected", func() bool { return client.State() == StateConnected })
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHandler := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseHandler)
+	subscribed := make(chan struct{}, 4)
+	var subscribedEvents atomic.Int32
+	sub.OnSubscribed(func(SubscribedEvent) {
+		if subscribedEvents.Add(1) == 2 {
+			// The subscribed handler of the first recovery is slow.
+			entered <- struct{}{}
+			<-release
+		}
+		subscribed <- struct{}{}
+	})
+	var mu sync.Mutex
+	var delivered []string
+	sub.OnPublication(func(e PublicationEvent) {
+		mu.Lock()
+		delivered = append(delivered, string(e.Data))
+		mu.Unlock()
+	})
+
+	_ = sub.Subscribe()
+	waitCh(t, subscribed, "subscribed")
+	_ = client.Disconnect()
+	_ = client.Connect()
+	waitCh(t, entered, "the subscribed handler of the first recovery")
+
+	// Meanwhile the connection is replaced, and the next subscribed session
+	// recovers the same publications.
+	_ = client.Disconnect()
+	_ = client.Connect()
+	waitCondition(t, "the second recovery", func() bool {
+		sub.mu.Lock()
+		defer sub.mu.Unlock()
+		return sub.subscribedSession == 3
+	})
+	releaseHandler()
+	waitCh(t, subscribed, "the first recovery's subscribed event")
+	waitCh(t, subscribed, "the second recovery's subscribed event")
+	waitCondition(t, "recovered publications", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(delivered) >= 2
+	})
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(delivered) != 2 || delivered[0] != `{"n":6}` || delivered[1] != `{"n":7}` {
+		t.Fatalf("recovered publications must be delivered once, got %v", delivered)
+	}
+}
+
 func TestCloseUnsubscribesThenReportsDisconnect(t *testing.T) {
 	s := NewFakeServer(t)
 	s.ConnectResult = &protocol.ConnectResult{
