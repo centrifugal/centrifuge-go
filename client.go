@@ -1381,6 +1381,9 @@ func (c *Client) startReconnecting() error {
 		return nil
 	}
 	c.refreshRequired = false
+	// The token the connect command below carries, see the handling of a token
+	// expired error.
+	connectToken := c.token
 	disconnectCh := make(chan struct{})
 	c.receive = make(chan []byte, 64)
 	c.disconnectedCh = disconnectCh
@@ -1434,7 +1437,12 @@ func (c *Client) startReconnecting() error {
 					}
 					return
 				}
-				c.refreshRequired = true
+				// Without GetToken only the application can replace the expired
+				// token. A SetToken while this connect was pending, e.g. from the
+				// OnError handler of this error, already did: connect with it.
+				if c.config.GetToken != nil || c.token == connectToken {
+					c.refreshRequired = true
+				}
 				c.scheduleReconnectLocked()
 				return
 			} else if isServerError(err) && !isTemporaryError(err) {

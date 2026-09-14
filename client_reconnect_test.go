@@ -414,6 +414,81 @@ func TestSetTokenKeepsRefreshRequiredWithGetToken(t *testing.T) {
 	}
 }
 
+func TestSetTokenFromOnErrorOfExpiredTokenConnects(t *testing.T) {
+	s := NewFakeServer(t)
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Connect != nil && cmd.Connect.Token == "expired" {
+			return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 109, Message: "token expired"}}
+		}
+		return nil
+	}
+	client := NewProtobufClient(s.URL(), Config{
+		Token:             "expired",
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+	// The application replaces the expired token as soon as it's reported.
+	client.OnError(func(e ErrorEvent) {
+		if _, ok := e.Error.(ConnectError); ok {
+			client.SetToken("fresh")
+		}
+	})
+	disconnected := make(chan DisconnectedEvent, 4)
+	client.OnDisconnected(func(e DisconnectedEvent) { disconnected <- e })
+	connected := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+
+	_ = client.Connect()
+	select {
+	case <-connected:
+	case e := <-disconnected:
+		t.Fatalf("disconnected (%d %s) instead of connecting with the token set in OnError", e.Code, e.Reason)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting to connect with the token set in OnError")
+	}
+	received := s.Received()
+	for i := len(received) - 1; i >= 0; i-- {
+		if received[i].Connect != nil {
+			if token := received[i].Connect.Token; token != "fresh" {
+				t.Fatalf("expected the connect to use the token set in OnError, got %q", token)
+			}
+			break
+		}
+	}
+}
+
+func TestResubscribeWhileDisconnectedDoesNotFetchToken(t *testing.T) {
+	client := NewProtobufClient("ws://127.0.0.1:1/connection/websocket", Config{})
+	closeOnCleanup(t, client)
+	var calls atomic.Int32
+	sub, err := client.NewSubscription("news", SubscriptionConfig{
+		GetToken: func(SubscriptionTokenEvent) (string, error) {
+			calls.Add(1)
+			return "token", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The client isn't connected: the subscription waits in subscribing.
+	_ = sub.Subscribe()
+	// A resubscribe timer fires meanwhile.
+	sub.resubscribe()
+	time.Sleep(100 * time.Millisecond)
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("GetToken called %d time(s) for a subscribe that can't be sent while the client is disconnected", n)
+	}
+	if sub.inflight.Load() {
+		t.Fatal("the subscription is left in flight")
+	}
+}
+
 // Subscription tokens fetched when subscriptions resubscribe on connect. That
 // resubscribe runs while the connect reply callback holds the client mutex, so
 // GetToken must not run there: a failure is reported through event handlers,
