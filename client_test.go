@@ -1199,6 +1199,33 @@ func TestCommandIDSkipsZeroOnWraparound(t *testing.T) {
 	}
 }
 
+// Subscribe() on a Subscription removed from the client returned nil and the
+// subscription reported subscribed, but it received no publications and wasn't
+// resubscribed after a reconnect: both go through the client's registry.
+func TestSubscribeRemovedSubscriptionFails(t *testing.T) {
+	s := NewFakeServer(t)
+	client := connectFakeClient(t, s, Config{})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RemoveSubscription(sub); err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.Subscribe(); err == nil {
+		t.Fatalf("expected an error subscribing a removed subscription, got nil and state %s", sub.State())
+	}
+	if state := sub.State(); state != SubStateUnsubscribed {
+		t.Fatalf("expected unsubscribed, got %s", state)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for _, cmd := range s.Received() {
+		if cmd.Subscribe != nil {
+			t.Fatal("subscribe sent for a removed subscription")
+		}
+	}
+}
+
 func connectFakeClient(t *testing.T, s *FakeServer, config Config) *Client {
 	t.Helper()
 	client := NewProtobufClient(s.URL(), config)

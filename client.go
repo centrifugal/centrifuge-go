@@ -326,6 +326,14 @@ func (c *Client) RemoveSubscription(sub *Subscription) error {
 	return nil
 }
 
+// isRegistered reports whether sub is the Subscription registered for its
+// channel.
+func (c *Client) isRegistered(sub *Subscription) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.subs[sub.Channel] == sub
+}
+
 // GetSubscription allows getting Subscription from the internal client registry.
 func (c *Client) GetSubscription(channel string) (*Subscription, bool) {
 	c.mu.RLock()
