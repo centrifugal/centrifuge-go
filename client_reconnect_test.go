@@ -572,6 +572,74 @@ func TestSetTokenFromOnErrorOfConfigurationErrorConnects(t *testing.T) {
 	}
 }
 
+// A disconnect teardown moved subscriptions to subscribing after releasing the
+// client lock. A connect completing in between skipped the subscriptions still
+// subscribed, and the teardown then left them subscribing with nothing to
+// resubscribe them. The test holds the callback queue, so the teardown stops
+// when it queues its first subscribing event.
+func TestConnectDuringDisconnectTeardownResubscribesAllSubscriptions(t *testing.T) {
+	s := NewFakeServer(t)
+	client := NewProtobufClient(s.URL(), Config{})
+	closeOnCleanup(t, client)
+	const numSubs = 5
+	subs := make([]*Subscription, 0, numSubs)
+	for i := 0; i < numSubs; i++ {
+		sub, err := client.NewSubscription(fmt.Sprintf("ch%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sub.OnSubscribing(func(SubscribingEvent) {})
+		_ = sub.Subscribe()
+		subs = append(subs, sub)
+	}
+	countSubs := func(state SubState) int {
+		n := 0
+		for _, sub := range subs {
+			if sub.State() == state {
+				n++
+			}
+		}
+		return n
+	}
+	_ = client.Connect()
+	waitCondition(t, "subscribed", func() bool {
+		return client.State() == StateConnected && countSubs(SubStateSubscribed) == numSubs
+	})
+
+	client.mu.RLock()
+	queue := client.cbQueue
+	client.mu.RUnlock()
+	queue.mu.Lock()
+	queueHeld := true
+	releaseQueue := func() {
+		if queueHeld {
+			queueHeld = false
+			queue.mu.Unlock()
+		}
+	}
+	defer releaseQueue()
+
+	disconnectDone := make(chan struct{})
+	go func() {
+		defer close(disconnectDone)
+		_ = client.Disconnect()
+	}()
+	waitCondition(t, "the teardown to queue a subscribing event", func() bool {
+		return client.State() == StateDisconnected && countSubs(SubStateSubscribing) > 0
+	})
+	go func() { _ = client.Connect() }()
+	waitCondition(t, "connect during the teardown", func() bool {
+		return client.State() == StateConnected && countSubs(SubStateSubscribed) == numSubs
+	})
+	releaseQueue()
+	waitCh(t, disconnectDone, "disconnect")
+	time.Sleep(300 * time.Millisecond)
+
+	if n := countSubs(SubStateSubscribed); n != numSubs {
+		t.Fatalf("%d of %d subscriptions subscribed after a connect during the disconnect teardown", n, numSubs)
+	}
+}
+
 func TestResubscribeWhileDisconnectedDoesNotFetchToken(t *testing.T) {
 	client := NewProtobufClient("ws://127.0.0.1:1/connection/websocket", Config{})
 	closeOnCleanup(t, client)

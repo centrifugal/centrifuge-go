@@ -559,11 +559,21 @@ func (s *Subscription) moveToUnsubscribedLocked(code uint32, reason string, futu
 
 func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 	s.mu.Lock()
+	needEvent := s.moveToSubscribingLocked()
+	s.mu.Unlock()
+	if needEvent {
+		s.emitSubscribing(code, reason)
+	}
+}
+
+// moveToSubscribingLocked moves the subscription to subscribing unless it's
+// unsubscribed, and reports whether a subscribing event must be emitted (see
+// emitSubscribing). s.mu must be held.
+func (s *Subscription) moveToSubscribingLocked() bool {
 	if s.state == SubStateUnsubscribed {
 		// Unsubscribe was called after the teardown or the server push that led
 		// here started: the subscription stays unsubscribed.
-		s.mu.Unlock()
-		return
+		return false
 	}
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
@@ -574,9 +584,11 @@ func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 	}
 	needEvent := s.state != SubStateSubscribing
 	s.state = SubStateSubscribing
-	s.mu.Unlock()
+	return needEvent
+}
 
-	if needEvent && s.events != nil && s.events.onSubscribing != nil {
+func (s *Subscription) emitSubscribing(code uint32, reason string) {
+	if s.events != nil && s.events.onSubscribing != nil {
 		handler := s.events.onSubscribing
 		s.centrifuge.runHandlerAsync(func() {
 			handler(SubscribingEvent{
