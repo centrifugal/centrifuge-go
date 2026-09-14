@@ -640,6 +640,100 @@ func TestConnectDuringDisconnectTeardownResubscribesAllSubscriptions(t *testing.
 	}
 }
 
+// countDials returns a NetDialContext counting the dials it makes.
+func countDials(dials *atomic.Int64) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dials.Add(1)
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}
+}
+
+// A reconnect teardown waits for its handlers before scheduling a reconnect. A
+// Disconnect() and a Connect() while they run start a newer attempt, which the
+// teardown's reconnect must not replace with another dial.
+func TestReconnectTeardownDoesNotReplaceConnectCalledMeanwhile(t *testing.T) {
+	s := NewFakeServer(t)
+	var connects atomic.Int32
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		// Longer than the reconnect delay, so a reconnect scheduled by the
+		// teardown fires while the application's connect is pending.
+		if cmd.Connect != nil && connects.Add(1) > 1 {
+			time.Sleep(400 * time.Millisecond)
+		}
+		return nil
+	}
+	var dials atomic.Int64
+	client := NewProtobufClient(s.URL(), Config{
+		NetDialContext:    countDials(&dials),
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+	inHandler := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	client.OnConnecting(func(e ConnectingEvent) {
+		if e.Code == connectingTransportClosed {
+			once.Do(func() {
+				inHandler <- struct{}{}
+				<-release
+			})
+		}
+	})
+
+	_ = client.Connect()
+	waitCondition(t, "connected", func() bool { return client.State() == StateConnected })
+	s.CloseConnection()
+	waitCh(t, inHandler, "connecting handler of the reconnect teardown")
+	_ = client.Disconnect()
+	go func() { _ = client.Connect() }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	waitCondition(t, "connected again", func() bool { return client.State() == StateConnected })
+	time.Sleep(time.Second)
+
+	if n := dials.Load(); n != 2 {
+		t.Fatalf("expected 2 dials (the initial and the application's Connect), got %d", n)
+	}
+}
+
+// Connect() waits for its connecting handler before starting its attempt. A
+// Disconnect() and a second Connect() meanwhile start a newer attempt, which the
+// first Connect() must not replace.
+func TestConnectDoesNotReplaceConnectCalledDuringItsHandler(t *testing.T) {
+	s := NewFakeServer(t)
+	var dials atomic.Int64
+	client := NewProtobufClient(s.URL(), Config{
+		NetDialContext:    countDials(&dials),
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+	inHandler := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var once sync.Once
+	client.OnConnecting(func(ConnectingEvent) {
+		once.Do(func() {
+			inHandler <- struct{}{}
+			<-release
+		})
+	})
+
+	go func() { _ = client.Connect() }()
+	waitCh(t, inHandler, "connecting handler")
+	_ = client.Disconnect()
+	go func() { _ = client.Connect() }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	waitCondition(t, "connected", func() bool { return client.State() == StateConnected })
+	time.Sleep(500 * time.Millisecond)
+
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("expected 1 dial, got %d", n)
+	}
+}
+
 func TestResubscribeWhileDisconnectedDoesNotFetchToken(t *testing.T) {
 	client := NewProtobufClient("ws://127.0.0.1:1/connection/websocket", Config{})
 	closeOnCleanup(t, client)
