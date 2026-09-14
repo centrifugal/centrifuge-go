@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -1180,6 +1181,21 @@ func TestConnectionRefreshWithZeroTTLDoesNotLoop(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	if n := refreshes.Load(); n > 2 {
 		t.Fatalf("expected at most 2 refreshes in 1.5s, got %d", n)
+	}
+}
+
+// The command id wrapped around to 0 after 2^32 commands. A server closes the
+// connection on a command with id 0, so a long-lived client ended disconnected.
+func TestCommandIDSkipsZeroOnWraparound(t *testing.T) {
+	s := NewFakeServer(t)
+	client := connectFakeClient(t, s, Config{ReadTimeout: 500 * time.Millisecond})
+	atomic.StoreUint32(&client.cmdID, math.MaxUint32)
+	if _, err := client.Publish(context.Background(), "ch", []byte(`{}`)); err != nil {
+		t.Fatalf("publish after the command id wrapped around: %v", err)
+	}
+	received := s.Received()
+	if id := received[len(received)-1].Id; id == 0 {
+		t.Fatal("command sent with id 0")
 	}
 }
 
