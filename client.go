@@ -278,6 +278,13 @@ func (c *Client) State() State {
 func (c *Client) SetToken(token string) {
 	c.mu.Lock()
 	c.token = token
+	if c.config.GetToken == nil {
+		// Without GetToken only the application can replace an expired token
+		// (e.g. after a connect error 109): connect with this one instead of
+		// asking for GetToken again. With GetToken the flag stays, since the
+		// token set here may be the stale one.
+		c.refreshRequired = false
+	}
 	c.mu.Unlock()
 }
 
