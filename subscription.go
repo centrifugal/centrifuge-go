@@ -447,19 +447,27 @@ func (s *Subscription) Unsubscribe() error {
 }
 
 func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe bool) {
-	s.moveToUnsubscribed(code, reason)
-	if sendUnsubscribe {
-		s.sendUnsubscribe()
+	s.mu.Lock()
+	if sendUnsubscribe && s.state != SubStateUnsubscribed {
+		s.sendUnsubscribeLocked()
 	}
+	s.moveToUnsubscribedLocked(code, reason, ErrSubscriptionUnsubscribed)
 }
 
-// sendUnsubscribe removes the subscription on the server. When that fails the
-// client reconnects, so the server doesn't keep a subscription the client left.
-func (s *Subscription) sendUnsubscribe() {
-	s.centrifuge.unsubscribe(s.Channel, func(result UnsubscribeResult, err error) {
+// sendUnsubscribeLocked removes the subscription on the server. The command is
+// written while the lock is held, before the subscription is seen as
+// unsubscribed: a Subscribe right after, from another goroutine or an
+// OnUnsubscribed handler, then sends its subscribe after it, instead of before
+// it, which the server rejects with 105 (already subscribed). When the
+// unsubscribe fails the client reconnects, so the server doesn't keep a
+// subscription the client left. Lock must be held outside.
+func (s *Subscription) sendUnsubscribeLocked() {
+	if !s.centrifuge.connected.Load() {
+		return
+	}
+	s.centrifuge.sendUnsubscribe(s.Channel, func(_ UnsubscribeResult, err error) {
 		if err != nil {
 			go s.centrifuge.handleDisconnect(&disconnect{Code: connectingUnsubscribeError, Reason: "unsubscribe error", Reconnect: true})
-			return
 		}
 	})
 }
@@ -933,11 +941,11 @@ func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
 		// A subscribe still in flight is applied by the server after this push:
 		// unsubscribe again, or the server keeps a subscription the client
 		// doesn't track. The server ignores it when there is nothing to remove.
-		cleanup := s.inflight.Load()
-		s.moveToUnsubscribed(unsubscribe.Code, unsubscribe.Reason)
-		if cleanup {
-			s.sendUnsubscribe()
+		s.mu.Lock()
+		if s.inflight.Load() {
+			s.sendUnsubscribeLocked()
 		}
+		s.moveToUnsubscribedLocked(unsubscribe.Code, unsubscribe.Reason, ErrSubscriptionUnsubscribed)
 	} else {
 		if unsubscribe.Code == unsubscribedStateInvalidated {
 			// State invalidated: drop the subscription token and cached state so
