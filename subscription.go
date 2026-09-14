@@ -490,6 +490,11 @@ func (s *Subscription) Subscribe() error {
 	if s.centrifuge.isClosed() {
 		return ErrClientClosed
 	}
+	// Pushes and resubscribes reach a Subscription through the client's
+	// registry: a removed one would report subscribed and receive nothing.
+	if !s.centrifuge.isRegistered(s) {
+		return errors.New("subscription was removed from the client")
+	}
 	s.mu.Lock()
 	if s.state == SubStateSubscribed || s.state == SubStateSubscribing {
 		s.mu.Unlock()
