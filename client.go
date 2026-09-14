@@ -500,15 +500,17 @@ func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason s
 	c.clearConnectedState()
 	c.resolveConnectFutures(ErrClientDisconnected)
 
+	// Subscriptions move to subscribing in the same lock hold as the client: a
+	// connect right after the lock is released must find them subscribing, or
+	// it won't resubscribe them. Their events are emitted after unlocking.
 	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
 		s.mu.Lock()
-		if s.state == SubStateUnsubscribed {
-			s.mu.Unlock()
-			continue
-		}
+		needEvent := s.moveToSubscribingLocked()
 		s.mu.Unlock()
-		subsToUnsubscribe = append(subsToUnsubscribe, s)
+		if needEvent {
+			subsToUnsubscribe = append(subsToUnsubscribe, s)
+		}
 	}
 	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
 	for ch := range c.serverSubs {
@@ -517,7 +519,7 @@ func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason s
 	c.mu.Unlock()
 
 	for _, s := range subsToUnsubscribe {
-		s.moveToSubscribing(subscribingTransportClosed, "transport closed")
+		s.emitSubscribing(subscribingTransportClosed, "transport closed")
 	}
 
 	if prevState == StateConnected {
@@ -605,15 +607,17 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 		c.log(LogLevelDebug, "resolved connect futures", nil)
 	}
 
+	// Subscriptions move to subscribing in the same lock hold as the client: a
+	// connect right after the lock is released must find them subscribing, or
+	// it won't resubscribe them. Their events are emitted after unlocking.
 	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
 		s.mu.Lock()
-		if s.state == SubStateUnsubscribed {
-			s.mu.Unlock()
-			continue
-		}
+		needEvent := s.moveToSubscribingLocked()
 		s.mu.Unlock()
-		subsToUnsubscribe = append(subsToUnsubscribe, s)
+		if needEvent {
+			subsToUnsubscribe = append(subsToUnsubscribe, s)
+		}
 	}
 	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
 	for ch := range c.serverSubs {
@@ -622,7 +626,7 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 	c.mu.Unlock()
 
 	for _, s := range subsToUnsubscribe {
-		s.moveToSubscribing(subscribingTransportClosed, "transport closed")
+		s.emitSubscribing(subscribingTransportClosed, "transport closed")
 	}
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "client-side subs unsubscribe events called", map[string]string{
