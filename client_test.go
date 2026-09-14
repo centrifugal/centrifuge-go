@@ -1359,18 +1359,21 @@ func TestSubscribeRacingUnsubscribeIsNotRejectedAsAlreadySubscribed(t *testing.T
 	})
 	waitSubscribed := func() {
 		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
 		for sub.State() != SubStateSubscribed {
 			if rejected.Load() > 0 {
 				// The server still has the subscription: reported below.
 				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("not subscribed, state %s", sub.State())
 			}
 			if sub.State() == SubStateUnsubscribed {
 				_ = sub.Subscribe()
 			}
 			select {
 			case <-subscribed:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("not subscribed, state %s", sub.State())
+			case <-time.After(10 * time.Millisecond):
 			}
 		}
 	}
