@@ -1226,6 +1226,21 @@ func TestSubscribeRemovedSubscriptionFails(t *testing.T) {
 	}
 }
 
+// A call whose write failed, e.g. racing a transport failure, returned io.EOF,
+// which isn't one of the errors a call documents.
+func TestFailedWriteReturnsErrClientDisconnected(t *testing.T) {
+	s := NewFakeServer(t)
+	client := connectFakeClient(t, s, Config{})
+	client.transportMu.RLock()
+	tr := client.transport
+	client.transportMu.RUnlock()
+	_ = tr.Close()
+	cmd := &protocol.Command{Id: client.nextCmdID(), Publish: &protocol.PublishRequest{Channel: "ch", Data: []byte(`{}`)}}
+	if err := client.sendOn(tr, cmd); !errors.Is(err, ErrClientDisconnected) {
+		t.Fatalf("expected ErrClientDisconnected, got %v", err)
+	}
+}
+
 func connectFakeClient(t *testing.T, s *FakeServer, config Config) *Client {
 	t.Helper()
 	client := NewProtobufClient(s.URL(), config)

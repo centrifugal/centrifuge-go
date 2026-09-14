@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -2522,7 +2521,7 @@ func (c *Client) sendOn(t transport, cmd *protocol.Command) error {
 	err := t.Write(cmd, c.config.WriteTimeout)
 	if err != nil {
 		go c.handleTransportDisconnect(t, &disconnect{Code: connectingTransportClosed, Reason: "write error", Reconnect: true})
-		return io.EOF
+		return ErrClientDisconnected
 	}
 	return nil
 }
