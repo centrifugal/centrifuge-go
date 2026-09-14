@@ -13,6 +13,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/centrifugal/protocol"
+	"github.com/gorilla/websocket"
 )
 
 type testEventHandler struct {
@@ -849,6 +851,335 @@ func TestRemoveSubscriptionKeepsNewerSubscriptionToSameChannel(t *testing.T) {
 	}
 	if sub, ok := client.GetSubscription("news"); !ok || sub != sub2 {
 		t.Fatal("removing the stale subscription removed the newer subscription to the same channel")
+	}
+}
+
+// A reply without the result its callback reads, which only a non-conforming
+// server or proxy sends, panicked the reader goroutine and exited the process.
+// It must end the connection like a frame that can't be decoded, and fail the
+// call.
+func TestMalformedReplyDisconnectsWithBadProtocol(t *testing.T) {
+	getToken := func(ConnectionTokenEvent) (string, error) { return "token", nil }
+	call := func(fn func() error) chan error {
+		errCh := make(chan error, 1)
+		go func() { errCh <- fn() }()
+		return errCh
+	}
+	tests := []struct {
+		name    string
+		config  Config
+		setup   func(s *FakeServer)
+		matches func(cmd *protocol.Command) bool
+		// act sends the command once connected and returns the call's result,
+		// nil when the command isn't sent by a call.
+		act func(client *Client) chan error
+	}{
+		{
+			name:    "connect",
+			matches: func(cmd *protocol.Command) bool { return cmd.Connect != nil },
+		},
+		{
+			name:    "subscribe",
+			matches: func(cmd *protocol.Command) bool { return cmd.Subscribe != nil },
+			act: func(client *Client) chan error {
+				sub, _ := client.NewSubscription("ch")
+				_ = sub.Subscribe()
+				return nil
+			},
+		},
+		{
+			name:   "refresh",
+			config: Config{GetToken: getToken},
+			setup: func(s *FakeServer) {
+				s.ConnectResult = &protocol.ConnectResult{Client: "c", Ping: 25, Expires: true, Ttl: 1}
+			},
+			matches: func(cmd *protocol.Command) bool { return cmd.Refresh != nil },
+		},
+		{
+			name: "sub_refresh",
+			setup: func(s *FakeServer) {
+				s.OnSubscribe = func(string, *protocol.SubscribeRequest) *protocol.SubscribeResult {
+					return &protocol.SubscribeResult{Expires: true, Ttl: 1}
+				}
+			},
+			matches: func(cmd *protocol.Command) bool { return cmd.SubRefresh != nil },
+			act: func(client *Client) chan error {
+				sub, _ := client.NewSubscription("ch", SubscriptionConfig{
+					GetToken: func(SubscriptionTokenEvent) (string, error) { return "token", nil },
+				})
+				_ = sub.Subscribe()
+				return nil
+			},
+		},
+		{
+			name:    "rpc",
+			matches: func(cmd *protocol.Command) bool { return cmd.Rpc != nil },
+			act: func(client *Client) chan error {
+				return call(func() error { _, err := client.RPC(context.Background(), "method", nil); return err })
+			},
+		},
+		{
+			name:    "history",
+			matches: func(cmd *protocol.Command) bool { return cmd.History != nil },
+			act: func(client *Client) chan error {
+				return call(func() error { _, err := client.History(context.Background(), "ch"); return err })
+			},
+		},
+		{
+			name:    "presence",
+			matches: func(cmd *protocol.Command) bool { return cmd.Presence != nil },
+			act: func(client *Client) chan error {
+				return call(func() error { _, err := client.Presence(context.Background(), "ch"); return err })
+			},
+		},
+		{
+			name:    "presence_stats",
+			matches: func(cmd *protocol.Command) bool { return cmd.PresenceStats != nil },
+			act: func(client *Client) chan error {
+				return call(func() error { _, err := client.PresenceStats(context.Background(), "ch"); return err })
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewFakeServer(t)
+			if tt.setup != nil {
+				tt.setup(s)
+			}
+			s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+				if tt.matches(cmd) {
+					return &protocol.Reply{Id: cmd.Id}
+				}
+				return nil
+			}
+			client := NewProtobufClient(s.URL(), tt.config)
+			defer client.Close()
+			disconnected := make(chan DisconnectedEvent, 4)
+			client.OnDisconnected(func(e DisconnectedEvent) { disconnected <- e })
+			connected := make(chan struct{}, 1)
+			client.OnConnected(func(ConnectedEvent) {
+				select {
+				case connected <- struct{}{}:
+				default:
+				}
+			})
+
+			_ = client.Connect()
+			var callErr chan error
+			if tt.act != nil {
+				waitCh(t, connected, "connected")
+				callErr = tt.act(client)
+			}
+			if e := waitCh(t, disconnected, "disconnect"); e.Code != disconnectBadProtocol {
+				t.Fatalf("expected disconnect code %d, got %d (%s)", disconnectBadProtocol, e.Code, e.Reason)
+			}
+			if callErr != nil {
+				if err := waitCh(t, callErr, "call result"); !errors.Is(err, ErrClientDisconnected) {
+					t.Fatalf("expected ErrClientDisconnected, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// newJSONReplyServer starts a WebSocket server speaking the JSON protocol that
+// answers each command with the reply returned for it. The protobuf FakeServer
+// can't send a null publication or server-side subscription.
+func newJSONReplyServer(t *testing.T, reply func(cmd *protocol.Command) string) string {
+	upgrader := websocket.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			decoder := protocol.NewJSONCommandDecoder(data)
+			for {
+				// The last command in a frame comes together with io.EOF.
+				cmd, err := decoder.Decode()
+				if cmd != nil && cmd.Id != 0 {
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(reply(cmd))); err != nil {
+						return
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return "ws" + strings.TrimPrefix(srv.URL, "http")
+}
+
+// A null publication or server-side subscription in a JSON reply panicked the
+// reader goroutine: for a recovered publication in the connect reply even
+// without a server-side publication handler, since offsets advance without one.
+func TestJSONReplyWithNullElementsDisconnectsWithBadProtocol(t *testing.T) {
+	connectReply := func(cmd *protocol.Command) string {
+		return fmt.Sprintf(`{"id":%d,"connect":{"client":"c","ping":25}}`, cmd.Id)
+	}
+	tests := []struct {
+		name  string
+		reply func(cmd *protocol.Command) string
+		act   func(client *Client)
+	}{
+		{
+			name: "connect_recovered_publication",
+			reply: func(cmd *protocol.Command) string {
+				return fmt.Sprintf(`{"id":%d,"connect":{"client":"c","ping":25,"subs":{"ss":{"recoverable":true,"publications":[null]}}}}`, cmd.Id)
+			},
+		},
+		{
+			name: "connect_server_side_subscription",
+			reply: func(cmd *protocol.Command) string {
+				return fmt.Sprintf(`{"id":%d,"connect":{"client":"c","ping":25,"subs":{"ss":null}}}`, cmd.Id)
+			},
+		},
+		{
+			name: "subscribe_publication",
+			reply: func(cmd *protocol.Command) string {
+				if cmd.Subscribe != nil {
+					return fmt.Sprintf(`{"id":%d,"subscribe":{"recoverable":true,"epoch":"e","publications":[null]}}`, cmd.Id)
+				}
+				return connectReply(cmd)
+			},
+			act: func(client *Client) {
+				sub, _ := client.NewSubscription("ch")
+				_ = sub.Subscribe()
+			},
+		},
+		{
+			name: "history_publication",
+			reply: func(cmd *protocol.Command) string {
+				if cmd.History != nil {
+					return fmt.Sprintf(`{"id":%d,"history":{"publications":[null]}}`, cmd.Id)
+				}
+				return connectReply(cmd)
+			},
+			act: func(client *Client) {
+				go func() { _, _ = client.History(context.Background(), "ch") }()
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := NewJsonClient(newJSONReplyServer(t, tt.reply), Config{})
+			defer client.Close()
+			disconnected := make(chan DisconnectedEvent, 4)
+			client.OnDisconnected(func(e DisconnectedEvent) { disconnected <- e })
+			connected := make(chan struct{}, 1)
+			client.OnConnected(func(ConnectedEvent) {
+				select {
+				case connected <- struct{}{}:
+				default:
+				}
+			})
+
+			_ = client.Connect()
+			if tt.act != nil {
+				waitCh(t, connected, "connected")
+				tt.act(client)
+			}
+			if e := waitCh(t, disconnected, "disconnect"); e.Code != disconnectBadProtocol {
+				t.Fatalf("expected disconnect code %d, got %d (%s)", disconnectBadProtocol, e.Code, e.Reason)
+			}
+		})
+	}
+}
+
+// A join without client info, which only a non-conforming server sends,
+// panicked the reader goroutine in the join handler.
+func TestJoinWithoutInfoIsDelivered(t *testing.T) {
+	s := NewFakeServer(t)
+	client := connectFakeClient(t, s, Config{})
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{JoinLeave: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribed := make(chan SubscribedEvent, 1)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribed <- e })
+	joins := make(chan JoinEvent, 1)
+	sub.OnJoin(func(e JoinEvent) { joins <- e })
+	_ = sub.Subscribe()
+	waitCh(t, subscribed, "subscribed")
+
+	s.SendPush(&protocol.Push{Channel: "ch", Join: &protocol.Join{}})
+	if e := waitCh(t, joins, "join"); e.Client != "" {
+		t.Fatalf("expected an empty client info, got %+v", e.ClientInfo)
+	}
+	if state := client.State(); state != StateConnected {
+		t.Fatalf("expected connected, got %s", state)
+	}
+}
+
+// A publication marked as a delta on a subscription without negotiated delta
+// was delivered with the delta bytes as its data. It must be reported like a
+// delta that can't be applied.
+func TestDeltaPublicationWithoutNegotiatedDeltaIsReported(t *testing.T) {
+	s := NewFakeServer(t)
+	client := connectFakeClient(t, s, Config{})
+	errs := make(chan error, 4)
+	client.OnError(func(e ErrorEvent) {
+		select {
+		case errs <- e.Error:
+		default:
+		}
+	})
+	disconnected := make(chan DisconnectedEvent, 4)
+	client.OnDisconnected(func(e DisconnectedEvent) { disconnected <- e })
+	sub, err := client.NewSubscription("ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribed := make(chan SubscribedEvent, 1)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribed <- e })
+	publications := make(chan PublicationEvent, 1)
+	sub.OnPublication(func(e PublicationEvent) { publications <- e })
+	_ = sub.Subscribe()
+	waitCh(t, subscribed, "subscribed")
+
+	s.SendPush(&protocol.Push{Channel: "ch", Pub: &protocol.Publication{Data: []byte("delta"), Delta: true, Offset: 1}})
+	var deltaErr DeltaError
+	if err := waitCh(t, errs, "error"); !errors.As(err, &deltaErr) {
+		t.Fatalf("expected DeltaError, got %v", err)
+	}
+	if e := waitCh(t, disconnected, "disconnect"); e.Code != disconnectBadProtocol {
+		t.Fatalf("expected disconnect code %d, got %d (%s)", disconnectBadProtocol, e.Code, e.Reason)
+	}
+	select {
+	case e := <-publications:
+		t.Fatalf("delta data delivered as a publication: %q", e.Data)
+	default:
+	}
+}
+
+// A connection refresh reply with ttl 0 made the client refresh in a loop.
+func TestConnectionRefreshWithZeroTTLDoesNotLoop(t *testing.T) {
+	s := NewFakeServer(t)
+	s.ConnectResult = &protocol.ConnectResult{Client: "c", Ping: 25, Expires: true, Ttl: 0}
+	var refreshes atomic.Int32
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Refresh == nil {
+			return nil
+		}
+		refreshes.Add(1)
+		return &protocol.Reply{Id: cmd.Id, Refresh: &protocol.RefreshResult{Expires: true, Ttl: 0}}
+	}
+	client := NewProtobufClient(s.URL(), Config{
+		Token:    "token",
+		GetToken: func(ConnectionTokenEvent) (string, error) { return "token", nil },
+	})
+	defer client.Close()
+	_ = client.Connect()
+	time.Sleep(1500 * time.Millisecond)
+	if n := refreshes.Load(); n > 2 {
+		t.Fatalf("expected at most 2 refreshes in 1.5s, got %d", n)
 	}
 }
 
