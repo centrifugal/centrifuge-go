@@ -340,3 +340,35 @@ func TestSubRefreshErrorOfEndedSessionDoesNotUnsubscribe(t *testing.T) {
 		t.Fatalf("expected subscribed, got %s", state)
 	}
 }
+
+// A sub refresh reply with ttl 0 made the subscription refresh in a loop.
+func TestSubRefreshWithZeroTTLDoesNotLoop(t *testing.T) {
+	server := NewFakeServer(t)
+	server.OnSubscribe = func(_ string, _ *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		return &protocol.SubscribeResult{Expires: true, Ttl: 0}
+	}
+	var refreshes atomic.Int32
+	server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.SubRefresh == nil {
+			return nil
+		}
+		refreshes.Add(1)
+		return &protocol.Reply{Id: cmd.Id, SubRefresh: &protocol.SubRefreshResult{Expires: true, Ttl: 0}}
+	}
+	client := NewProtobufClient(server.URL(), Config{})
+	t.Cleanup(client.Close)
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		GetToken: func(_ SubscriptionTokenEvent) (string, error) {
+			return "token", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	time.Sleep(1500 * time.Millisecond)
+	if n := refreshes.Load(); n > 2 {
+		t.Fatalf("expected at most 2 sub refreshes in 1.5s, got %d", n)
+	}
+}

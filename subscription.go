@@ -728,6 +728,11 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 // delta chain is broken, see deltaFailed.
 func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event PublicationEvent) (PublicationEvent, error) {
 	if !s.deltaNegotiated {
+		if pub.Delta {
+			// Delta data has no base without negotiated delta, and must not be
+			// delivered as publication data.
+			return event, errors.New("delta publication without negotiated delta")
+		}
 		return event, nil
 	}
 	if s.centrifuge.protocolType == protocol.TypeJSON {
@@ -1222,6 +1227,11 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 		s.refreshTimer.Stop()
 	}
 	session := s.subscribedSession
+	// A ttl of 0 (the token expires in the current second) must not make
+	// refreshes run in a loop.
+	if ttl == 0 {
+		ttl = 1
+	}
 	s.refreshTimer = time.AfterFunc(time.Duration(ttl)*time.Second, func() {
 		s.refresh(session)
 	})

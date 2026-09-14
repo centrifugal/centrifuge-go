@@ -67,11 +67,13 @@ func infoFromProto(v *protocol.ClientInfo) ClientInfo {
 		Client: v.GetClient(),
 		User:   v.GetUser(),
 	}
-	if len(v.ConnInfo) > 0 {
-		info.ConnInfo = v.ConnInfo
+	// v is nil for a join, leave or presence entry without info, which only a
+	// non-conforming server sends: that's a ClientInfo with no fields set.
+	if connInfo := v.GetConnInfo(); len(connInfo) > 0 {
+		info.ConnInfo = connInfo
 	}
-	if len(v.ChanInfo) > 0 {
-		info.ChanInfo = v.ChanInfo
+	if chanInfo := v.GetChanInfo(); len(chanInfo) > 0 {
+		info.ChanInfo = chanInfo
 	}
 	return info
 }
