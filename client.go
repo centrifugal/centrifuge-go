@@ -483,11 +483,11 @@ func (c *Client) moveToDisconnectedFrom(t transport, code uint32, reason string)
 // checked in the same lock hold, reports true: a disconnect decided by a
 // connect attempt or a refresh superseded meanwhile must not end a newer
 // connection.
-func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason string) {
+func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason string) bool {
 	c.mu.Lock()
 	if c.state == StateDisconnected || c.state == StateClosed || (current != nil && !current()) {
 		c.mu.Unlock()
-		return
+		return false
 	}
 	c.connectAttempt++
 	if c.transport != nil {
@@ -544,6 +544,7 @@ func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason s
 			handler(event)
 		})
 	}
+	return true
 }
 
 // moveToConnectingFrom moves the client to connecting for a disconnect reported
@@ -1272,9 +1273,6 @@ func (c *Client) startReconnecting() error {
 		_ = c.transport.Close()
 		c.setTransportLocked(nil)
 	}
-	refreshRequired := c.refreshRequired
-	token := c.token
-	getTokenFunc := c.config.GetToken
 	c.mu.Unlock()
 
 	wsConfig := websocketConfig{
@@ -1317,6 +1315,13 @@ func (c *Client) startReconnecting() error {
 		c.log(LogLevelDebug, "new transport created", nil)
 	}
 
+	// Read after the dial: the application may have called SetToken during it.
+	c.mu.Lock()
+	refreshRequired := c.refreshRequired
+	token := c.token
+	getTokenFunc := c.config.GetToken
+	c.mu.Unlock()
+
 	if refreshRequired || (token == "" && getTokenFunc != nil) {
 		// Try to refresh token.
 		if c.logLevelEnabled(LogLevelDebug) {
@@ -1324,35 +1329,46 @@ func (c *Client) startReconnecting() error {
 		}
 		newToken, err := c.refreshToken()
 		if err != nil {
-			// The transport was dialed before requesting the token and won't be
-			// used for this attempt, close it so the connection does not leak.
-			_ = t.Close()
 			if errors.Is(err, ErrUnauthorized) {
 				if c.logLevelEnabled(LogLevelDebug) {
 					c.log(LogLevelDebug, "unauthorized error, move to disconnected", nil)
 				}
-				c.moveToDisconnectedIf(func() bool { return c.isCurrentAttemptLocked(attempt) }, disconnectedUnauthorized, "unauthorized")
-				return nil
-			}
-			if c.logLevelEnabled(LogLevelDebug) {
-				c.log(LogLevelDebug, "error refreshing token", map[string]string{
-					"error": err.Error(),
-				})
-			}
-			c.handleError(RefreshError{err})
-			c.mu.Lock()
-			if !c.isCurrentAttemptLocked(attempt) {
+				// Without GetToken the application can set a token when the
+				// configuration error is reported: SetToken clears refreshRequired,
+				// and the attempt connects with that token below.
+				disconnected := c.moveToDisconnectedIf(func() bool {
+					return c.isCurrentAttemptLocked(attempt) && (getTokenFunc != nil || c.refreshRequired)
+				}, disconnectedUnauthorized, "unauthorized")
+				if disconnected || getTokenFunc != nil {
+					// The transport was dialed before requesting the token and won't
+					// be used for this attempt, close it so the connection does not leak.
+					_ = t.Close()
+					return nil
+				}
+			} else {
+				// The transport was dialed before requesting the token and won't be
+				// used for this attempt, close it so the connection does not leak.
+				_ = t.Close()
 				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
-						"state": string(c.state),
+					c.log(LogLevelDebug, "error refreshing token", map[string]string{
+						"error": err.Error(),
 					})
 				}
+				c.handleError(RefreshError{err})
+				c.mu.Lock()
+				if !c.isCurrentAttemptLocked(attempt) {
+					if c.logLevelEnabled(LogLevelDebug) {
+						c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
+							"state": string(c.state),
+						})
+					}
+					c.mu.Unlock()
+					return nil
+				}
+				c.scheduleReconnectLocked()
 				c.mu.Unlock()
-				return nil
+				return err
 			}
-			c.scheduleReconnectLocked()
-			c.mu.Unlock()
-			return err
 		} else {
 			c.mu.Lock()
 			if !c.isCurrentAttemptLocked(attempt) {
