@@ -406,7 +406,13 @@ func (c *Client) RPC(ctx context.Context, method string, data []byte) (RPCResult
 }
 
 func (c *Client) nextCmdID() uint32 {
-	return atomic.AddUint32(&c.cmdID, 1)
+	for {
+		// 0 isn't a valid command id: a server closes the connection on it, and
+		// a reply with id 0 is a ping.
+		if id := atomic.AddUint32(&c.cmdID, 1); id != 0 {
+			return id
+		}
+	}
 }
 
 func (c *Client) isConnected() bool {
