@@ -462,6 +462,33 @@ func TestSetTokenFromOnErrorOfExpiredTokenConnects(t *testing.T) {
 		}
 	}
 }
+
+func TestResubscribeWhileDisconnectedDoesNotFetchToken(t *testing.T) {
+	client := NewProtobufClient("ws://127.0.0.1:1/connection/websocket", Config{})
+	closeOnCleanup(t, client)
+	var calls atomic.Int32
+	sub, err := client.NewSubscription("news", SubscriptionConfig{
+		GetToken: func(SubscriptionTokenEvent) (string, error) {
+			calls.Add(1)
+			return "token", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The client isn't connected: the subscription waits in subscribing.
+	_ = sub.Subscribe()
+	// A resubscribe timer fires meanwhile.
+	sub.resubscribe()
+	time.Sleep(100 * time.Millisecond)
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("GetToken called %d time(s) for a subscribe that can't be sent while the client is disconnected", n)
+	}
+	if sub.inflight.Load() {
+		t.Fatal("the subscription is left in flight")
+	}
+}
+
 // Subscription tokens fetched when subscriptions resubscribe on connect. That
 // resubscribe runs while the connect reply callback holds the client mutex, so
 // GetToken must not run there: a failure is reported through event handlers,

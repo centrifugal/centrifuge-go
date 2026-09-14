@@ -1004,6 +1004,14 @@ func (s *Subscription) resubscribe() {
 		}
 		return
 	}
+	if !s.centrifuge.connected.Load() {
+		// E.g. a resubscribe timer firing while the client is disconnected or
+		// connecting: the connect resubscribes, so don't call GetState or
+		// GetToken for a subscribe that can't be sent yet (a token fetched now
+		// could expire before it is used).
+		s.mu.Unlock()
+		return
+	}
 	// GetState: ask the app for its current state position. Only called when
 	// we don't have a saved position (first subscribe or after a position
 	// reset due to unrecoverable position error 112). On normal reconnects
