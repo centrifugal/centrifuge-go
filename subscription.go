@@ -823,8 +823,12 @@ func (s *Subscription) scheduleResubscribe() {
 // change happens in the same lock hold as the check that the attempt is still
 // current: after an Unsubscribe and Subscribe the error is outdated and a new
 // subscribe is sent instead (see moveToSubscribed).
-func (s *Subscription) subscribeError(err error, attempt uint64) {
-	if !s.lockCurrentAttempt(attempt) {
+// noConnGeneration marks a subscribe error not tied to a connection (e.g. a
+// GetToken failure).
+const noConnGeneration int64 = -1
+
+func (s *Subscription) subscribeError(err error, attempt uint64, connGeneration int64) {
+	if !s.lockCurrentSubscribe(attempt, connGeneration) {
 		return
 	}
 	s.mu.Unlock()
@@ -839,7 +843,7 @@ func (s *Subscription) subscribeError(err error, attempt uint64) {
 	if isServerError && serverError.Code == errorCodeUnrecoverablePosition && s.getState != nil {
 		// Unrecoverable position with GetState: reset position so the next
 		// subscribe attempt calls GetState to reload app state from scratch.
-		if !s.lockCurrentAttempt(attempt) {
+		if !s.lockCurrentSubscribe(attempt, connGeneration) {
 			return
 		}
 		s.recover = false
@@ -853,7 +857,10 @@ func (s *Subscription) subscribeError(err error, attempt uint64) {
 
 	s.emitError(SubscriptionSubscribeError{Err: err})
 
-	if !s.lockCurrentAttempt(attempt) {
+	// The connection the subscribe was sent on may have ended while OnError
+	// ran, and a subscribe on the new connection may be in flight: an error of
+	// the ended connection must not unsubscribe it.
+	if !s.lockCurrentSubscribe(attempt, connGeneration) {
 		return
 	}
 	if isServerError && serverError.Code != 109 && !serverError.Temporary {
@@ -874,6 +881,26 @@ func (s *Subscription) subscribeError(err error, attempt uint64) {
 func (s *Subscription) lockCurrentAttempt(attempt uint64) bool {
 	s.mu.Lock()
 	if s.state == SubStateSubscribing && s.subscribeAttempt == attempt {
+		return true
+	}
+	outdated := s.state == SubStateSubscribing
+	s.mu.Unlock()
+	if outdated {
+		s.resubscribe()
+	}
+	return false
+}
+
+// lockCurrentSubscribe is lockCurrentAttempt that also requires the connected
+// session the subscribe was sent in (noConnGeneration: not tied to one) to be
+// the current one. An error of an ended session is outdated: the subscription
+// resubscribes, which does nothing while a newer subscribe is in flight.
+func (s *Subscription) lockCurrentSubscribe(attempt uint64, connGeneration int64) bool {
+	if connGeneration == noConnGeneration {
+		return s.lockCurrentAttempt(attempt)
+	}
+	s.mu.Lock()
+	if s.state == SubStateSubscribing && s.subscribeAttempt == attempt && s.centrifuge.connGeneration.Load() == connGeneration {
 		return true
 	}
 	outdated := s.state == SubStateSubscribing
@@ -1132,7 +1159,7 @@ func (s *Subscription) continueResubscribe(async bool) {
 				return
 			}
 			s.mu.Unlock()
-			s.subscribeError(err, attempt)
+			s.subscribeError(err, attempt, noConnGeneration)
 			return
 		}
 		if token == "" {
@@ -1195,7 +1222,7 @@ func (s *Subscription) continueResubscribe(async bool) {
 	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, s.tagsFilter, flag, func(res *protocol.SubscribeResult, err error) {
 		s.inflight.Store(false)
 		if err != nil {
-			s.subscribeError(err, attempt)
+			s.subscribeError(err, attempt, connGeneration)
 			return
 		}
 		s.moveToSubscribed(res, connGeneration, attempt)
