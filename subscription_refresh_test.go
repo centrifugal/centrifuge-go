@@ -252,3 +252,91 @@ func TestSubRefreshStartedBeforeResubscribeStops(t *testing.T) {
 		t.Fatalf("expected subscribed, got %s", state)
 	}
 }
+
+// A failed sub refresh is reported to OnError, which waits for the handler,
+// before the subscription unsubscribes. If the subscription resubscribed in the
+// meantime (for example after a reconnect), the failure belongs to the ended
+// subscribed session and must not unsubscribe the new one.
+func TestSubRefreshErrorOfEndedSessionDoesNotUnsubscribe(t *testing.T) {
+	server := NewFakeServer(t)
+	var subscribes atomic.Int32
+	server.OnSubscribe = func(_ string, _ *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		if subscribes.Add(1) == 1 {
+			return &protocol.SubscribeResult{Expires: true, Ttl: 1}
+		}
+		return &protocol.SubscribeResult{}
+	}
+	server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.SubRefresh == nil {
+			return nil
+		}
+		return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 103, Message: "permission denied"}}
+	}
+	client := NewProtobufClient(server.URL(), Config{
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	t.Cleanup(client.Close)
+
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		GetToken: func(_ SubscriptionTokenEvent) (string, error) {
+			return "token", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	subscribedCh := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	refreshErrorStarted := make(chan struct{})
+	releaseRefreshError := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseRefreshError:
+		default:
+			close(releaseRefreshError)
+		}
+	})
+	var errorCalls atomic.Int32
+	sub.OnError(func(_ SubscriptionErrorEvent) {
+		if errorCalls.Add(1) == 1 {
+			close(refreshErrorStarted)
+			<-releaseRefreshError
+		}
+	})
+
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+	waitCh(t, refreshErrorStarted, "refresh error")
+	// The refresh reply is handled on the reader of the connection, which the
+	// handler blocks, so the app starts a new connection.
+	_ = client.Disconnect()
+	_ = client.Connect()
+	// OnSubscribed can't run while the OnError handler blocks, so poll.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sub.mu.RLock()
+		resubscribed := sub.state == SubStateSubscribed && sub.subscribedSession == 2
+		sub.mu.RUnlock()
+		if resubscribed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for resubscribe")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	receivedBefore := len(server.Received())
+	close(releaseRefreshError)
+	time.Sleep(300 * time.Millisecond)
+
+	for _, cmd := range server.Received()[receivedBefore:] {
+		if cmd.Unsubscribe != nil {
+			t.Fatal("refresh error of the ended subscribed session sent unsubscribe")
+		}
+	}
+	if state := sub.State(); state != SubStateSubscribed {
+		t.Fatalf("expected subscribed, got %s", state)
+	}
+}

@@ -318,7 +318,11 @@ func (c *Client) RemoveSubscription(sub *Subscription) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.subs, sub.Channel)
+	// Removing an already removed Subscription must not remove a newer one to
+	// the same channel.
+	if c.subs[sub.Channel] == sub {
+		delete(c.subs, sub.Channel)
+	}
 	return nil
 }
 

@@ -826,6 +826,32 @@ func subscriptionCommands(s *FakeServer, channel string) []string {
 	return commands
 }
 
+// Removing a Subscription that was already removed must not remove a newer
+// Subscription to the same channel from the registry: the newer one would then
+// not be resubscribed after a reconnect.
+func TestRemoveSubscriptionKeepsNewerSubscriptionToSameChannel(t *testing.T) {
+	client := NewProtobufClient("ws://127.0.0.1:1/connection/websocket", Config{})
+	defer client.Close()
+
+	sub1, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RemoveSubscription(sub1); err != nil {
+		t.Fatal(err)
+	}
+	sub2, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.RemoveSubscription(sub1); err != nil {
+		t.Fatal(err)
+	}
+	if sub, ok := client.GetSubscription("news"); !ok || sub != sub2 {
+		t.Fatal("removing the stale subscription removed the newer subscription to the same channel")
+	}
+}
+
 func connectFakeClient(t *testing.T, s *FakeServer, config Config) *Client {
 	t.Helper()
 	client := NewProtobufClient(s.URL(), config)
