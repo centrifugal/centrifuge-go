@@ -1,8 +1,10 @@
 package centrifuge
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -431,6 +433,113 @@ func TestSetTokenFromOnErrorOfExpiredTokenConnects(t *testing.T) {
 	// The application replaces the expired token as soon as it's reported.
 	client.OnError(func(e ErrorEvent) {
 		if _, ok := e.Error.(ConnectError); ok {
+			client.SetToken("fresh")
+		}
+	})
+	disconnected := make(chan DisconnectedEvent, 4)
+	client.OnDisconnected(func(e DisconnectedEvent) { disconnected <- e })
+	connected := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+
+	_ = client.Connect()
+	select {
+	case <-connected:
+	case e := <-disconnected:
+		t.Fatalf("disconnected (%d %s) instead of connecting with the token set in OnError", e.Code, e.Reason)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting to connect with the token set in OnError")
+	}
+	received := s.Received()
+	for i := len(received) - 1; i >= 0; i-- {
+		if received[i].Connect != nil {
+			if token := received[i].Connect.Token; token != "fresh" {
+				t.Fatalf("expected the connect to use the token set in OnError, got %q", token)
+			}
+			break
+		}
+	}
+}
+
+// Without GetToken, SetToken and Connect() during the dial of the reconnect
+// after a connect error 109 must connect with the token set: the attempt must
+// not decide from the token state it read before the dial.
+func TestSetTokenDuringReconnectDialAfterExpiredTokenConnects(t *testing.T) {
+	s := NewFakeServer(t)
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Connect != nil && cmd.Connect.Token == "expired" {
+			return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 109, Message: "token expired"}}
+		}
+		return nil
+	}
+	var dials atomic.Int32
+	reconnectDialStarted := make(chan struct{}, 1)
+	releaseReconnectDial := make(chan struct{})
+	client := NewProtobufClient(s.URL(), Config{
+		Token:             "expired",
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+		HandshakeTimeout:  5 * time.Second,
+		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if dials.Add(1) == 2 {
+				reconnectDialStarted <- struct{}{}
+				<-releaseReconnectDial
+			}
+			var d net.Dialer
+			return d.DialContext(ctx, network, addr)
+		},
+	})
+	closeOnCleanup(t, client)
+	disconnected := make(chan DisconnectedEvent, 4)
+	client.OnDisconnected(func(e DisconnectedEvent) { disconnected <- e })
+	connected := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+
+	_ = client.Connect()
+	waitCh(t, reconnectDialStarted, "reconnect dial after the connect error 109")
+	client.SetToken("fresh")
+	if err := client.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseReconnectDial)
+
+	select {
+	case <-connected:
+	case e := <-disconnected:
+		t.Fatalf("disconnected (%d %s) instead of connecting with the token set during the dial", e.Code, e.Reason)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting to connect with the token set during the dial")
+	}
+}
+
+// Without GetToken, a reconnect with an expired token reports a configuration
+// error. SetToken from its OnError handler must let that attempt connect with
+// the token set instead of disconnecting as unauthorized.
+func TestSetTokenFromOnErrorOfConfigurationErrorConnects(t *testing.T) {
+	s := NewFakeServer(t)
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Connect != nil && cmd.Connect.Token == "expired" {
+			return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 109, Message: "token expired"}}
+		}
+		return nil
+	}
+	client := NewProtobufClient(s.URL(), Config{
+		Token:             "expired",
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+	client.OnError(func(e ErrorEvent) {
+		if _, ok := e.Error.(ConfigurationError); ok {
 			client.SetToken("fresh")
 		}
 	})
