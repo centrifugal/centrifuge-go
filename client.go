@@ -1161,8 +1161,15 @@ func (c *Client) handleServerPublication(channel string, pub *protocol.Publicati
 		c.mu.Unlock()
 		return
 	}
-	if serverSub.Recoverable && pub.Offset > 0 {
-		serverSub.Offset = pub.Offset
+	if serverSub.Recoverable {
+		if pub.Offset > 0 {
+			serverSub.Offset = pub.Offset
+		}
+		// The epoch of a channel that had no stream at subscribe time comes
+		// with its first publication.
+		if pub.Epoch != "" {
+			serverSub.Epoch = pub.Epoch
+		}
 	}
 	c.mu.Unlock()
 
@@ -1645,6 +1652,9 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 							return
 						}
 						sub.Offset = pub.Offset
+						if pub.Epoch != "" {
+							sub.Epoch = pub.Epoch
+						}
 						c.mu.Unlock()
 						if publishHandler != nil {
 							publishHandler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})

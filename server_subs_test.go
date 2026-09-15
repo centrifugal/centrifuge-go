@@ -11,6 +11,62 @@ import (
 	"github.com/centrifugal/protocol"
 )
 
+// A connect reply has no epoch for a channel that had no stream yet: the server
+// sends the epoch with the first publication and checks it on recovery.
+func TestServerSubRecoversWithEpochOfFirstPublication(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		inReply bool
+	}{
+		{name: "publication push"},
+		{name: "publication in connect reply", inReply: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewFakeServer(t)
+			var connects atomic.Int32
+			server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+				if cmd.Connect == nil {
+					return nil
+				}
+				news := &protocol.SubscribeResult{Recoverable: true}
+				if connects.Add(1) == 1 && tc.inReply {
+					news.Publications = []*protocol.Publication{{Offset: 1, Epoch: "e1", Data: []byte(`{}`)}}
+				}
+				return &protocol.Reply{Id: cmd.Id, Connect: &protocol.ConnectResult{
+					Client: "fake-client", Subs: map[string]*protocol.SubscribeResult{"news": news},
+				}}
+			}
+			client := NewProtobufClient(server.URL(), Config{
+				MinReconnectDelay: 10 * time.Millisecond,
+				MaxReconnectDelay: 20 * time.Millisecond,
+			})
+			t.Cleanup(client.Close)
+			subscribed := make(chan struct{}, 2)
+			client.OnSubscribed(func(ServerSubscribedEvent) { subscribed <- struct{}{} })
+			published := make(chan struct{}, 1)
+			client.OnPublication(func(ServerPublicationEvent) { published <- struct{}{} })
+			_ = client.Connect()
+			waitCh(t, subscribed, "subscribed")
+			if !tc.inReply {
+				server.SendPush(&protocol.Push{Channel: "news", Pub: &protocol.Publication{Offset: 1, Epoch: "e1", Data: []byte(`{}`)}})
+			}
+			waitCh(t, published, "publication")
+
+			server.CloseConnection()
+			waitCondition(t, "reconnect", func() bool { return connects.Load() >= 2 })
+			var next *protocol.SubscribeRequest
+			for _, cmd := range server.Received() {
+				if cmd.Connect != nil {
+					next = cmd.Connect.Subs["news"]
+				}
+			}
+			if next == nil || !next.Recover || next.Offset != 1 || next.Epoch != "e1" {
+				t.Fatalf("next connect recovers news with %+v, expected offset 1 and the epoch of the first publication", next)
+			}
+		})
+	}
+}
+
 // Server-side subscriptions recover through the connect reply. The stored
 // position must only move as recovered publications are delivered, and nothing
 // of a connection a handler tore down is emitted afterwards: the publications
