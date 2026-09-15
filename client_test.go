@@ -1654,6 +1654,39 @@ func TestSubscribeReplyDoesNotHoldSubscriptionLockForWaitingCalls(t *testing.T) 
 	}
 }
 
+// A subscribe reply has no epoch when the channel had no stream yet: the server
+// sends the epoch with the first publication and checks it on recovery.
+func TestSubscriptionRecoversWithEpochOfFirstPublication(t *testing.T) {
+	s := NewFakeServer(t)
+	var subscribes atomic.Int32
+	s.OnSubscribe = func(string, *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		subscribes.Add(1)
+		return &protocol.SubscribeResult{Recoverable: true}
+	}
+	client := NewProtobufClient(s.URL(), Config{MinReconnectDelay: 10 * time.Millisecond, MaxReconnectDelay: 20 * time.Millisecond})
+	closeOnCleanup(t, client)
+	_ = client.Connect()
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := make(chan struct{}, 2)
+	sub.OnPublication(func(PublicationEvent) { published <- struct{}{} })
+	_ = sub.Subscribe()
+	waitCondition(t, "subscribed", func() bool { return sub.State() == SubStateSubscribed })
+
+	s.SendPush(&protocol.Push{Channel: "news", Pub: &protocol.Publication{Offset: 1, Epoch: "e1", Data: []byte(`{}`)}})
+	s.SendPush(&protocol.Push{Channel: "news", Pub: &protocol.Publication{Offset: 2, Data: []byte(`{}`)}})
+	waitCh(t, published, "first publication")
+	waitCh(t, published, "second publication")
+
+	s.CloseConnection()
+	waitCondition(t, "resubscribe", func() bool { return subscribes.Load() == 2 })
+	if req := s.LastSubscribe(); !req.Recover || req.Offset != 2 || req.Epoch != "e1" {
+		t.Fatalf("resubscribe must recover with the epoch of the first publication, got recover=%v offset=%d epoch=%q", req.Recover, req.Offset, req.Epoch)
+	}
+}
+
 func TestRecoveredPublicationsOfEndedSessionNotDeliveredAgain(t *testing.T) {
 	s := NewFakeServer(t)
 	var subscribes atomic.Int32
