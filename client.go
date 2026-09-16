@@ -1161,13 +1161,12 @@ func (c *Client) handleServerPublication(channel string, pub *protocol.Publicati
 		c.mu.Unlock()
 		return
 	}
-	if serverSub.Recoverable {
-		if pub.Offset > 0 {
-			serverSub.Offset = pub.Offset
-		}
+	if serverSub.Recoverable && pub.Offset > 0 {
+		serverSub.Offset = pub.Offset
 		// The epoch of a channel that had no stream at subscribe time comes
-		// with its first publication.
-		if pub.Epoch != "" {
+		// with its first publication, always together with the offset it
+		// belongs to (see Subscription.handlePublication).
+		if pub.Epoch != "" && pub.GetChannel() == "" {
 			serverSub.Epoch = pub.Epoch
 		}
 	}
@@ -1608,7 +1607,17 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 			}
 			sub, ok := c.serverSubs[channel]
 			if ok {
-				sub.Epoch = subRes.Epoch
+				// An empty epoch means the server has no stream position for the
+				// channel (e.g. its broker answered from a replica that lags
+				// behind). Keep the position already known then — dropping it
+				// would start the next recovery at the beginning of the stream,
+				// with the server's epoch check skipped.
+				if subRes.Epoch != "" || sub.Epoch == "" {
+					sub.Epoch = subRes.Epoch
+					if len(subRes.Publications) == 0 {
+						sub.Offset = subRes.Offset
+					}
+				}
 				sub.Recoverable = subRes.Recoverable
 			} else {
 				sub = &serverSub{
@@ -1616,9 +1625,6 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 					Offset:      subRes.Offset,
 					Recoverable: subRes.Recoverable,
 				}
-			}
-			if len(subRes.Publications) == 0 {
-				sub.Offset = subRes.Offset
 			}
 			c.serverSubs[channel] = sub
 			c.mu.Unlock()
@@ -1651,9 +1657,11 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 							c.mu.Unlock()
 							return
 						}
-						sub.Offset = pub.Offset
-						if pub.Epoch != "" {
-							sub.Epoch = pub.Epoch
+						if pub.Offset > 0 {
+							sub.Offset = pub.Offset
+							if pub.Epoch != "" && pub.GetChannel() == "" {
+								sub.Epoch = pub.Epoch
+							}
 						}
 						c.mu.Unlock()
 						if publishHandler != nil {

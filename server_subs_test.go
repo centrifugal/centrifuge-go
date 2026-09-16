@@ -11,6 +11,81 @@ import (
 	"github.com/centrifugal/protocol"
 )
 
+// A connect reply without an epoch means the server has no stream position for
+// the channel: it must not drop a position the client already knows. A
+// publication without an offset must not move the position either, in the push
+// or in the connect reply.
+func TestServerSubKeepsPositionServerDoesNotKnow(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		pub        *protocol.Publication
+		inReply    bool
+		wantOffset uint64
+		wantEpoch  string
+	}{
+		{name: "reply without an epoch", wantOffset: 1, wantEpoch: "e1"},
+		{name: "push without an offset", pub: &protocol.Publication{Epoch: "e2", Data: []byte(`{}`)}, wantOffset: 1, wantEpoch: "e1"},
+		{name: "connect reply publication without an offset", pub: &protocol.Publication{Epoch: "e2", Data: []byte(`{}`)}, inReply: true, wantOffset: 1, wantEpoch: "e1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := NewFakeServer(t)
+			var connects atomic.Int32
+			server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+				if cmd.Connect == nil {
+					return nil
+				}
+				// Like a broker answering from a replica that lags behind: the
+				// channel's position is unknown, so the reply carries no epoch.
+				news := &protocol.SubscribeResult{Recoverable: true}
+				if connects.Add(1) > 1 && tc.inReply && tc.pub != nil {
+					news.Publications = []*protocol.Publication{tc.pub}
+				}
+				return &protocol.Reply{Id: cmd.Id, Connect: &protocol.ConnectResult{
+					Client: "fake-client", Subs: map[string]*protocol.SubscribeResult{"news": news},
+				}}
+			}
+			client := NewProtobufClient(server.URL(), Config{
+				MinReconnectDelay: 10 * time.Millisecond,
+				MaxReconnectDelay: 20 * time.Millisecond,
+			})
+			t.Cleanup(client.Close)
+			subscribed := make(chan struct{}, 4)
+			client.OnSubscribed(func(ServerSubscribedEvent) { subscribed <- struct{}{} })
+			published := make(chan struct{}, 4)
+			client.OnPublication(func(ServerPublicationEvent) { published <- struct{}{} })
+			_ = client.Connect()
+			waitCh(t, subscribed, "subscribed")
+
+			// The epoch of the channel's first publication is adopted.
+			server.SendPush(&protocol.Push{Channel: "news", Pub: &protocol.Publication{Offset: 1, Epoch: "e1", Data: []byte(`{}`)}})
+			waitCh(t, published, "first publication")
+
+			if tc.pub != nil && !tc.inReply {
+				server.SendPush(&protocol.Push{Channel: "news", Pub: tc.pub})
+				waitCh(t, published, "publication without an offset")
+			}
+
+			// Reconnect twice: neither the epoch-less replies nor a publication
+			// without an offset may reset what the client knows.
+			server.CloseConnection()
+			waitCondition(t, "reconnect", func() bool { return connects.Load() >= 2 })
+			waitCh(t, subscribed, "subscribed again")
+			server.CloseConnection()
+			waitCondition(t, "second reconnect", func() bool { return connects.Load() >= 3 })
+
+			var next *protocol.SubscribeRequest
+			for _, cmd := range server.Received() {
+				if cmd.Connect != nil {
+					next = cmd.Connect.Subs["news"]
+				}
+			}
+			if next == nil || !next.Recover || next.Offset != tc.wantOffset || next.Epoch != tc.wantEpoch {
+				t.Fatalf("next connect recovers news with %+v, expected offset %d epoch %q", next, tc.wantOffset, tc.wantEpoch)
+			}
+		})
+	}
+}
+
 // A connect reply has no epoch for a channel that had no stream yet: the server
 // sends the epoch with the first publication and checks it on recovery.
 func TestServerSubRecoversWithEpochOfFirstPublication(t *testing.T) {
