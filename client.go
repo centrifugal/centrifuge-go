@@ -1165,8 +1165,9 @@ func (c *Client) handleServerPublication(channel string, pub *protocol.Publicati
 		serverSub.Offset = pub.Offset
 		// The epoch of a channel that had no stream at subscribe time comes
 		// with its first publication, always together with the offset it
-		// belongs to (see Subscription.handlePublication).
-		if pub.Epoch != "" && pub.GetChannel() == "" {
+		// belongs to, and is adopted only while none is known (see
+		// Subscription.handlePublication).
+		if serverSub.Epoch == "" && pub.Epoch != "" && pub.GetChannel() == "" {
 			serverSub.Epoch = pub.Epoch
 		}
 	}
@@ -1659,7 +1660,7 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 						}
 						if pub.Offset > 0 {
 							sub.Offset = pub.Offset
-							if pub.Epoch != "" && pub.GetChannel() == "" {
+							if sub.Epoch == "" && pub.Epoch != "" && pub.GetChannel() == "" {
 								sub.Epoch = pub.Epoch
 							}
 						}

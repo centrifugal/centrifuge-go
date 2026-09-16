@@ -25,6 +25,7 @@ func TestServerSubKeepsPositionServerDoesNotKnow(t *testing.T) {
 	}{
 		{name: "reply without an epoch", wantOffset: 1, wantEpoch: "e1"},
 		{name: "push without an offset", pub: &protocol.Publication{Epoch: "e2", Data: []byte(`{}`)}, wantOffset: 1, wantEpoch: "e1"},
+		{name: "push with a different epoch", pub: &protocol.Publication{Offset: 2, Epoch: "e2", Data: []byte(`{}`)}, wantOffset: 2, wantEpoch: "e1"},
 		{name: "connect reply publication without an offset", pub: &protocol.Publication{Epoch: "e2", Data: []byte(`{}`)}, inReply: true, wantOffset: 1, wantEpoch: "e1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -719,7 +719,7 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 				}
 				if pub.Offset > 0 {
 					s.offset = pub.Offset
-					if pub.Epoch != "" && pub.GetChannel() == "" {
+					if s.epoch == "" && pub.Epoch != "" && pub.GetChannel() == "" {
 						s.epoch = pub.Epoch
 					}
 				}
@@ -949,15 +949,17 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 	}
 	if pub.Offset > 0 {
 		s.offset = pub.Offset
-		// A subscribe reply has no epoch when the channel had no stream yet: the
-		// server then sends the epoch with the channel's first publication and
-		// uses it to check a later recovery. It always comes together with the
-		// offset it belongs to, so taking one without the other would store a
-		// position that never existed. A publication of another channel (a
-		// wildcard subscription carries the concrete channel) belongs to a
-		// different stream, and so does a keyed channel's epoch, which is a
-		// different thing on the same wire field.
-		if pub.Epoch != "" && pub.GetChannel() == "" {
+		// The same rule the server applies to its own stored position: an epoch
+		// is adopted only when none is known yet. A subscribe reply has no epoch
+		// when the channel had no stream (e.g. its broker answered from a replica
+		// that lags behind), and the server then sends the epoch with the
+		// channel's first publication, always together with the offset it belongs
+		// to. An epoch that differs from one already known means the stream was
+		// reset, which the server reports as insufficient state — overwriting the
+		// position here would hide it. A publication of another channel (a
+		// wildcard subscription carries the concrete channel) belongs to another
+		// stream, and a keyed channel puts a different value on the same field.
+		if s.epoch == "" && pub.Epoch != "" && pub.GetChannel() == "" {
 			s.epoch = pub.Epoch
 		}
 	}

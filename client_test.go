@@ -1688,16 +1688,18 @@ func TestSubscriptionKeepsEpochWhenSubscribeReplyHasNone(t *testing.T) {
 	}
 }
 
-// The server stamps a publication's epoch together with the offset it belongs
-// to. Taking one without the other stores a position that never existed, and
-// the same wire field means something else on a keyed channel.
-func TestSubscriptionIgnoresPublicationEpochWithoutOffset(t *testing.T) {
+// A publication's epoch is adopted only while none is known, and only together
+// with the offset it belongs to, as the server does for its own stored position:
+// an epoch that differs from one already known means the stream was reset, which
+// the server reports as insufficient state.
+func TestSubscriptionIgnoresUnusablePublicationEpoch(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		pub  *protocol.Publication
 	}{
 		{name: "epoch without offset", pub: &protocol.Publication{Epoch: "e2", Data: []byte(`{}`)}},
 		{name: "epoch of another channel", pub: &protocol.Publication{Channel: "news:a", Offset: 1, Epoch: "e2", Data: []byte(`{}`)}},
+		{name: "epoch differing from the known one", pub: &protocol.Publication{Offset: 11, Epoch: "e2", Data: []byte(`{}`)}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewFakeServer(t)
