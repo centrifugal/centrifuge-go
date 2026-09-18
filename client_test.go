@@ -1172,6 +1172,67 @@ func TestSendDoesNotRaceWithDisconnect(t *testing.T) {
 	<-done
 }
 
+func TestSubscribeReplyDoesNotHoldSubscriptionLockForWaitingCalls(t *testing.T) {
+	s := NewFakeServer(t)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReply := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseReply)
+	s.OnSubscribe = func(string, *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		<-release
+		return &protocol.SubscribeResult{}
+	}
+	client := connectFakeClient(t, s, Config{})
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = sub.Subscribe()
+
+	publishDone := make(chan error, 1)
+	go func() {
+		_, err := sub.Publish(context.Background(), []byte(`{}`))
+		publishDone <- err
+	}()
+	for start := time.Now(); ; time.Sleep(time.Millisecond) {
+		sub.mu.Lock()
+		waiting := len(sub.subFutures)
+		sub.mu.Unlock()
+		if waiting == 1 && s.LastSubscribe() != nil {
+			break
+		}
+		if time.Since(start) > 5*time.Second {
+			t.Fatal("publish isn't waiting for the pending subscribe")
+		}
+	}
+
+	// Hold the client lock, as Close does before it locks each subscription,
+	// while the subscribe reply resolves the waiting publish.
+	client.mu.Lock()
+	releaseReply()
+	var blocked, subscribed bool
+	for deadline := time.Now().Add(2 * time.Second); !blocked && !subscribed && time.Now().Before(deadline); {
+		stateCh := make(chan SubState, 1)
+		go func() { stateCh <- sub.State() }()
+		select {
+		case state := <-stateCh:
+			subscribed = state == SubStateSubscribed
+		case <-time.After(time.Second):
+			blocked = true
+		}
+	}
+	client.mu.Unlock()
+	if blocked {
+		t.Fatal("the subscribe reply holds the subscription lock while the waiting publish waits for the client lock: Close would deadlock with it")
+	}
+	if !subscribed {
+		t.Fatal("subscription not subscribed")
+	}
+	if err := waitCh(t, publishDone, "publish"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCallCompletesWithReplyReceivedBeforeTimeout(t *testing.T) {
 	s := NewFakeServer(t)
 	const readTimeout = 150 * time.Millisecond

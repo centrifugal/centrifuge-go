@@ -1357,14 +1357,13 @@ func (c *Client) startReconnecting() error {
 	c.refreshRequired = false
 	disconnectCh := make(chan struct{})
 	c.receive = make(chan []byte, 64)
-	c.setTransportLocked(t)
 	c.disconnectedCh = disconnectCh
 
 	go c.reader(t, disconnectCh)
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "started reader loop, sending connect frame", nil)
 	}
-	err = c.sendConnect(func(res *protocol.ConnectResult, err error) {
+	err = c.sendConnect(t, func(res *protocol.ConnectResult, err error) {
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "connect result received", nil)
 		}
@@ -1629,10 +1628,13 @@ func (c *Client) startReconnecting() error {
 				"error": err.Error(),
 			})
 		}
-		c.setTransportLocked(nil)
 		_ = t.Close()
 		c.scheduleReconnectLocked()
 	} else {
+		// Only now other commands may use the transport: the server closes a
+		// connection whose first frame isn't connect. What the reader does with
+		// t waits for the lock held here.
+		c.setTransportLocked(t)
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "connect frame successfully sent", nil)
 		}
@@ -1850,7 +1852,9 @@ func (c *Client) sendSubRefresh(channel string, token string, fn func(*protocol.
 	})
 }
 
-func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
+// sendConnect writes the connect command to t, before t becomes the client's
+// current transport.
+func (c *Client) sendConnect(t transport, fn func(*protocol.ConnectResult, error)) error {
 	cmd := &protocol.Command{
 		Id: c.nextCmdID(),
 	}
@@ -1877,7 +1881,7 @@ func (c *Client) sendConnect(fn func(*protocol.ConnectResult, error)) error {
 	}
 	cmd.Connect = req
 
-	return c.sendAsync(cmd, func(reply *protocol.Reply, err error) {
+	return c.sendAsyncOn(t, cmd, func(reply *protocol.Reply, err error) {
 		if err != nil {
 			fn(nil, err)
 			return
@@ -2348,9 +2352,20 @@ func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, erro
 const callTimeoutGrace = 50 * time.Millisecond
 
 func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error)) error {
+	return c.sendAsyncOn(nil, cmd, cb)
+}
+
+// sendAsyncOn is sendAsync writing to transport t, or to the current transport
+// when t is nil.
+func (c *Client) sendAsyncOn(t transport, cmd *protocol.Command, cb func(*protocol.Reply, error)) error {
 	c.addRequest(cmd.Id, cb)
 
-	err := c.send(cmd)
+	var err error
+	if t != nil {
+		err = c.sendOn(t, cmd)
+	} else {
+		err = c.send(cmd)
+	}
 	if err != nil {
 		// The caller handles the error, so cb must not run as well. A teardown
 		// racing with the failed send may have taken the request already and

@@ -205,10 +205,12 @@ func (s *Subscription) nextFutureID() uint64 {
 	return atomic.AddUint64(&s.futureID, 1)
 }
 
-// Lock must be held outside.
+// Lock must be held outside. Each future runs on its own goroutine, as in
+// onSubscribe: it goes on with a client call, which takes the client lock, and
+// Close takes the client lock before subscription locks.
 func (s *Subscription) resolveSubFutures(err error) {
 	for _, fut := range s.subFutures {
-		fut.fn(err)
+		go fut.fn(err)
 		close(fut.closeCh)
 	}
 	s.subFutures = make(map[uint64]subFuture)
