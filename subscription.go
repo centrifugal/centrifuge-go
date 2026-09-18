@@ -664,8 +664,14 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 		s.resubscribeTimer.Stop()
 	}
 	s.resolveSubFutures(nil)
-	s.offset = res.Offset
-	s.epoch = res.Epoch
+	// An empty epoch means the server has no stream position for the channel
+	// (e.g. its broker answered from a replica that lags behind). Keep the
+	// position already known then — dropping it would start the next recovery
+	// at the beginning of the stream, with the server's epoch check skipped.
+	if res.Epoch != "" || s.epoch == "" {
+		s.offset = res.Offset
+		s.epoch = res.Epoch
+	}
 	// Channel compaction: register the numeric channel ID assigned by the
 	// server (0 when not negotiated — also clears a stale ID from a previous
 	// subscribe session). Always re-registers even when the ID is unchanged:
@@ -713,9 +719,9 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 				}
 				if pub.Offset > 0 {
 					s.offset = pub.Offset
-				}
-				if pub.Epoch != "" {
-					s.epoch = pub.Epoch
+					if s.epoch == "" && pub.Epoch != "" && pub.GetChannel() == "" {
+						s.epoch = pub.Epoch
+					}
 				}
 				publicationEvent := recoveredEvents[i]
 				s.mu.Unlock()
@@ -943,12 +949,19 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 	}
 	if pub.Offset > 0 {
 		s.offset = pub.Offset
-	}
-	// A subscribe reply has no epoch when the channel had no stream yet: the
-	// server then sends the epoch with the first publication and uses it to
-	// check a later recovery.
-	if pub.Epoch != "" {
-		s.epoch = pub.Epoch
+		// The same rule the server applies to its own stored position: an epoch
+		// is adopted only when none is known yet. A subscribe reply has no epoch
+		// when the channel had no stream (e.g. its broker answered from a replica
+		// that lags behind), and the server then sends the epoch with the
+		// channel's first publication, always together with the offset it belongs
+		// to. An epoch that differs from one already known means the stream was
+		// reset, which the server reports as insufficient state — overwriting the
+		// position here would hide it. A publication of another channel (a
+		// wildcard subscription carries the concrete channel) belongs to another
+		// stream, and a keyed channel puts a different value on the same field.
+		if s.epoch == "" && pub.Epoch != "" && pub.GetChannel() == "" {
+			s.epoch = pub.Epoch
+		}
 	}
 	s.mu.Unlock()
 

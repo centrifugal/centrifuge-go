@@ -1654,6 +1654,84 @@ func TestSubscribeReplyDoesNotHoldSubscriptionLockForWaitingCalls(t *testing.T) 
 	}
 }
 
+// A reply without an epoch means the server has no stream position for the
+// channel: it must not drop a position the client already knows.
+func TestSubscriptionKeepsEpochWhenSubscribeReplyHasNone(t *testing.T) {
+	s := NewFakeServer(t)
+	var subscribes atomic.Int32
+	s.OnSubscribe = func(string, *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		subscribes.Add(1)
+		return &protocol.SubscribeResult{Recoverable: true}
+	}
+	client := NewProtobufClient(s.URL(), Config{MinReconnectDelay: 10 * time.Millisecond, MaxReconnectDelay: 20 * time.Millisecond})
+	closeOnCleanup(t, client)
+	_ = client.Connect()
+	sub, err := client.NewSubscription("news")
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := make(chan struct{}, 1)
+	sub.OnPublication(func(PublicationEvent) { published <- struct{}{} })
+	_ = sub.Subscribe()
+	waitCondition(t, "subscribed", func() bool { return sub.State() == SubStateSubscribed })
+	s.SendPush(&protocol.Push{Channel: "news", Pub: &protocol.Publication{Offset: 1, Epoch: "e1", Data: []byte(`{}`)}})
+	waitCh(t, published, "publication")
+
+	// Two reconnects: the reply of the first one carries no epoch either, and
+	// the position adopted from the publication must survive it.
+	s.CloseConnection()
+	waitCondition(t, "first resubscribe", func() bool { return subscribes.Load() >= 2 })
+	s.CloseConnection()
+	waitCondition(t, "second resubscribe", func() bool { return subscribes.Load() >= 3 })
+	if req := s.LastSubscribe(); !req.Recover || req.Offset != 1 || req.Epoch != "e1" {
+		t.Fatalf("a reply without an epoch must keep the known position, got recover=%v offset=%d epoch=%q", req.Recover, req.Offset, req.Epoch)
+	}
+}
+
+// A publication's epoch is adopted only while none is known, and only together
+// with the offset it belongs to, as the server does for its own stored position:
+// an epoch that differs from one already known means the stream was reset, which
+// the server reports as insufficient state.
+func TestSubscriptionIgnoresUnusablePublicationEpoch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pub  *protocol.Publication
+	}{
+		{name: "epoch without offset", pub: &protocol.Publication{Epoch: "e2", Data: []byte(`{}`)}},
+		{name: "epoch of another channel", pub: &protocol.Publication{Channel: "news:a", Offset: 1, Epoch: "e2", Data: []byte(`{}`)}},
+		{name: "epoch differing from the known one", pub: &protocol.Publication{Offset: 11, Epoch: "e2", Data: []byte(`{}`)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewFakeServer(t)
+			var subscribes atomic.Int32
+			s.OnSubscribe = func(string, *protocol.SubscribeRequest) *protocol.SubscribeResult {
+				subscribes.Add(1)
+				return &protocol.SubscribeResult{Recoverable: true, Epoch: "e1", Offset: 10}
+			}
+			client := NewProtobufClient(s.URL(), Config{MinReconnectDelay: 10 * time.Millisecond, MaxReconnectDelay: 20 * time.Millisecond})
+			closeOnCleanup(t, client)
+			_ = client.Connect()
+			sub, err := client.NewSubscription("news")
+			if err != nil {
+				t.Fatal(err)
+			}
+			published := make(chan struct{}, 1)
+			sub.OnPublication(func(PublicationEvent) { published <- struct{}{} })
+			_ = sub.Subscribe()
+			waitCondition(t, "subscribed", func() bool { return sub.State() == SubStateSubscribed })
+
+			s.SendPush(&protocol.Push{Channel: "news", Pub: tc.pub})
+			waitCh(t, published, "publication")
+
+			s.CloseConnection()
+			waitCondition(t, "resubscribe", func() bool { return subscribes.Load() >= 2 })
+			if req := s.LastSubscribe(); req.Epoch != "e1" {
+				t.Fatalf("the subscription must keep the epoch of its own stream, got epoch=%q offset=%d", req.Epoch, req.Offset)
+			}
+		})
+	}
+}
+
 // A subscribe reply has no epoch when the channel had no stream yet: the server
 // sends the epoch with the first publication and checks it on recovery.
 func TestSubscriptionRecoversWithEpochOfFirstPublication(t *testing.T) {
@@ -2061,6 +2139,86 @@ func TestCallCompletesWithReplyReceivedBeforeTimeout(t *testing.T) {
 // come from the recovered publications. Publishing only while the client is
 // disconnected makes a position that goes back show up as duplicates on the
 // next recovery.
+// The stored position against a real server: what the subscribe reply of a
+// channel without publications carries, what the first publication makes of it,
+// and that recovery across a reconnect keeps it. The rules the SDK follows are
+// the server's own (see Subscription.handlePublication).
+func TestRecoveryPositionOnRealServer(t *testing.T) {
+	channel := "test_recovery_position_" + randString(10)
+	publisher := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
+	defer publisher.Close()
+	_ = publisher.Connect()
+
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket", fastReconnectConfig())
+	defer client.Close()
+	sub, err := client.NewSubscription(channel, SubscriptionConfig{Recoverable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := make(chan struct{}, 8)
+	sub.OnPublication(func(PublicationEvent) { published <- struct{}{} })
+	subscribedCh := make(chan SubscribedEvent, 8)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	first := waitCh(t, subscribedCh, "subscribed")
+
+	if first.StreamPosition == nil {
+		t.Fatalf("a recoverable subscription must report its stream position, got %+v", first)
+	}
+	replyEpoch := first.StreamPosition.Epoch
+	if first.StreamPosition.Offset != 0 {
+		t.Fatalf("a channel without publications starts at offset 0, got %d", first.StreamPosition.Offset)
+	}
+	t.Logf("subscribe reply of a channel without publications: epoch=%q offset=%d", replyEpoch, first.StreamPosition.Offset)
+
+	if _, err := publisher.Publish(context.Background(), channel, []byte(`{"n":1}`)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	waitCh(t, published, "first publication")
+
+	sub.mu.Lock()
+	offset, epoch := sub.offset, sub.epoch
+	sub.mu.Unlock()
+	t.Logf("position after the first publication: epoch=%q offset=%d", epoch, offset)
+	if offset != 1 {
+		t.Fatalf("the first publication moves the position to offset 1, got %d", offset)
+	}
+	if replyEpoch != "" && epoch != replyEpoch {
+		t.Fatalf("the epoch of the reply must be kept, got %q want %q", epoch, replyEpoch)
+	}
+	if replyEpoch == "" && epoch == "" {
+		t.Fatal("a reply without an epoch must be filled from the first publication, got an empty epoch")
+	}
+
+	// Publications missed while disconnected are recovered, and the position
+	// follows them without the epoch changing.
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 2; i <= 3; i++ {
+		if _, err := publisher.Publish(context.Background(), channel, []byte(fmt.Sprintf(`{"n":%d}`, i))); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	_ = client.Connect()
+	if ev := waitCh(t, subscribedCh, "resubscribed"); !ev.WasRecovering || !ev.Recovered {
+		t.Fatalf("expected a successful recovery, got %+v", ev)
+	}
+	waitCh(t, published, "recovered publication 2")
+	waitCh(t, published, "recovered publication 3")
+
+	sub.mu.Lock()
+	offsetAfter, epochAfter := sub.offset, sub.epoch
+	sub.mu.Unlock()
+	if offsetAfter != 3 {
+		t.Fatalf("after recovery the position is the stream top, got %d", offsetAfter)
+	}
+	if epochAfter != epoch {
+		t.Fatalf("the epoch must not change while the stream lives, got %q want %q", epochAfter, epoch)
+	}
+}
+
 func TestRepeatedRecoveryWithoutLivePublicationsHasNoDuplicates(t *testing.T) {
 	channel := "test_repeated_recovery_" + randString(10)
 	publisher := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
