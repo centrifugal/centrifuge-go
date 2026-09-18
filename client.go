@@ -595,6 +595,7 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 	}
 
 	c.setStateLocked(StateConnecting)
+	teardownAttempt := c.connectAttempt
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "client moved to connecting state", nil)
 	}
@@ -666,7 +667,9 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 	}
 
 	c.mu.Lock()
-	if c.state != StateConnecting {
+	// A Disconnect() and a Connect() while the handlers ran started a newer
+	// attempt, which must not be replaced by a reconnect scheduled here.
+	if c.state != StateConnecting || c.connectAttempt != teardownAttempt {
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "not in connecting state, no need to reconnect", map[string]string{
 				"state": string(c.state),
@@ -1257,10 +1260,18 @@ func (c *Client) getReconnectDelay() time.Duration {
 }
 
 func (c *Client) startReconnecting() error {
+	return c.startReconnectingIf(nil)
+}
+
+// startReconnectingIf is startReconnecting when current (nil means always),
+// checked in the same lock hold as the connecting state, reports true: a
+// transition to connecting must not start an attempt once a Disconnect() and a
+// Connect() meanwhile have started a newer one.
+func (c *Client) startReconnectingIf(current func() bool) error {
 	c.mu.Lock()
 	c.round++
 	round := c.round
-	if c.state != StateConnecting {
+	if c.state != StateConnecting || (current != nil && !current()) {
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "not in connecting state, no need to reconnect", map[string]string{
 				"state": string(c.state),
@@ -1725,6 +1736,7 @@ func (c *Client) startConnecting() error {
 		c.closeCh = make(chan struct{})
 	}
 	c.setStateLocked(StateConnecting)
+	attempt := c.connectAttempt
 	c.mu.Unlock()
 
 	var handler ConnectingHandler
@@ -1738,7 +1750,7 @@ func (c *Client) startConnecting() error {
 		})
 	}
 
-	return c.startReconnecting()
+	return c.startReconnectingIf(func() bool { return c.connectAttempt == attempt })
 }
 
 func (c *Client) resubscribe() {
