@@ -50,6 +50,10 @@ type Client struct {
 	config         Config
 	token          string
 	data           protocol.Raw
+	// transport is written with both mu and transportMu held (see
+	// setTransportLocked). send reads it under transportMu only: it's called
+	// both with and without mu held.
+	transportMu    sync.RWMutex
 	transport      transport
 	disconnectedCh chan struct{}
 	state          State
@@ -467,7 +471,7 @@ func (c *Client) moveToDisconnectedFrom(t transport, code uint32, reason string)
 	c.connectAttempt++
 	if c.transport != nil {
 		_ = c.transport.Close()
-		c.transport = nil
+		c.setTransportLocked(nil)
 	}
 
 	prevState := c.state
@@ -546,7 +550,7 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 			c.log(LogLevelDebug, "transport closed while connecting, retry", nil)
 		}
 		c.connectAttempt++
-		c.transport = nil
+		c.setTransportLocked(nil)
 		_ = t.Close()
 		c.clearConnectedState()
 		c.scheduleReconnectLocked()
@@ -567,7 +571,7 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 			c.log(LogLevelDebug, "closing non-nil transport", nil)
 		}
 		_ = c.transport.Close()
-		c.transport = nil
+		c.setTransportLocked(nil)
 	}
 
 	c.state = StateConnecting
@@ -1230,7 +1234,7 @@ func (c *Client) startReconnecting() error {
 	attempt := c.connectAttempt
 	if c.transport != nil {
 		_ = c.transport.Close()
-		c.transport = nil
+		c.setTransportLocked(nil)
 	}
 	refreshRequired := c.refreshRequired
 	token := c.token
@@ -1353,7 +1357,7 @@ func (c *Client) startReconnecting() error {
 	c.refreshRequired = false
 	disconnectCh := make(chan struct{})
 	c.receive = make(chan []byte, 64)
-	c.transport = t
+	c.setTransportLocked(t)
 	c.disconnectedCh = disconnectCh
 
 	go c.reader(t, disconnectCh)
@@ -1391,7 +1395,7 @@ func (c *Client) startReconnecting() error {
 			}
 			// The transport of this attempt won't be used: its close must not be
 			// handled as a disconnect of the client.
-			c.transport = nil
+			c.setTransportLocked(nil)
 			c.mu.Unlock()
 			_ = t.Close()
 			if isTokenExpiredError(err) {
@@ -1625,7 +1629,7 @@ func (c *Client) startReconnecting() error {
 				"error": err.Error(),
 			})
 		}
-		c.transport = nil
+		c.setTransportLocked(nil)
 		_ = t.Close()
 		c.scheduleReconnectLocked()
 	} else {
@@ -2384,11 +2388,20 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 }
 
 func (c *Client) send(cmd *protocol.Command) error {
+	c.transportMu.RLock()
 	transport := c.transport
+	c.transportMu.RUnlock()
 	if transport == nil {
 		return ErrClientDisconnected
 	}
 	return c.sendOn(transport, cmd)
+}
+
+// setTransportLocked replaces the current transport. Lock must be held outside.
+func (c *Client) setTransportLocked(t transport) {
+	c.transportMu.Lock()
+	c.transport = t
+	c.transportMu.Unlock()
 }
 
 // sendOn writes cmd to transport t.
