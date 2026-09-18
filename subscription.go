@@ -174,6 +174,11 @@ type Subscription struct {
 	pushID int64
 
 	inflight atomic.Bool
+
+	// subscribeAttempt changes when the subscription moves to unsubscribed, so
+	// the reply to a subscribe sent before that is recognized as outdated.
+	// Guarded by mu.
+	subscribeAttempt uint64
 }
 
 func (s *Subscription) State() SubState {
@@ -433,13 +438,19 @@ func (s *Subscription) Unsubscribe() error {
 func (s *Subscription) unsubscribe(code uint32, reason string, sendUnsubscribe bool) {
 	s.moveToUnsubscribed(code, reason)
 	if sendUnsubscribe {
-		s.centrifuge.unsubscribe(s.Channel, func(result UnsubscribeResult, err error) {
-			if err != nil {
-				go s.centrifuge.handleDisconnect(&disconnect{Code: connectingUnsubscribeError, Reason: "unsubscribe error", Reconnect: true})
-				return
-			}
-		})
+		s.sendUnsubscribe()
 	}
+}
+
+// sendUnsubscribe removes the subscription on the server. When that fails the
+// client reconnects, so the server doesn't keep a subscription the client left.
+func (s *Subscription) sendUnsubscribe() {
+	s.centrifuge.unsubscribe(s.Channel, func(result UnsubscribeResult, err error) {
+		if err != nil {
+			go s.centrifuge.handleDisconnect(&disconnect{Code: connectingUnsubscribeError, Reason: "unsubscribe error", Reconnect: true})
+			return
+		}
+	})
 }
 
 // SetTagsFilter sets the server-side publication tags filter. It is applied on
@@ -487,6 +498,7 @@ func (s *Subscription) Subscribe() error {
 
 func (s *Subscription) moveToUnsubscribed(code uint32, reason string) {
 	s.mu.Lock()
+	s.subscribeAttempt++
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
 		s.resubscribeTimer.Stop()
@@ -496,6 +508,9 @@ func (s *Subscription) moveToUnsubscribed(code uint32, reason string) {
 	}
 
 	needEvent := s.state != SubStateUnsubscribed
+	// Calls waiting for the subscription (Publish, History, ...) fail now
+	// instead of at their timeout.
+	s.resolveSubFutures(ErrSubscriptionUnsubscribed)
 	s.state = SubStateUnsubscribed
 	// Channel compaction ID is no longer valid once unsubscribed. Cleared under
 	// s.mu, atomically with the state transition (see moveToSubscribed).
@@ -540,10 +555,19 @@ func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 	}
 }
 
-func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGeneration int64) {
+func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGeneration int64, attempt uint64) {
 	s.mu.Lock()
 	if s.state != SubStateSubscribing {
 		s.mu.Unlock()
+		return
+	}
+	if s.subscribeAttempt != attempt {
+		// Unsubscribe was called after this subscribe was sent, then Subscribe
+		// again: the unsubscribe that followed removed this subscription on the
+		// server, so the reply is outdated. The new Subscribe skipped sending
+		// while this subscribe was in flight: send it now.
+		s.mu.Unlock()
+		s.resubscribe()
 		return
 	}
 	// Stale-reply guard: the client left the connected session this reply
@@ -833,6 +857,9 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 }
 
 func (s *Subscription) handleJoin(info *protocol.ClientInfo) {
+	if s.State() != SubStateSubscribed {
+		return
+	}
 	var handler JoinHandler
 	if s.events != nil && s.events.onJoin != nil {
 		handler = s.events.onJoin
@@ -845,6 +872,9 @@ func (s *Subscription) handleJoin(info *protocol.ClientInfo) {
 }
 
 func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
+	if s.State() != SubStateSubscribed {
+		return
+	}
 	var handler LeaveHandler
 	if s.events != nil && s.events.onLeave != nil {
 		handler = s.events.onLeave
@@ -858,7 +888,14 @@ func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
 
 func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {
 	if unsubscribe.Code < 2500 {
+		// A subscribe still in flight is applied by the server after this push:
+		// unsubscribe again, or the server keeps a subscription the client
+		// doesn't track. The server ignores it when there is nothing to remove.
+		cleanup := s.inflight.Load()
 		s.moveToUnsubscribed(unsubscribe.Code, unsubscribe.Reason)
+		if cleanup {
+			s.sendUnsubscribe()
+		}
 	} else {
 		if unsubscribe.Code == unsubscribedStateInvalidated {
 			// State invalidated: drop the subscription token and cached state so
@@ -1042,15 +1079,23 @@ func (s *Subscription) continueResubscribe(async bool) {
 	// between this capture and the send only causes a benign discard-and-retry
 	// of an otherwise valid reply.
 	connGeneration := s.centrifuge.connGeneration.Load()
+	attempt := s.subscribeAttempt
 
 	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, s.tagsFilter, flag, func(res *protocol.SubscribeResult, err error) {
+		s.inflight.Store(false)
 		if err != nil {
-			s.inflight.Store(false)
+			s.mu.Lock()
+			outdated := s.subscribeAttempt != attempt
+			s.mu.Unlock()
+			if outdated {
+				// See moveToSubscribed.
+				s.resubscribe()
+				return
+			}
 			s.subscribeError(err)
 			return
 		}
-		s.inflight.Store(false)
-		s.moveToSubscribed(res, connGeneration)
+		s.moveToSubscribed(res, connGeneration, attempt)
 	})
 	if err != nil {
 		s.inflight.Store(false)
