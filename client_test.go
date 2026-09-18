@@ -1180,6 +1180,76 @@ func TestCallCompletesWithReplyReceivedBeforeTimeout(t *testing.T) {
 	}
 }
 
+// Recovery against the real server: after a successful recovery Centrifugo sends
+// the requested position as the reply's offset, so the stored position has to
+// come from the recovered publications. Publishing only while the client is
+// disconnected makes a position that goes back show up as duplicates on the
+// next recovery.
+func TestRepeatedRecoveryWithoutLivePublicationsHasNoDuplicates(t *testing.T) {
+	channel := "test_repeated_recovery_" + randString(10)
+	publisher := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
+	defer publisher.Close()
+	_ = publisher.Connect()
+
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket", fastReconnectConfig())
+	defer client.Close()
+	sub, err := client.NewSubscription(channel, SubscriptionConfig{Recoverable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var received []int
+	sub.OnPublication(func(e PublicationEvent) {
+		var n int
+		if _, err := fmt.Sscanf(string(e.Data), `{"n":%d}`, &n); err != nil {
+			t.Errorf("unexpected publication data %q", e.Data)
+			return
+		}
+		mu.Lock()
+		received = append(received, n)
+		mu.Unlock()
+	})
+	subscribedCh := make(chan SubscribedEvent, 8)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+
+	published := 0
+	for round := 1; round <= 3; round++ {
+		if err := client.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			published++
+			if _, err := publisher.Publish(context.Background(), channel, []byte(fmt.Sprintf(`{"n":%d}`, published))); err != nil {
+				t.Fatalf("publish: %v", err)
+			}
+		}
+		_ = client.Connect()
+		if ev := waitCh(t, subscribedCh, "resubscribed"); !ev.WasRecovering || !ev.Recovered {
+			t.Fatalf("round %d: expected a successful recovery, got %+v", round, ev)
+		}
+		waitCondition(t, "recovered publications", func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(received) >= published
+		})
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != published {
+		t.Fatalf("expected %d publications, each once, got %v", published, received)
+	}
+	for i, n := range received {
+		if n != i+1 {
+			t.Fatalf("publications out of order or duplicated: %v", received)
+		}
+	}
+}
+
 // fastReconnectConfig returns a Config with short reconnect delays so stress
 // tests do not spend most of their time waiting for backoff timers.
 func fastReconnectConfig() Config {

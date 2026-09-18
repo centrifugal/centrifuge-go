@@ -1511,7 +1511,14 @@ func (c *Client) startReconnecting() error {
 				sub.Offset = subRes.Offset
 			}
 			c.serverSubs[channel] = sub
+			current := c.isConnectedAttemptLocked(attempt)
 			c.mu.Unlock()
+			if !current {
+				// A handler tore this connection down: positions are still stored,
+				// but no more events of this connection are emitted. Recovered
+				// publications not delivered are recovered on the next connect.
+				continue
+			}
 
 			if subscribeHandler != nil {
 				c.runHandlerSync(func() {
@@ -1532,16 +1539,20 @@ func (c *Client) startReconnecting() error {
 					subscribeHandler(ev)
 				})
 			}
-			if publishHandler != nil {
+			if len(subRes.Publications) > 0 {
 				c.runHandlerSync(func() {
 					for _, pub := range subRes.Publications {
 						c.mu.Lock()
-						if sub, ok := c.serverSubs[channel]; ok {
-							sub.Offset = pub.Offset
+						sub, ok := c.serverSubs[channel]
+						if !ok || !c.isConnectedAttemptLocked(attempt) {
+							c.mu.Unlock()
+							return
 						}
-						c.serverSubs[channel] = sub
+						sub.Offset = pub.Offset
 						c.mu.Unlock()
-						publishHandler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
+						if publishHandler != nil {
+							publishHandler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
+						}
 					}
 				})
 			}
@@ -2396,6 +2407,12 @@ func (c *Client) sendOn(t transport, cmd *protocol.Command) error {
 // Lock must be held outside.
 func (c *Client) isCurrentAttemptLocked(attempt uint64) bool {
 	return c.state == StateConnecting && c.connectAttempt == attempt
+}
+
+// isConnectedAttemptLocked reports whether the client is still connected by the
+// given connect attempt. Lock must be held outside.
+func (c *Client) isConnectedAttemptLocked(attempt uint64) bool {
+	return c.state == StateConnected && c.connectAttempt == attempt
 }
 
 type request struct {
