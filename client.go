@@ -718,18 +718,25 @@ func (c *Client) moveToClosed() {
 
 	c.mu.RLock()
 	disconnectedCh := c.disconnectedCh
+	queue := c.cbQueue
 	c.mu.RUnlock()
+	inHandler := queue != nil && queue.inDispatch()
 	// At this point connection close was issued, so we wait until the reader goroutine
-	// finishes its work, after that it's safe to close the callback queue.
-	if disconnectedCh != nil {
+	// finishes its work, after that it's safe to close the callback queue. Not when
+	// Close is called from an event handler: the reader may wait for that handler.
+	if disconnectedCh != nil && !inHandler {
 		<-disconnectedCh
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.disconnectedCh = nil
-	c.cbQueue.close()
 	c.cbQueue = nil
+	c.mu.Unlock()
+	// Handlers still in the queue run before close returns (unless called from one
+	// of them). The lock isn't held meanwhile: they may call client methods.
+	if queue != nil {
+		queue.close()
+	}
 }
 
 func (c *Client) handleError(err error) {
@@ -738,7 +745,7 @@ func (c *Client) handleError(err error) {
 		handler = c.events.onError
 	}
 	if handler != nil {
-		c.runHandlerSync(func() {
+		c.runHandlerSyncReentrant(func() {
 			handler(ErrorEvent{Error: err})
 		})
 	}
@@ -889,11 +896,30 @@ func (c *Client) runHandlerSync(fn func()) {
 		return
 	}
 	waitCh := make(chan struct{})
-	queue.push(func(delay time.Duration) {
+	if !queue.push(func(delay time.Duration) {
 		defer close(waitCh)
 		fn()
-	})
+	}) {
+		// The queue is closed and won't run fn.
+		return
+	}
 	<-waitCh
+}
+
+// runHandlerSyncReentrant is runHandlerSync for paths an application call can
+// reach from inside an event handler, e.g. Connect() in OnDisconnected. There
+// waiting would wait for that handler itself, so fn is queued to run after it.
+// Checking for that parses the goroutine's stack, so the paths that run for
+// every received message use runHandlerSync.
+func (c *Client) runHandlerSyncReentrant(fn func()) {
+	c.mu.RLock()
+	queue := c.cbQueue
+	c.mu.RUnlock()
+	if queue != nil && queue.inDispatch() {
+		c.runHandlerAsync(fn)
+		return
+	}
+	c.runHandlerSync(fn)
 }
 
 func (c *Client) runHandlerAsync(fn func()) {
@@ -1620,7 +1646,7 @@ func (c *Client) startConnecting() error {
 		handler = c.events.onConnecting
 	}
 	if handler != nil {
-		c.runHandlerSync(func() {
+		c.runHandlerSyncReentrant(func() {
 			event := ConnectingEvent{Code: connectingConnectCalled, Reason: "connect called"}
 			handler(event)
 		})
