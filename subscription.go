@@ -490,6 +490,11 @@ func (s *Subscription) Subscribe() error {
 	if s.centrifuge.isClosed() {
 		return ErrClientClosed
 	}
+	// Pushes and resubscribes reach a Subscription through the client's
+	// registry: a removed one would report subscribed and receive nothing.
+	if !s.centrifuge.isRegistered(s) {
+		return errors.New("subscription was removed from the client")
+	}
 	s.mu.Lock()
 	if s.state == SubStateSubscribed || s.state == SubStateSubscribing {
 		s.mu.Unlock()
@@ -728,6 +733,11 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 // delta chain is broken, see deltaFailed.
 func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event PublicationEvent) (PublicationEvent, error) {
 	if !s.deltaNegotiated {
+		if pub.Delta {
+			// Delta data has no base without negotiated delta, and must not be
+			// delivered as publication data.
+			return event, errors.New("delta publication without negotiated delta")
+		}
 		return event, nil
 	}
 	if s.centrifuge.protocolType == protocol.TypeJSON {
@@ -818,8 +828,12 @@ func (s *Subscription) scheduleResubscribe() {
 // change happens in the same lock hold as the check that the attempt is still
 // current: after an Unsubscribe and Subscribe the error is outdated and a new
 // subscribe is sent instead (see moveToSubscribed).
-func (s *Subscription) subscribeError(err error, attempt uint64) {
-	if !s.lockCurrentAttempt(attempt) {
+// noConnGeneration marks a subscribe error not tied to a connection (e.g. a
+// GetToken failure).
+const noConnGeneration int64 = -1
+
+func (s *Subscription) subscribeError(err error, attempt uint64, connGeneration int64) {
+	if !s.lockCurrentSubscribe(attempt, connGeneration) {
 		return
 	}
 	s.mu.Unlock()
@@ -834,7 +848,7 @@ func (s *Subscription) subscribeError(err error, attempt uint64) {
 	if isServerError && serverError.Code == errorCodeUnrecoverablePosition && s.getState != nil {
 		// Unrecoverable position with GetState: reset position so the next
 		// subscribe attempt calls GetState to reload app state from scratch.
-		if !s.lockCurrentAttempt(attempt) {
+		if !s.lockCurrentSubscribe(attempt, connGeneration) {
 			return
 		}
 		s.recover = false
@@ -848,7 +862,10 @@ func (s *Subscription) subscribeError(err error, attempt uint64) {
 
 	s.emitError(SubscriptionSubscribeError{Err: err})
 
-	if !s.lockCurrentAttempt(attempt) {
+	// The connection the subscribe was sent on may have ended while OnError
+	// ran, and a subscribe on the new connection may be in flight: an error of
+	// the ended connection must not unsubscribe it.
+	if !s.lockCurrentSubscribe(attempt, connGeneration) {
 		return
 	}
 	if isServerError && serverError.Code != 109 && !serverError.Temporary {
@@ -869,6 +886,26 @@ func (s *Subscription) subscribeError(err error, attempt uint64) {
 func (s *Subscription) lockCurrentAttempt(attempt uint64) bool {
 	s.mu.Lock()
 	if s.state == SubStateSubscribing && s.subscribeAttempt == attempt {
+		return true
+	}
+	outdated := s.state == SubStateSubscribing
+	s.mu.Unlock()
+	if outdated {
+		s.resubscribe()
+	}
+	return false
+}
+
+// lockCurrentSubscribe is lockCurrentAttempt that also requires the connected
+// session the subscribe was sent in (noConnGeneration: not tied to one) to be
+// the current one. An error of an ended session is outdated: the subscription
+// resubscribes, which does nothing while a newer subscribe is in flight.
+func (s *Subscription) lockCurrentSubscribe(attempt uint64, connGeneration int64) bool {
+	if connGeneration == noConnGeneration {
+		return s.lockCurrentAttempt(attempt)
+	}
+	s.mu.Lock()
+	if s.state == SubStateSubscribing && s.subscribeAttempt == attempt && s.centrifuge.connGeneration.Load() == connGeneration {
 		return true
 	}
 	outdated := s.state == SubStateSubscribing
@@ -1127,7 +1164,7 @@ func (s *Subscription) continueResubscribe(async bool) {
 				return
 			}
 			s.mu.Unlock()
-			s.subscribeError(err, attempt)
+			s.subscribeError(err, attempt, noConnGeneration)
 			return
 		}
 		if token == "" {
@@ -1190,7 +1227,7 @@ func (s *Subscription) continueResubscribe(async bool) {
 	err := s.centrifuge.sendSubscribe(s.Channel, s.data, isRecover, sp, token, s.positioned, s.recoverable, s.joinLeave, s.deltaType, s.tagsFilter, flag, func(res *protocol.SubscribeResult, err error) {
 		s.inflight.Store(false)
 		if err != nil {
-			s.subscribeError(err, attempt)
+			s.subscribeError(err, attempt, connGeneration)
 			return
 		}
 		s.moveToSubscribed(res, connGeneration, attempt)
@@ -1222,6 +1259,11 @@ func (s *Subscription) scheduleSubRefresh(ttl uint32) {
 		s.refreshTimer.Stop()
 	}
 	session := s.subscribedSession
+	// A ttl of 0 (the token expires in the current second) must not make
+	// refreshes run in a loop.
+	if ttl == 0 {
+		ttl = 1
+	}
 	s.refreshTimer = time.AfterFunc(time.Duration(ttl)*time.Second, func() {
 		s.refresh(session)
 	})

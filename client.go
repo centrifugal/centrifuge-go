@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -326,6 +325,14 @@ func (c *Client) RemoveSubscription(sub *Subscription) error {
 	return nil
 }
 
+// isRegistered reports whether sub is the Subscription registered for its
+// channel.
+func (c *Client) isRegistered(sub *Subscription) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.subs[sub.Channel] == sub
+}
+
 // GetSubscription allows getting Subscription from the internal client registry.
 func (c *Client) GetSubscription(channel string) (*Subscription, bool) {
 	c.mu.RLock()
@@ -406,7 +413,13 @@ func (c *Client) RPC(ctx context.Context, method string, data []byte) (RPCResult
 }
 
 func (c *Client) nextCmdID() uint32 {
-	return atomic.AddUint32(&c.cmdID, 1)
+	for {
+		// 0 isn't a valid command id: a server closes the connection on it, and
+		// a reply with id 0 is a ping.
+		if id := atomic.AddUint32(&c.cmdID, 1); id != 0 {
+			return id
+		}
+	}
 }
 
 func (c *Client) isConnected() bool {
@@ -998,6 +1011,14 @@ func (c *Client) handle(t transport, reply *protocol.Reply) {
 		}
 		req, ok := c.popRequest(reply.Id)
 		if ok && req.cb != nil {
+			if reply.Error == nil && malformedReply(req.result, reply) {
+				// The callback would dereference what's missing: end the
+				// connection as for a frame that can't be decoded, and fail the
+				// call.
+				c.moveToDisconnectedFrom(t, disconnectBadProtocol, "malformed reply")
+				req.cb(nil, ErrClientDisconnected)
+				return
+			}
 			req.cb(reply, nil)
 		}
 	} else {
@@ -1884,6 +1905,11 @@ func (c *Client) handleRefreshError(generation int64) {
 // connected session, replacing a refresh armed before. Lock must be held
 // outside.
 func (c *Client) scheduleRefreshLocked(delay time.Duration) {
+	// A ttl of 0 (the token expires in the current second) must not make
+	// refreshes run in a loop.
+	if delay < time.Second {
+		delay = time.Second
+	}
 	if c.refreshTimer != nil {
 		c.refreshTimer.Stop()
 	}
@@ -2426,7 +2452,7 @@ func (c *Client) sendAsync(cmd *protocol.Command, cb func(*protocol.Reply, error
 // sendAsyncOn is sendAsync writing to transport t, or to the current transport
 // when t is nil.
 func (c *Client) sendAsyncOn(t transport, cmd *protocol.Command, cb func(*protocol.Reply, error)) error {
-	c.addRequest(cmd.Id, cb)
+	c.addRequest(cmd.Id, replyResultOf(cmd), cb)
 
 	var err error
 	if t != nil {
@@ -2495,7 +2521,7 @@ func (c *Client) sendOn(t transport, cmd *protocol.Command) error {
 	err := t.Write(cmd, c.config.WriteTimeout)
 	if err != nil {
 		go c.handleTransportDisconnect(t, &disconnect{Code: connectingTransportClosed, Reason: "write error", Reconnect: true})
-		return io.EOF
+		return ErrClientDisconnected
 	}
 	return nil
 }
@@ -2513,12 +2539,94 @@ func (c *Client) isConnectedAttemptLocked(attempt uint64) bool {
 
 type request struct {
 	cb func(*protocol.Reply, error)
+	// result is what a reply without an error must carry for cb to handle it.
+	result replyResult
 }
 
-func (c *Client) addRequest(id uint32, cb func(*protocol.Reply, error)) {
+func (c *Client) addRequest(id uint32, result replyResult, cb func(*protocol.Reply, error)) {
 	c.requestsMu.Lock()
 	defer c.requestsMu.Unlock()
-	c.requests[id] = request{cb}
+	c.requests[id] = request{cb: cb, result: result}
+}
+
+// replyResult is the result a reply to a command must carry when the command's
+// callback reads it.
+type replyResult uint8
+
+const (
+	replyResultNone replyResult = iota
+	replyResultConnect
+	replyResultSubscribe
+	replyResultRefresh
+	replyResultSubRefresh
+	replyResultRPC
+	replyResultHistory
+	replyResultPresence
+	replyResultPresenceStats
+)
+
+func replyResultOf(cmd *protocol.Command) replyResult {
+	switch {
+	case cmd.Connect != nil:
+		return replyResultConnect
+	case cmd.Subscribe != nil:
+		return replyResultSubscribe
+	case cmd.Refresh != nil:
+		return replyResultRefresh
+	case cmd.SubRefresh != nil:
+		return replyResultSubRefresh
+	case cmd.Rpc != nil:
+		return replyResultRPC
+	case cmd.History != nil:
+		return replyResultHistory
+	case cmd.Presence != nil:
+		return replyResultPresence
+	case cmd.PresenceStats != nil:
+		return replyResultPresenceStats
+	}
+	return replyResultNone
+}
+
+// malformedReply reports whether a reply without an error lacks what the
+// callback of its command reads: the result, or a server-side subscription or
+// publication in it. Centrifugo always sends them; only a non-conforming server
+// or proxy doesn't.
+func malformedReply(result replyResult, r *protocol.Reply) bool {
+	switch result {
+	case replyResultConnect:
+		if r.Connect == nil {
+			return true
+		}
+		for _, sub := range r.Connect.Subs {
+			if sub == nil || hasNilPublication(sub.Publications) {
+				return true
+			}
+		}
+	case replyResultSubscribe:
+		return r.Subscribe == nil || hasNilPublication(r.Subscribe.Publications)
+	case replyResultRefresh:
+		return r.Refresh == nil
+	case replyResultSubRefresh:
+		return r.SubRefresh == nil
+	case replyResultRPC:
+		return r.Rpc == nil
+	case replyResultHistory:
+		return r.History == nil || hasNilPublication(r.History.Publications)
+	case replyResultPresence:
+		return r.Presence == nil
+	case replyResultPresenceStats:
+		return r.PresenceStats == nil
+	}
+	return false
+}
+
+func hasNilPublication(pubs []*protocol.Publication) bool {
+	for _, pub := range pubs {
+		if pub == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // popRequest atomically looks up and removes the request with the given id,

@@ -734,6 +734,123 @@ func TestConnectDoesNotReplaceConnectCalledDuringItsHandler(t *testing.T) {
 	}
 }
 
+// assertSubscribedAfterNewConnection waits for the subscribe on the new
+// connection to succeed and fails with the subscription's state otherwise.
+func assertSubscribedAfterNewConnection(t *testing.T, sub *Subscription) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for sub.State() != SubStateSubscribed && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if state := sub.State(); state != SubStateSubscribed {
+		t.Fatalf("expected subscribed after the new connection's subscribe succeeded, got %s: the subscribe error of the ended connection unsubscribed it", state)
+	}
+}
+
+// A subscribe error is reported through OnError, which waits for the handler,
+// before the subscription unsubscribes. If the connection the subscribe was
+// sent on ended meanwhile and a new connection resubscribed, the old error
+// unsubscribed the subscription while the server kept the new subscribe.
+func TestSubscribeErrorOfEndedConnectionDoesNotUnsubscribe(t *testing.T) {
+	s := NewFakeServer(t)
+	var subscribes atomic.Int32
+	releaseSecondReply := make(chan struct{})
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Subscribe == nil {
+			return nil
+		}
+		if subscribes.Add(1) == 1 {
+			return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 106, Message: "limit exceeded"}}
+		}
+		// The new connection's subscribe succeeds, once the old error is handled.
+		<-releaseSecondReply
+		return nil
+	}
+	client := NewProtobufClient(s.URL(), Config{})
+	closeOnCleanup(t, client)
+	sub, err := client.NewSubscription("ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inHandler := make(chan struct{}, 1)
+	releaseHandler := make(chan struct{})
+	var once sync.Once
+	sub.OnError(func(e SubscriptionErrorEvent) {
+		var subscribeErr SubscriptionSubscribeError
+		if errors.As(e.Error, &subscribeErr) {
+			once.Do(func() {
+				inHandler <- struct{}{}
+				<-releaseHandler
+			})
+		}
+	})
+
+	_ = client.Connect()
+	waitCondition(t, "connected", func() bool { return client.State() == StateConnected })
+	_ = sub.Subscribe()
+	waitCh(t, inHandler, "OnError of the first subscribe")
+	_ = client.Disconnect()
+	_ = client.Connect()
+	waitCondition(t, "subscribe on the new connection", func() bool { return subscribes.Load() == 2 })
+	close(releaseHandler)
+	time.Sleep(200 * time.Millisecond)
+	close(releaseSecondReply)
+	assertSubscribedAfterNewConnection(t, sub)
+}
+
+// The same without an application call: a slow OnError handler stalls the
+// reader, and the client's ping timeout replaces the connection.
+func TestSubscribeErrorOfConnectionEndedByPingTimeoutDoesNotUnsubscribe(t *testing.T) {
+	s := NewFakeServer(t)
+	var connects, subscribes atomic.Int32
+	releaseSecondReply := make(chan struct{})
+	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		switch {
+		case cmd.Connect != nil:
+			if connects.Add(1) == 1 {
+				// The fake server doesn't ping: this connection ends by ping timeout.
+				return &protocol.Reply{Id: cmd.Id, Connect: &protocol.ConnectResult{Client: "c1", Ping: 1}}
+			}
+		case cmd.Subscribe != nil:
+			if subscribes.Add(1) == 1 {
+				return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 106, Message: "limit exceeded"}}
+			}
+			<-releaseSecondReply
+		}
+		return nil
+	}
+	client := NewProtobufClient(s.URL(), Config{
+		MaxServerPingDelay: 100 * time.Millisecond,
+		MinReconnectDelay:  10 * time.Millisecond,
+		MaxReconnectDelay:  20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+	sub, err := client.NewSubscription("ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	sub.OnError(func(e SubscriptionErrorEvent) {
+		var subscribeErr SubscriptionSubscribeError
+		if errors.As(e.Error, &subscribeErr) {
+			once.Do(func() {
+				// Returns once the new connection resubscribed.
+				deadline := time.Now().Add(5 * time.Second)
+				for subscribes.Load() < 2 && time.Now().Before(deadline) {
+					time.Sleep(5 * time.Millisecond)
+				}
+			})
+		}
+	})
+
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCondition(t, "subscribe on a new connection", func() bool { return subscribes.Load() == 2 })
+	time.Sleep(200 * time.Millisecond)
+	close(releaseSecondReply)
+	assertSubscribedAfterNewConnection(t, sub)
+}
+
 func TestResubscribeWhileDisconnectedDoesNotFetchToken(t *testing.T) {
 	client := NewProtobufClient("ws://127.0.0.1:1/connection/websocket", Config{})
 	closeOnCleanup(t, client)
