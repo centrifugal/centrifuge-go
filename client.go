@@ -260,7 +260,6 @@ func (c *Client) Close() {
 	if c.isClosed() {
 		return
 	}
-	c.moveToDisconnected(disconnectedDisconnectCalled, "disconnect called")
 	c.moveToClosed()
 	c.logCloseOnce.Do(func() {
 		close(c.logCloseCh)
@@ -466,15 +465,23 @@ func (c *Client) sendRPC(ctx context.Context, method string, data []byte, fn fun
 }
 
 func (c *Client) moveToDisconnected(code uint32, reason string) {
-	c.moveToDisconnectedFrom(nil, code, reason)
+	c.moveToDisconnectedIf(nil, code, reason)
 }
 
 // moveToDisconnectedFrom is moveToDisconnected for a disconnect reported for
 // transport t (nil when not tied to a transport). It does nothing when t is no
 // longer the client's current transport.
 func (c *Client) moveToDisconnectedFrom(t transport, code uint32, reason string) {
+	c.moveToDisconnectedIf(func() bool { return t == nil || c.transport == t }, code, reason)
+}
+
+// moveToDisconnectedIf is moveToDisconnected when current (nil means always),
+// checked in the same lock hold, reports true: a disconnect decided by a
+// connect attempt or a refresh superseded meanwhile must not end a newer
+// connection.
+func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason string) {
 	c.mu.Lock()
-	if c.state == StateDisconnected || c.state == StateClosed || (t != nil && c.transport != t) {
+	if c.state == StateDisconnected || c.state == StateClosed || (current != nil && !current()) {
 		c.mu.Unlock()
 		return
 	}
@@ -535,13 +542,9 @@ func (c *Client) moveToDisconnectedFrom(t transport, code uint32, reason string)
 	}
 }
 
-func (c *Client) moveToConnecting(code uint32, reason string) {
-	c.moveToConnectingFrom(nil, code, reason)
-}
-
-// moveToConnectingFrom is moveToConnecting for a disconnect reported for
-// transport t (nil when not tied to a transport). It does nothing when t is no
-// longer the client's current transport. When t belongs to the connect attempt
+// moveToConnectingFrom moves the client to connecting for a disconnect reported
+// for transport t (nil when not tied to a transport). It does nothing when t is
+// no longer the client's current transport. When t belongs to the connect attempt
 // in progress, the attempt is retried right away: its connect reply won't come.
 func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 	if c.logLevelEnabled(LogLevelDebug) {
@@ -696,16 +699,19 @@ func (c *Client) moveToClosed() {
 		c.mu.Unlock()
 		return
 	}
+	// Close is one transition: the closed state is set in the same lock hold as
+	// the connection is ended, so no Connect can start a new connection in
+	// between. Subscriptions are then unsubscribed and the disconnect reported,
+	// in that order, without moving through subscribing.
+	prevState := c.state
 	c.setStateLocked(StateClosed)
-	// Close disconnects before it gets here, but a Connect from another
-	// goroutine or an event handler may have connected since: stop that
-	// connection too, or waiting for its reader below never ends.
 	c.connectAttempt++
 	if c.transport != nil {
 		_ = c.transport.Close()
 		c.setTransportLocked(nil)
 	}
 	c.clearConnectedState()
+	c.resolveConnectFutures(ErrClientDisconnected)
 
 	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
 	for _, s := range c.subs {
@@ -737,6 +743,18 @@ func (c *Client) moveToClosed() {
 				serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
 			}
 		})
+	}
+
+	if prevState != StateDisconnected {
+		var handler DisconnectHandler
+		if c.events != nil && c.events.onDisconnected != nil {
+			handler = c.events.onDisconnected
+		}
+		if handler != nil {
+			c.runHandlerAsync(func() {
+				handler(DisconnectedEvent{Code: disconnectedDisconnectCalled, Reason: "disconnect called"})
+			})
+		}
 	}
 
 	c.mu.RLock()
@@ -1001,7 +1019,7 @@ func (c *Client) handle(t transport, reply *protocol.Reply) {
 			return
 		}
 		c.mu.Unlock()
-		c.handlePush(reply.Push)
+		c.handlePush(t, reply.Push)
 	}
 }
 
@@ -1034,7 +1052,7 @@ func (c *Client) updateSubscriptionPushID(sub *Subscription, oldID, newID int64)
 	}
 }
 
-func (c *Client) handlePush(push *protocol.Push) {
+func (c *Client) handlePush(t transport, push *protocol.Push) {
 	channel := push.Channel
 	var sub *Subscription
 	var ok bool
@@ -1095,15 +1113,10 @@ func (c *Client) handlePush(push *protocol.Push) {
 		return
 	case push.Disconnect != nil:
 		code := push.Disconnect.Code
-		if code == disconnectedStateInvalidated {
-			c.invalidateConnectionState()
-		}
 		reconnect := code < 3500 || code >= 5000 || (code >= 4000 && code < 4500)
-		if reconnect {
-			c.moveToConnecting(code, push.Disconnect.Reason)
-		} else {
-			c.moveToDisconnected(code, push.Disconnect.Reason)
-		}
+		// Tied to the transport the push came on, like a close of that
+		// transport: it must not end a newer connection.
+		c.handleTransportDisconnect(t, &disconnect{Code: code, Reason: push.Disconnect.Reason, Reconnect: reconnect})
 	default:
 	}
 }
@@ -1311,16 +1324,10 @@ func (c *Client) startReconnecting() error {
 			// used for this attempt, close it so the connection does not leak.
 			_ = t.Close()
 			if errors.Is(err, ErrUnauthorized) {
-				c.mu.Lock()
-				current := c.isCurrentAttemptLocked(attempt)
-				c.mu.Unlock()
-				if !current {
-					return nil
-				}
 				if c.logLevelEnabled(LogLevelDebug) {
 					c.log(LogLevelDebug, "unauthorized error, move to disconnected", nil)
 				}
-				c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
+				c.moveToDisconnectedIf(func() bool { return c.isCurrentAttemptLocked(attempt) }, disconnectedUnauthorized, "unauthorized")
 				return nil
 			}
 			if c.logLevelEnabled(LogLevelDebug) {
@@ -1439,7 +1446,9 @@ func (c *Client) startReconnecting() error {
 							"message": serverError.Message,
 						})
 					}
-					c.moveToDisconnected(serverError.Code, serverError.Message)
+					// Closing the transport above can take up to a second: a
+					// Disconnect and Connect meanwhile start a newer attempt.
+					c.moveToDisconnectedIf(func() bool { return c.isCurrentAttemptLocked(attempt) }, serverError.Code, serverError.Message)
 				} else {
 					// Should not happen, but just in case.
 					if c.logLevelEnabled(LogLevelDebug) {
@@ -1750,7 +1759,7 @@ func (c *Client) sendRefresh(generation int64) {
 	}
 	if err != nil {
 		if errors.Is(err, ErrUnauthorized) {
-			c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
+			c.moveToDisconnectedIf(func() bool { return c.isRefreshCurrentLocked(generation) }, disconnectedUnauthorized, "unauthorized")
 			return
 		}
 		c.handleError(RefreshError{err})
@@ -1762,7 +1771,7 @@ func (c *Client) sendRefresh(generation int64) {
 	if token == "" {
 		// Like centrifuge-js: an empty token from GetToken during refresh means
 		// the client may not stay connected.
-		c.moveToDisconnected(disconnectedUnauthorized, "unauthorized")
+		c.moveToDisconnectedIf(func() bool { return c.isRefreshCurrentLocked(generation) }, disconnectedUnauthorized, "unauthorized")
 		return
 	}
 	c.mu.Lock()
@@ -1803,7 +1812,7 @@ func (c *Client) sendRefresh(generation int64) {
 				defer c.mu.Unlock()
 				c.handleRefreshError(generation)
 			} else {
-				c.moveToDisconnected(r.Error.Code, r.Error.Message)
+				c.moveToDisconnectedIf(func() bool { return c.isRefreshCurrentLocked(generation) }, r.Error.Code, r.Error.Message)
 			}
 			return
 		}
@@ -2003,6 +2012,9 @@ func (c *Client) onConnect(fn func(err error)) {
 	case StateDisconnected:
 		c.mu.Unlock()
 		fn(ErrClientDisconnected)
+	case StateClosed:
+		c.mu.Unlock()
+		fn(ErrClientClosed)
 	default:
 		defer c.mu.Unlock()
 		id := c.nextFutureID()
