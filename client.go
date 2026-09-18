@@ -416,13 +416,6 @@ func (c *Client) isClosed() bool {
 	return c.state == StateClosed
 }
 
-func (c *Client) isSubscribed(channel string) bool {
-	c.mu.RLock()
-	_, ok := c.subs[channel]
-	c.mu.RUnlock()
-	return ok
-}
-
 func (c *Client) sendRPC(ctx context.Context, method string, data []byte, fn func(RPCResult, error)) {
 	c.onConnect(func(err error) {
 		select {
@@ -2344,18 +2337,6 @@ func (c *Client) sendPresenceStats(channel string, fn func(PresenceStatsResult, 
 }
 
 type UnsubscribeResult struct{}
-
-func (c *Client) unsubscribe(channel string, fn func(UnsubscribeResult, error)) {
-	if !c.isSubscribed(channel) {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.state != StateConnected {
-		return
-	}
-	c.sendUnsubscribe(channel, fn)
-}
 
 func (c *Client) sendUnsubscribe(channel string, fn func(UnsubscribeResult, error)) {
 	params := &protocol.UnsubscribeRequest{
