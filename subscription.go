@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -561,6 +562,21 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 		s.mu.Unlock()
 		return
 	}
+	// Apply deltas of recovered publications here, on the reader goroutine and
+	// before the state changes: a broken delta stops the client before the
+	// subscription looks subscribed, and the events below run on the callback
+	// queue, where reporting the error would wait for itself.
+	s.deltaNegotiated = res.Delta
+	recoveredEvents := make([]PublicationEvent, 0, len(res.Publications))
+	for _, pub := range res.Publications {
+		publicationEvent, err := s.applyDeltaLocked(pub, PublicationEvent{Publication: pubFromProto(pub)})
+		if err != nil {
+			s.mu.Unlock()
+			s.deltaFailed(pub.Offset, err)
+			return
+		}
+		recoveredEvents = append(recoveredEvents, publicationEvent)
+	}
 	s.state = SubStateSubscribed
 	if res.Expires {
 		s.scheduleSubRefresh(res.Ttl)
@@ -575,7 +591,6 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 	s.resolveSubFutures(nil)
 	s.offset = res.Offset
 	s.epoch = res.Epoch
-	s.deltaNegotiated = res.Delta
 	// Channel compaction: register the numeric channel ID assigned by the
 	// server (0 when not negotiated — also clears a stale ID from a previous
 	// subscribe session). Always re-registers even when the ID is unchanged:
@@ -621,8 +636,7 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 				if pub.Offset > 0 {
 					s.offset = pub.Offset
 				}
-				publicationEvent := PublicationEvent{Publication: pubFromProto(pub)}
-				publicationEvent = s.applyDeltaLocked(pub, publicationEvent)
+				publicationEvent := recoveredEvents[i]
 				s.mu.Unlock()
 				var handler PublicationHandler
 				if s.events != nil && s.events.onPublication != nil {
@@ -636,9 +650,12 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 	}
 }
 
-func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event PublicationEvent) PublicationEvent {
+// applyDeltaLocked decodes a publication of a subscription with negotiated
+// delta and keeps its data as the base for the next delta. An error means the
+// delta chain is broken, see deltaFailed.
+func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event PublicationEvent) (PublicationEvent, error) {
 	if !s.deltaNegotiated {
-		return event
+		return event, nil
 	}
 	if s.centrifuge.protocolType == protocol.TypeJSON {
 		if pub.Delta {
@@ -646,11 +663,11 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 			var delta string
 			err := json.Unmarshal(pub.Data, &delta)
 			if err != nil {
-				panic(err)
+				return event, err
 			}
-			newData, err := fossil.Apply(s.prevData, []byte(delta))
+			newData, err := applyFossil(s.prevData, []byte(delta))
 			if err != nil {
-				panic(err)
+				return event, err
 			}
 			event.Data = newData
 			s.prevData = newData
@@ -659,16 +676,16 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 			var data string
 			err := json.Unmarshal(pub.Data, &data)
 			if err != nil {
-				panic(err)
+				return event, err
 			}
 			s.prevData = []byte(data)
 			event.Data = s.prevData
 		}
 	} else {
 		if pub.Delta {
-			newData, err := fossil.Apply(s.prevData, pub.Data)
+			newData, err := applyFossil(s.prevData, pub.Data)
 			if err != nil {
-				panic(err)
+				return event, err
 			}
 			event.Data = newData
 			s.prevData = newData
@@ -676,7 +693,28 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 			s.prevData = pub.Data
 		}
 	}
-	return event
+	return event, nil
+}
+
+// applyFossil applies a fossil delta. The fossil library can index past the
+// end of a malformed delta and panic; that is returned as an error too.
+func applyFossil(base, delta []byte) (newData []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("malformed fossil delta: %v", r)
+		}
+	}()
+	return fossil.Apply(base, delta)
+}
+
+// deltaFailed stops the client when a publication's delta can't be applied:
+// the error is reported with the channel and offset, and the client
+// disconnects with a bad protocol code without reconnecting, since the
+// application would otherwise get wrong data. Called on the reader goroutine
+// without locks held.
+func (s *Subscription) deltaFailed(offset uint64, err error) {
+	s.centrifuge.handleError(DeltaError{Channel: s.Channel, Offset: offset, Err: err})
+	s.centrifuge.moveToDisconnected(disconnectBadProtocol, "delta error")
 }
 
 // Lock must be held outside.
@@ -771,11 +809,15 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 		s.mu.Unlock()
 		return
 	}
+	publicationEvent, err := s.applyDeltaLocked(pub, PublicationEvent{Publication: pubFromProto(pub)})
+	if err != nil {
+		s.mu.Unlock()
+		s.deltaFailed(pub.Offset, err)
+		return
+	}
 	if pub.Offset > 0 {
 		s.offset = pub.Offset
 	}
-	publicationEvent := PublicationEvent{Publication: pubFromProto(pub)}
-	publicationEvent = s.applyDeltaLocked(pub, publicationEvent)
 	s.mu.Unlock()
 
 	var handler PublicationHandler
