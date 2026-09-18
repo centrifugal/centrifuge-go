@@ -5,6 +5,11 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Connection tokens (with a channels claim for server-side subscriptions)
+      # and the server API (e.g. a 3014 disconnect) for the real-server tests.
+      # The client stays insecure, so connecting without a token still works.
+      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: "secret"
+      CENTRIFUGO_HTTP_API_KEY: "test-api-key"
       CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_DELTA_PUBLISH: "true"
       CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_ALLOWED_DELTA_TYPES: "fossil"
       CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_HISTORY_SIZE: "100"

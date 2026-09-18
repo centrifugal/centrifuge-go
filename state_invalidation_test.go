@@ -500,6 +500,48 @@ func TestStateInvalidationDiscardsPendingRefreshToken(t *testing.T) {
 	}
 }
 
+func TestDisconnect3014OnRealServerRecoversFromNoOldPosition(t *testing.T) {
+	channel := "test_invalidation_" + randString(10)
+	serverChannel := "test_invalidation_server_side_" + randString(10)
+	user := "user_" + randString(10)
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{
+		Token:             testToken(t, map[string]any{"sub": user, "channels": []string{serverChannel}}),
+		MinReconnectDelay: 50 * time.Millisecond,
+		MaxReconnectDelay: 200 * time.Millisecond,
+	})
+	t.Cleanup(client.Close)
+	serverSubscribed := make(chan ServerSubscribedEvent, 4)
+	client.OnSubscribed(func(e ServerSubscribedEvent) {
+		if e.Channel == serverChannel {
+			serverSubscribed <- e
+		}
+	})
+	sub, err := client.NewSubscription(channel, SubscriptionConfig{Recoverable: true})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	subscribed := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribed <- e })
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, serverSubscribed, "server-side subscribed")
+	waitCh(t, subscribed, "subscribed")
+
+	testServerAPI(t, "disconnect", map[string]any{
+		"user":       user,
+		"disconnect": map[string]any{"code": disconnectedStateInvalidated, "reason": "state invalidated"},
+	})
+
+	// Both resubscribe asking to recover from a position the server can't
+	// match, so the application sees the recovery fail and reloads its state.
+	if ev := waitCh(t, serverSubscribed, "server-side resubscribed"); !ev.WasRecovering || ev.Recovered {
+		t.Fatalf("server-side subscription after 3014: expected WasRecovering without Recovered, got %+v", ev)
+	}
+	if ev := waitCh(t, subscribed, "resubscribed"); !ev.WasRecovering || ev.Recovered {
+		t.Fatalf("subscription after 3014: expected WasRecovering without Recovered, got %+v", ev)
+	}
+}
+
 func TestUnsubscribeBelow2500DoesNotInvalidate(t *testing.T) {
 	server := NewFakeServer(t)
 	client := NewProtobufClient(server.URL(), Config{})

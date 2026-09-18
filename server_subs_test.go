@@ -1,6 +1,9 @@
 package centrifuge
 
 import (
+	"context"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -314,5 +317,86 @@ func TestStaleConnectReplyKeepsServerSubsOfNewerConnection(t *testing.T) {
 	server.PublishChannel("new", []byte(`{}`))
 	if ch := waitCh(t, published, "publication of the current server-side subscription"); ch != "new" {
 		t.Fatalf("unexpected publication channel: %q", ch)
+	}
+}
+
+func TestServerSideSubscriptionRecoveryOnRealServer(t *testing.T) {
+	channel := "test_server_side_recovery_" + randString(10)
+	user := "user_" + randString(10)
+	publisher := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{})
+	defer publisher.Close()
+	_ = publisher.Connect()
+
+	// The connection token's channels claim subscribes the connection to
+	// channel on the server side.
+	client := NewProtobufClient("ws://localhost:8000/connection/websocket", Config{
+		Token:             testToken(t, map[string]any{"sub": user, "channels": []string{channel}}),
+		MinReconnectDelay: 50 * time.Millisecond,
+		MaxReconnectDelay: 200 * time.Millisecond,
+	})
+	defer client.Close()
+	var mu sync.Mutex
+	var received []string
+	client.OnPublication(func(e ServerPublicationEvent) {
+		if e.Channel != channel {
+			return
+		}
+		mu.Lock()
+		received = append(received, string(e.Data))
+		mu.Unlock()
+	})
+	subscribed := make(chan ServerSubscribedEvent, 8)
+	client.OnSubscribed(func(e ServerSubscribedEvent) {
+		if e.Channel == channel {
+			subscribed <- e
+		}
+	})
+	_ = client.Connect()
+	if ev := waitCh(t, subscribed, "server-side subscribed"); !ev.Recoverable {
+		t.Fatalf("expected a recoverable server-side subscription, got %+v", ev)
+	}
+
+	var expected []string
+	publish := func() {
+		t.Helper()
+		data := fmt.Sprintf(`{"n":%d}`, len(expected)+1)
+		expected = append(expected, data)
+		if _, err := publisher.Publish(context.Background(), channel, []byte(data)); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	waitReceived := func(label string) {
+		t.Helper()
+		waitCondition(t, label, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(received) >= len(expected)
+		})
+	}
+	for round := 1; round <= 3; round++ {
+		if err := client.Disconnect(); err != nil {
+			t.Fatal(err)
+		}
+		publish()
+		publish()
+		_ = client.Connect()
+		if ev := waitCh(t, subscribed, "server-side resubscribed"); !ev.WasRecovering || !ev.Recovered {
+			t.Fatalf("round %d: expected a successful recovery, got %+v", round, ev)
+		}
+		waitReceived("recovered publications")
+	}
+	publish()
+	waitReceived("live publication after the recoveries")
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != len(expected) {
+		t.Fatalf("expected %d publications, each once, got %v", len(expected), received)
+	}
+	for i := range expected {
+		if received[i] != expected[i] {
+			t.Fatalf("publications out of order or duplicated: got %v, want %v", received, expected)
+		}
 	}
 }
