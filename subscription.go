@@ -1233,7 +1233,7 @@ func (s *Subscription) refresh(session uint64) {
 	}
 	if err != nil {
 		if errors.Is(err, ErrUnauthorized) {
-			s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
+			s.unsubscribeIfRefreshCurrent(session, invalidations, unsubscribedUnauthorized, "unauthorized")
 			return
 		}
 		s.emitError(SubscriptionRefreshError{Err: err})
@@ -1245,7 +1245,7 @@ func (s *Subscription) refresh(session uint64) {
 		return
 	}
 	if token == "" {
-		s.unsubscribe(unsubscribedUnauthorized, "unauthorized", true)
+		s.unsubscribeIfRefreshCurrent(session, invalidations, unsubscribedUnauthorized, "unauthorized")
 		return
 	}
 	// Cache the refreshed token: a resubscribe (for example after a
@@ -1269,7 +1269,7 @@ func (s *Subscription) refresh(session uint64) {
 			s.emitError(SubscriptionRefreshError{Err: err})
 			var serverError *Error
 			if errors.As(err, &serverError) && !serverError.Temporary {
-				s.unsubscribe(serverError.Code, serverError.Message, true)
+				s.unsubscribeIfRefreshCurrent(session, invalidations, serverError.Code, serverError.Message)
 				return
 			}
 			s.mu.Lock()
@@ -1287,6 +1287,20 @@ func (s *Subscription) refresh(session uint64) {
 			s.mu.Unlock()
 		}
 	})
+}
+
+// unsubscribeIfRefreshCurrent unsubscribes on a refresh failure unless the
+// subscribed session the refresh started in has ended: the subscription may have
+// resubscribed since the check before GetToken or the OnError handler, and a
+// failure of the ended session must not unsubscribe the new one.
+func (s *Subscription) unsubscribeIfRefreshCurrent(session, invalidations uint64, code uint32, reason string) {
+	s.mu.Lock()
+	if !s.isRefreshCurrentLocked(session, invalidations) {
+		s.mu.Unlock()
+		return
+	}
+	s.sendUnsubscribeLocked()
+	s.moveToUnsubscribedLocked(code, reason, ErrSubscriptionUnsubscribed)
 }
 
 // isRefreshCurrent reports whether the subscription is still in the subscribed
