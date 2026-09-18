@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/centrifugal/protocol"
 )
@@ -184,5 +185,70 @@ func TestSubRefreshCachesRefreshedToken(t *testing.T) {
 	case ev := <-errCh:
 		t.Fatalf("unexpected subscription error: %v", ev.Error)
 	default:
+	}
+}
+
+// A subscription refresh whose GetToken returns after a reconnect belongs to the
+// earlier subscribed session. Sent while the subscription resubscribes, the
+// server rejects it as not subscribed (103), which unsubscribes for good; sent
+// after the resubscribe, it doubles the refresh chain.
+func TestSubRefreshStartedBeforeResubscribeStops(t *testing.T) {
+	server := NewFakeServer(t)
+	server.OnSubscribe = func(_ string, _ *protocol.SubscribeRequest) *protocol.SubscribeResult {
+		return &protocol.SubscribeResult{Expires: true, Ttl: 1}
+	}
+	server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.SubRefresh == nil {
+			return nil
+		}
+		return &protocol.Reply{Id: cmd.Id, SubRefresh: &protocol.SubRefreshResult{}}
+	}
+	client := NewProtobufClient(server.URL(), Config{
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	t.Cleanup(client.Close)
+
+	refreshTokenRequested := make(chan struct{})
+	releaseRefreshToken := make(chan struct{})
+	var tokenCalls atomic.Int32
+	sub, err := client.NewSubscription("ch", SubscriptionConfig{
+		GetToken: func(_ SubscriptionTokenEvent) (string, error) {
+			switch tokenCalls.Add(1) {
+			case 1:
+				return "subscribe-token", nil
+			case 2:
+				close(refreshTokenRequested)
+				<-releaseRefreshToken
+				return "stale-refresh-token", nil
+			default:
+				return "refresh-token", nil
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("new subscription: %v", err)
+	}
+	subscribedCh := make(chan SubscribedEvent, 4)
+	sub.OnSubscribed(func(e SubscribedEvent) { subscribedCh <- e })
+
+	_ = client.Connect()
+	_ = sub.Subscribe()
+	waitCh(t, subscribedCh, "subscribed")
+	waitCh(t, refreshTokenRequested, "refresh GetToken call")
+	server.CloseConnection()
+	waitCh(t, subscribedCh, "resubscribed")
+	receivedBefore := len(server.Received())
+	close(releaseRefreshToken)
+	// Less than the new subscribed session's own refresh delay (1s).
+	time.Sleep(300 * time.Millisecond)
+
+	for _, cmd := range server.Received()[receivedBefore:] {
+		if cmd.SubRefresh != nil {
+			t.Fatalf("sub refresh started before the reconnect was sent with token %q", cmd.SubRefresh.Token)
+		}
+	}
+	if state := sub.State(); state != SubStateSubscribed {
+		t.Fatalf("expected subscribed, got %s", state)
 	}
 }
