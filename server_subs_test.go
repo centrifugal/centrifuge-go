@@ -242,3 +242,77 @@ func TestServerSubMissingFromConnectReplyIsRemoved(t *testing.T) {
 		t.Fatalf("unexpected subscribed channel: %q", ev.Channel)
 	}
 }
+
+// The connect reply of a connection a handler tore down must not change the
+// server-side subscriptions a newer connection stored meanwhile.
+func TestStaleConnectReplyKeepsServerSubsOfNewerConnection(t *testing.T) {
+	server := NewFakeServer(t)
+	var connects atomic.Int32
+	server.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
+		if cmd.Connect == nil {
+			return nil
+		}
+		channel := "old"
+		if connects.Add(1) > 1 {
+			channel = "new"
+		}
+		return &protocol.Reply{Id: cmd.Id, Connect: &protocol.ConnectResult{
+			Client: "fake-client", Subs: map[string]*protocol.SubscribeResult{channel: {}},
+		}}
+	}
+	client := NewProtobufClient(server.URL(), Config{})
+	closeOnCleanup(t, client)
+
+	enteredOld := make(chan struct{}, 1)
+	releaseOld := make(chan struct{})
+	var released atomic.Bool
+	releaseOldHandler := func() {
+		if released.CompareAndSwap(false, true) {
+			close(releaseOld)
+		}
+	}
+	t.Cleanup(releaseOldHandler)
+	client.OnSubscribed(func(ev ServerSubscribedEvent) {
+		if ev.Channel == "old" {
+			enteredOld <- struct{}{}
+			<-releaseOld
+		}
+	})
+	unsubscribed := make(chan string, 4)
+	client.OnUnsubscribed(func(ev ServerUnsubscribedEvent) { unsubscribed <- ev.Channel })
+	published := make(chan string, 4)
+	client.OnPublication(func(ev ServerPublicationEvent) { published <- ev.Channel })
+
+	_ = client.Connect()
+	waitCh(t, enteredOld, "server-side subscribed event of the first connection")
+	// While that handler runs, the application reconnects, and the second
+	// connection stores its own server-side subscription.
+	if err := client.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	waitCondition(t, "the second connection's server-side subscription", func() bool {
+		client.mu.RLock()
+		defer client.mu.RUnlock()
+		_, ok := client.serverSubs["new"]
+		return ok
+	})
+	releaseOldHandler()
+
+	if ch := waitCh(t, unsubscribed, "server-side unsubscribed"); ch != "old" {
+		t.Fatalf("server-side subscription %q of the current connection removed", ch)
+	}
+	// The first connection's reply processing ends right after its handler.
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case ch := <-unsubscribed:
+		t.Fatalf("server-side subscription %q removed by the reply of a torn down connection", ch)
+	default:
+	}
+	server.PublishChannel("new", []byte(`{}`))
+	if ch := waitCh(t, published, "publication of the current server-side subscription"); ch != "new" {
+		t.Fatalf("unexpected publication channel: %q", ch)
+	}
+}
