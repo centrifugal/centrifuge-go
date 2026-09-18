@@ -714,6 +714,9 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 				if pub.Offset > 0 {
 					s.offset = pub.Offset
 				}
+				if pub.Epoch != "" {
+					s.epoch = pub.Epoch
+				}
 				publicationEvent := recoveredEvents[i]
 				s.mu.Unlock()
 				var handler PublicationHandler
@@ -940,6 +943,12 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 	}
 	if pub.Offset > 0 {
 		s.offset = pub.Offset
+	}
+	// A subscribe reply has no epoch when the channel had no stream yet: the
+	// server then sends the epoch with the first publication and uses it to
+	// check a later recovery.
+	if pub.Epoch != "" {
+		s.epoch = pub.Epoch
 	}
 	s.mu.Unlock()
 
