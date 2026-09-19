@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/centrifugal/fdelta"
 	"github.com/centrifugal/protocol"
-	fossil "github.com/shadowspore/fossil-delta"
 )
 
 // SubState represents state of Subscription.
@@ -757,7 +756,7 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 			if err != nil {
 				return event, err
 			}
-			newData, err := applyFossil(s.prevData, []byte(delta))
+			newData, err := fdelta.Apply(s.prevData, []byte(delta))
 			if err != nil {
 				return event, err
 			}
@@ -775,7 +774,7 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 		}
 	} else {
 		if pub.Delta {
-			newData, err := applyFossil(s.prevData, pub.Data)
+			newData, err := fdelta.Apply(s.prevData, pub.Data)
 			if err != nil {
 				return event, err
 			}
@@ -786,17 +785,6 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 		}
 	}
 	return event, nil
-}
-
-// applyFossil applies a fossil delta. The fossil library can index past the
-// end of a malformed delta and panic; that is returned as an error too.
-func applyFossil(base, delta []byte) (newData []byte, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("malformed fossil delta: %v", r)
-		}
-	}()
-	return fossil.Apply(base, delta)
 }
 
 // deltaFailed stops the client when a publication's delta can't be applied:
