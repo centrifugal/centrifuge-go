@@ -775,7 +775,8 @@ func TestApplyDeltaErrorsReturned(t *testing.T) {
 		{name: "json delta not a string", client: jsonClient, pub: &protocol.Publication{Data: []byte(`{"not":"a string"}`), Delta: true}},
 		{name: "json data not a string", client: jsonClient, pub: &protocol.Publication{Data: []byte(`{"not":"a string"}`)}},
 		{name: "copy without base", client: protobufClient, pub: &protocol.Publication{Data: []byte("3\n3@0,"), Delta: true}},
-		// Makes the fossil library slice past the end of the delta.
+		// An insert whose length runs past the end of the delta. The previous
+		// library sliced past the end and panicked here; fdelta rejects it.
 		{name: "insert past end of delta", client: protobufClient, pub: &protocol.Publication{Data: []byte("3\n3:a"), Delta: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

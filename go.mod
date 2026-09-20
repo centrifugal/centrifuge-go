@@ -1,12 +1,12 @@
 module github.com/centrifugal/centrifuge-go
 
-go 1.25.0
+go 1.26
 
 require (
+	github.com/centrifugal/fdelta v0.0.2
 	github.com/centrifugal/protocol v0.21.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jpillora/backoff v1.0.0
-	github.com/shadowspore/fossil-delta v0.0.0-20241213113458-1d797d70cbe3
 	google.golang.org/protobuf v1.36.11
 )
 

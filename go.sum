@@ -1,3 +1,5 @@
+github.com/centrifugal/fdelta v0.0.2 h1:C/mXuhjWR2Zybto4eMG3r1Yhjqo02TimxSwDSlHpS1c=
+github.com/centrifugal/fdelta v0.0.2/go.mod h1:9coq4YBCDBGhScGS9KcKeGSW9xQ+Kzq3tcFiK0n5OcE=
 github.com/centrifugal/protocol v0.21.0 h1:yagnxWBH7vK2+0+A0bmPAIOCaFqTvaLVWubkklS7Xyo=
 github.com/centrifugal/protocol v0.21.0/go.mod h1:3pinAfcb+bH8Yp8Ewhf9QTRTzsQ9veP/QOrCk5D5SSE=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
@@ -20,8 +22,6 @@ github.com/segmentio/asm v1.2.1 h1:DTNbBqs57ioxAD4PrArqftgypG4/qNpXoJx8TVXxPR0=
 github.com/segmentio/asm v1.2.1/go.mod h1:BqMnlJP91P8d+4ibuonYZw9mfnzI9HfxselHZr5aAcs=
 github.com/segmentio/encoding v0.5.4 h1:OW1VRern8Nw6ITAtwSZ7Idrl3MXCFwXHPgqESYfvNt0=
 github.com/segmentio/encoding v0.5.4/go.mod h1:HS1ZKa3kSN32ZHVZ7ZLPLXWvOVIiZtyJnO1gPH1sKt0=
-github.com/shadowspore/fossil-delta v0.0.0-20241213113458-1d797d70cbe3 h1:/4/IJi5iyTdh6mqOUaASW148HQpujYiHl0Wl78dSOSc=
-github.com/shadowspore/fossil-delta v0.0.0-20241213113458-1d797d70cbe3/go.mod h1:aJIMhRsunltJR926EB2MUg8qHemFQDreSB33pyto2Ps=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
