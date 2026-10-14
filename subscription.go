@@ -743,6 +743,11 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 		}
 		return event, nil
 	}
+	if pub.Delta && s.prevData == nil {
+		// The server sends a delta only after the full publication it is based
+		// on: this one can't be decoded.
+		return event, errors.New("delta publication without a base")
+	}
 	if s.centrifuge.protocolType == protocol.TypeJSON {
 		if pub.Delta {
 			// pub.Data is JSON string delta, let's decode to []byte and apply it to prevData.
