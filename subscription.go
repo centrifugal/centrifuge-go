@@ -500,17 +500,8 @@ func (s *Subscription) Subscribe() error {
 		return nil
 	}
 	s.state = SubStateSubscribing
+	s.queueSubscribingLocked(subscribingSubscribeCalled, "subscribe called")
 	s.mu.Unlock()
-
-	if s.events != nil && s.events.onSubscribing != nil {
-		handler := s.events.onSubscribing
-		s.centrifuge.runHandlerAsync(func() {
-			handler(SubscribingEvent{
-				Code:   subscribingSubscribeCalled,
-				Reason: "subscribe called",
-			})
-		})
-	}
 
 	if !s.centrifuge.isConnected() {
 		return nil
@@ -548,36 +539,32 @@ func (s *Subscription) moveToUnsubscribedLocked(code uint32, reason string, futu
 		s.centrifuge.updateSubscriptionPushID(s, s.pushID, 0)
 		s.pushID = 0
 	}
-	s.mu.Unlock()
-
 	if needEvent && s.events != nil && s.events.onUnsubscribe != nil {
 		handler := s.events.onUnsubscribe
-		s.centrifuge.runHandlerAsync(func() {
+		s.centrifuge.queueEvent(func() {
 			handler(UnsubscribedEvent{
 				Code:   code,
 				Reason: reason,
 			})
 		})
 	}
+	s.mu.Unlock()
 }
 
 func (s *Subscription) moveToSubscribing(code uint32, reason string) {
 	s.mu.Lock()
-	needEvent := s.moveToSubscribingLocked()
+	s.moveToSubscribingLocked(code, reason)
 	s.mu.Unlock()
-	if needEvent {
-		s.emitSubscribing(code, reason)
-	}
 }
 
 // moveToSubscribingLocked moves the subscription to subscribing unless it's
-// unsubscribed, and reports whether a subscribing event must be emitted (see
-// emitSubscribing). s.mu must be held.
-func (s *Subscription) moveToSubscribingLocked() bool {
+// unsubscribed, and queues the subscribing event when it wasn't subscribing.
+// s.mu must be held.
+func (s *Subscription) moveToSubscribingLocked(code uint32, reason string) {
 	if s.state == SubStateUnsubscribed {
 		// Unsubscribe was called after the teardown or the server push that led
 		// here started: the subscription stays unsubscribed.
-		return false
+		return
 	}
 	s.resubscribeAttempts = 0
 	if s.resubscribeTimer != nil {
@@ -588,13 +575,17 @@ func (s *Subscription) moveToSubscribingLocked() bool {
 	}
 	needEvent := s.state != SubStateSubscribing
 	s.state = SubStateSubscribing
-	return needEvent
+	if needEvent {
+		s.queueSubscribingLocked(code, reason)
+	}
 }
 
-func (s *Subscription) emitSubscribing(code uint32, reason string) {
+// queueSubscribingLocked queues the subscribing event, in the lock hold of the
+// change to subscribing (see Client.queueEvent).
+func (s *Subscription) queueSubscribingLocked(code uint32, reason string) {
 	if s.events != nil && s.events.onSubscribing != nil {
 		handler := s.events.onSubscribing
-		s.centrifuge.runHandlerAsync(func() {
+		s.centrifuge.queueEvent(func() {
 			handler(SubscribingEvent{
 				Code:   code,
 				Reason: reason,
@@ -681,8 +672,10 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 	oldPushID := s.pushID
 	s.pushID = res.Id
 	s.centrifuge.updateSubscriptionPushID(s, oldPushID, res.Id)
-	s.mu.Unlock()
 
+	// The events are queued in this lock hold, then waited for without it (see
+	// Client.queueEvent).
+	var last chan struct{}
 	if s.events != nil && s.events.onSubscribed != nil {
 		handler := s.events.onSubscribed
 		ev := SubscribedEvent{
@@ -698,13 +691,13 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 				Offset: res.GetOffset(),
 			}
 		}
-		s.centrifuge.runHandlerSync(func() {
+		last = s.centrifuge.queueEvent(func() {
 			handler(ev)
 		})
 	}
 
 	if len(res.Publications) > 0 {
-		s.centrifuge.runHandlerSync(func() {
+		last = s.centrifuge.queueEvent(func() {
 			pubs := res.Publications
 			for i := 0; i < len(pubs); i++ {
 				pub := res.Publications[i]
@@ -734,6 +727,8 @@ func (s *Subscription) moveToSubscribed(res *protocol.SubscribeResult, connGener
 			}
 		})
 	}
+	s.mu.Unlock()
+	s.centrifuge.waitEvent(last)
 }
 
 // applyDeltaLocked decodes a publication of a subscription with negotiated
@@ -747,6 +742,11 @@ func (s *Subscription) applyDeltaLocked(pub *protocol.Publication, event Publica
 			return event, errors.New("delta publication without negotiated delta")
 		}
 		return event, nil
+	}
+	if pub.Delta && s.prevData == nil {
+		// The server sends a delta only after the full publication it is based
+		// on: this one can't be decoded.
+		return event, errors.New("delta publication without a base")
 	}
 	if s.centrifuge.protocolType == protocol.TypeJSON {
 		if pub.Delta {
@@ -951,48 +951,51 @@ func (s *Subscription) handlePublication(pub *protocol.Publication) {
 			s.epoch = pub.Epoch
 		}
 	}
-	s.mu.Unlock()
-
-	var handler PublicationHandler
+	// Queued in this lock hold, so it can't come after the event of a later
+	// change (see Client.queueEvent).
+	var done chan struct{}
 	if s.events != nil && s.events.onPublication != nil {
-		handler = s.events.onPublication
+		handler := s.events.onPublication
+		done = s.centrifuge.queueEvent(func() {
+			handler(publicationEvent)
+		})
 	}
-	if handler == nil {
-		return
-	}
-	s.centrifuge.runHandlerSync(func() {
-		handler(publicationEvent)
-	})
+	s.mu.Unlock()
+	s.centrifuge.waitEvent(done)
 }
 
 func (s *Subscription) handleJoin(info *protocol.ClientInfo) {
-	if s.State() != SubStateSubscribed {
+	s.mu.Lock()
+	if s.state != SubStateSubscribed {
+		s.mu.Unlock()
 		return
 	}
-	var handler JoinHandler
+	var done chan struct{}
 	if s.events != nil && s.events.onJoin != nil {
-		handler = s.events.onJoin
-	}
-	if handler != nil {
-		s.centrifuge.runHandlerSync(func() {
+		handler := s.events.onJoin
+		done = s.centrifuge.queueEvent(func() {
 			handler(JoinEvent{ClientInfo: infoFromProto(info)})
 		})
 	}
+	s.mu.Unlock()
+	s.centrifuge.waitEvent(done)
 }
 
 func (s *Subscription) handleLeave(info *protocol.ClientInfo) {
-	if s.State() != SubStateSubscribed {
+	s.mu.Lock()
+	if s.state != SubStateSubscribed {
+		s.mu.Unlock()
 		return
 	}
-	var handler LeaveHandler
+	var done chan struct{}
 	if s.events != nil && s.events.onLeave != nil {
-		handler = s.events.onLeave
-	}
-	if handler != nil {
-		s.centrifuge.runHandlerSync(func() {
+		handler := s.events.onLeave
+		done = s.centrifuge.queueEvent(func() {
 			handler(LeaveEvent{ClientInfo: infoFromProto(info)})
 		})
 	}
+	s.mu.Unlock()
+	s.centrifuge.waitEvent(done)
 }
 
 func (s *Subscription) handleUnsubscribe(unsubscribe *protocol.Unsubscribe) {

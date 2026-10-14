@@ -86,12 +86,15 @@ type Client struct {
 	closeCh           chan struct{}
 	connectFutures    map[uint64]connectFuture
 	cbQueue           *cbQueue
-	reconnectTimer    *time.Timer
-	refreshTimer      *time.Timer
-	refreshRequired   bool
-	logCh             chan LogEntry
-	logCloseCh        chan struct{}
-	logCloseOnce      sync.Once
+	// eventQueue is cbQueue, kept after Close clears cbQueue: a closed queue
+	// ignores what is pushed. See queueEvent.
+	eventQueue      *cbQueue
+	reconnectTimer  *time.Timer
+	refreshTimer    *time.Timer
+	refreshRequired bool
+	logCh           chan LogEntry
+	logCloseCh      chan struct{}
+	logCloseOnce    sync.Once
 }
 
 // NewJsonClient initializes Client which uses JSON-based protocol internally.
@@ -229,6 +232,7 @@ func newClient(endpoint string, isProtobuf bool, config Config) *Client {
 		closeCh: make(chan struct{}),
 		notify:  make(chan struct{}, 1),
 	}
+	client.eventQueue = client.cbQueue
 	go client.cbQueue.dispatch()
 	if client.config.LogLevel > 0 {
 		go client.handleLogs()
@@ -515,24 +519,16 @@ func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason s
 
 	// Subscriptions move to subscribing in the same lock hold as the client: a
 	// connect right after the lock is released must find them subscribing, or
-	// it won't resubscribe them. Their events are emitted after unlocking.
-	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
+	// it won't resubscribe them. All the events are queued in this lock hold too
+	// (see queueEvent).
 	for _, s := range c.subs {
 		s.mu.Lock()
-		needEvent := s.moveToSubscribingLocked()
+		s.moveToSubscribingLocked(subscribingTransportClosed, "transport closed")
 		s.mu.Unlock()
-		if needEvent {
-			subsToUnsubscribe = append(subsToUnsubscribe, s)
-		}
 	}
 	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
 	for ch := range c.serverSubs {
 		serverSubsToUnsubscribe = append(serverSubsToUnsubscribe, ch)
-	}
-	c.mu.Unlock()
-
-	for _, s := range subsToUnsubscribe {
-		s.emitSubscribing(subscribingTransportClosed, "transport closed")
 	}
 
 	if prevState == StateConnected {
@@ -541,7 +537,7 @@ func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason s
 			serverSubscribingHandler = c.events.onServerSubscribing
 		}
 		if serverSubscribingHandler != nil {
-			c.runHandlerAsync(func() {
+			c.queueEvent(func() {
 				for _, ch := range serverSubsToUnsubscribe {
 					serverSubscribingHandler(ServerSubscribingEvent{Channel: ch})
 				}
@@ -554,11 +550,12 @@ func (c *Client) moveToDisconnectedIf(current func() bool, code uint32, reason s
 		handler = c.events.onDisconnected
 	}
 	if handler != nil {
-		c.runHandlerAsync(func() {
+		c.queueEvent(func() {
 			event := DisconnectedEvent{Code: code, Reason: reason}
 			handler(event)
 		})
 	}
+	c.mu.Unlock()
 	return true
 }
 
@@ -623,45 +620,28 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 
 	// Subscriptions move to subscribing in the same lock hold as the client: a
 	// connect right after the lock is released must find them subscribing, or
-	// it won't resubscribe them. Their events are emitted after unlocking.
-	subsToUnsubscribe := make([]*Subscription, 0, len(c.subs))
+	// it won't resubscribe them. All the events are queued in this lock hold too
+	// (see queueEvent), and waited for after it.
 	for _, s := range c.subs {
 		s.mu.Lock()
-		needEvent := s.moveToSubscribingLocked()
+		s.moveToSubscribingLocked(subscribingTransportClosed, "transport closed")
 		s.mu.Unlock()
-		if needEvent {
-			subsToUnsubscribe = append(subsToUnsubscribe, s)
-		}
 	}
 	serverSubsToUnsubscribe := make([]string, 0, len(c.serverSubs))
 	for ch := range c.serverSubs {
 		serverSubsToUnsubscribe = append(serverSubsToUnsubscribe, ch)
 	}
-	c.mu.Unlock()
 
-	for _, s := range subsToUnsubscribe {
-		s.emitSubscribing(subscribingTransportClosed, "transport closed")
-	}
-	if c.logLevelEnabled(LogLevelDebug) {
-		c.log(LogLevelDebug, "client-side subs unsubscribe events called", map[string]string{
-			"num_subs": strconv.Itoa(len(subsToUnsubscribe)),
-		})
-	}
-
+	var last chan struct{}
 	var serverSubscribingHandler ServerSubscribingHandler
 	if c.events != nil && c.events.onServerSubscribing != nil {
 		serverSubscribingHandler = c.events.onServerSubscribing
 	}
 	if serverSubscribingHandler != nil {
-		c.runHandlerSync(func() {
+		last = c.queueEvent(func() {
 			for _, ch := range serverSubsToUnsubscribe {
 				serverSubscribingHandler(ServerSubscribingEvent{Channel: ch})
 			}
-		})
-	}
-	if c.logLevelEnabled(LogLevelDebug) {
-		c.log(LogLevelDebug, "server-side subs unsubscribe events called", map[string]string{
-			"num_subs": strconv.Itoa(len(serverSubsToUnsubscribe)),
 		})
 	}
 
@@ -670,13 +650,17 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 		handler = c.events.onConnecting
 	}
 	if handler != nil {
-		c.runHandlerSync(func() {
+		last = c.queueEvent(func() {
 			event := ConnectingEvent{Code: code, Reason: reason}
 			handler(event)
 		})
 	}
+	c.mu.Unlock()
+
+	// The reconnect is scheduled after the handlers ran: they may disconnect.
+	c.waitEvent(last)
 	if c.logLevelEnabled(LogLevelDebug) {
-		c.log(LogLevelDebug, "connecting event called", nil)
+		c.log(LogLevelDebug, "connecting events called", nil)
 	}
 
 	c.mu.Lock()
@@ -1004,6 +988,40 @@ func (c *Client) runHandlerAsync(fn func()) {
 	})
 }
 
+// queueEvent queues fn, which reports a state change to the application, and
+// returns a channel closed once fn ran (at once when the queue is closed). It is
+// called in the same lock hold as the state change: the queue runs callbacks in
+// order, so the application gets the events in the order of the state changes,
+// also when a handler changes the state again before an earlier event ran. It
+// only takes the queue's own lock, so it is safe under c.mu and s.mu.
+func (c *Client) queueEvent(fn func()) chan struct{} {
+	done := make(chan struct{})
+	if !c.eventQueue.push(func(time.Duration) {
+		defer close(done)
+		fn()
+	}) {
+		close(done)
+	}
+	return done
+}
+
+// waitEvent waits until a queued event ran, with no lock held. Not from an
+// event handler: the handler would wait for itself.
+func (c *Client) waitEvent(done chan struct{}) {
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+		return
+	default:
+	}
+	if c.eventQueue.inDispatch() {
+		return
+	}
+	<-done
+}
+
 func (c *Client) handle(t transport, reply *protocol.Reply) {
 	if reply.Id > 0 {
 		if c.logLevelEnabled(LogLevelTrace) {
@@ -1171,17 +1189,16 @@ func (c *Client) handleServerPublication(channel string, pub *protocol.Publicati
 			serverSub.Epoch = pub.Epoch
 		}
 	}
-	c.mu.Unlock()
-
-	var handler ServerPublicationHandler
+	// Queued in this lock hold (see queueEvent).
+	var done chan struct{}
 	if c.events != nil && c.events.onServerPublication != nil {
-		handler = c.events.onServerPublication
-	}
-	if handler != nil {
-		c.runHandlerSync(func() {
+		handler := c.events.onServerPublication
+		done = c.queueEvent(func() {
 			handler(ServerPublicationEvent{Channel: channel, Publication: pubFromProto(pub)})
 		})
 	}
+	c.mu.Unlock()
+	c.waitEvent(done)
 }
 
 func (c *Client) handleServerJoin(channel string, join *protocol.Join) {
@@ -1191,17 +1208,15 @@ func (c *Client) handleServerJoin(channel string, join *protocol.Join) {
 		c.mu.Unlock()
 		return
 	}
-	c.mu.Unlock()
-
-	var handler ServerJoinHandler
+	var done chan struct{}
 	if c.events != nil && c.events.onServerJoin != nil {
-		handler = c.events.onServerJoin
-	}
-	if handler != nil {
-		c.runHandlerSync(func() {
+		handler := c.events.onServerJoin
+		done = c.queueEvent(func() {
 			handler(ServerJoinEvent{Channel: channel, ClientInfo: infoFromProto(join.Info)})
 		})
 	}
+	c.mu.Unlock()
+	c.waitEvent(done)
 }
 
 func (c *Client) handleServerLeave(channel string, leave *protocol.Leave) {
@@ -1211,17 +1226,15 @@ func (c *Client) handleServerLeave(channel string, leave *protocol.Leave) {
 		c.mu.Unlock()
 		return
 	}
-	c.mu.Unlock()
-
-	var handler ServerLeaveHandler
+	var done chan struct{}
 	if c.events != nil && c.events.onServerLeave != nil {
-		handler = c.events.onServerLeave
-	}
-	if handler != nil {
-		c.runHandlerSync(func() {
+		handler := c.events.onServerLeave
+		done = c.queueEvent(func() {
 			handler(ServerLeaveEvent{Channel: channel, ClientInfo: infoFromProto(leave.Info)})
 		})
 	}
+	c.mu.Unlock()
+	c.waitEvent(done)
 }
 
 func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) {
@@ -1236,14 +1249,14 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) {
 		Epoch:       sub.Epoch,
 		Recoverable: sub.Recoverable,
 	}
-	c.mu.Unlock()
 
 	var handler ServerSubscribedHandler
 	if c.events != nil && c.events.onServerSubscribe != nil {
 		handler = c.events.onServerSubscribe
 	}
+	var done chan struct{}
 	if handler != nil {
-		c.runHandlerSync(func() {
+		done = c.queueEvent(func() {
 			ev := ServerSubscribedEvent{
 				Channel:     channel,
 				Positioned:  sub.GetPositioned(),
@@ -1259,28 +1272,27 @@ func (c *Client) handleServerSub(channel string, sub *protocol.Subscribe) {
 			handler(ev)
 		})
 	}
+	c.mu.Unlock()
+	c.waitEvent(done)
 }
 
 func (c *Client) handleServerUnsub(channel string, _ *protocol.Unsubscribe) {
 	c.mu.Lock()
 	_, ok := c.serverSubs[channel]
-	if ok {
-		delete(c.serverSubs, channel)
-	}
-	c.mu.Unlock()
 	if !ok {
+		c.mu.Unlock()
 		return
 	}
-
-	var handler ServerUnsubscribedHandler
+	delete(c.serverSubs, channel)
+	var done chan struct{}
 	if c.events != nil && c.events.onServerUnsubscribed != nil {
-		handler = c.events.onServerUnsubscribed
-	}
-	if handler != nil {
-		c.runHandlerSync(func() {
+		handler := c.events.onServerUnsubscribed
+		done = c.queueEvent(func() {
 			handler(ServerUnsubscribedEvent{Channel: channel})
 		})
 	}
+	c.mu.Unlock()
+	c.waitEvent(done)
 }
 
 func (c *Client) getReconnectDelay() time.Duration {
@@ -1317,6 +1329,79 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 		c.setTransportLocked(nil)
 	}
 	c.mu.Unlock()
+
+	// The token comes first, as in other SDKs: no connection is open while the
+	// application's GetToken runs. With the dial first, an attempt abandoned
+	// meanwhile (Disconnect, maybe followed by Connect) kept its connection open
+	// until GetToken returned, and Centrifugo closes a connection that sends no
+	// connect command for a while, so a slow GetToken failed the attempt. A token
+	// set with SetToken during the dial is still used: the connect command takes
+	// it after the dial.
+	c.mu.Lock()
+	refreshRequired := c.refreshRequired
+	token := c.token
+	getTokenFunc := c.config.GetToken
+	c.mu.Unlock()
+
+	if refreshRequired || (token == "" && getTokenFunc != nil) {
+		// Try to refresh token.
+		if c.logLevelEnabled(LogLevelDebug) {
+			c.log(LogLevelDebug, "refreshing token", nil)
+		}
+		newToken, err := c.refreshToken()
+		if err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				if c.logLevelEnabled(LogLevelDebug) {
+					c.log(LogLevelDebug, "unauthorized error, move to disconnected", nil)
+				}
+				// Without GetToken the application can set a token when the
+				// configuration error is reported: SetToken clears refreshRequired,
+				// and the attempt connects with that token below.
+				disconnected := c.moveToDisconnectedIf(func() bool {
+					return c.isCurrentAttemptLocked(attempt) && (getTokenFunc != nil || c.refreshRequired)
+				}, disconnectedUnauthorized, "unauthorized")
+				if disconnected || getTokenFunc != nil {
+					return nil
+				}
+			} else {
+				if c.logLevelEnabled(LogLevelDebug) {
+					c.log(LogLevelDebug, "error refreshing token", map[string]string{
+						"error": err.Error(),
+					})
+				}
+				c.handleError(RefreshError{err})
+				c.mu.Lock()
+				if !c.isCurrentAttemptLocked(attempt) {
+					if c.logLevelEnabled(LogLevelDebug) {
+						c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
+							"state": string(c.state),
+						})
+					}
+					c.mu.Unlock()
+					return nil
+				}
+				c.scheduleReconnectLocked()
+				c.mu.Unlock()
+				return err
+			}
+		} else {
+			c.mu.Lock()
+			if !c.isCurrentAttemptLocked(attempt) {
+				// Disconnect (and maybe SetToken and Connect) was called while the
+				// token was requested: the token belongs to an attempt that was
+				// abandoned and must not replace the current one.
+				if c.logLevelEnabled(LogLevelDebug) {
+					c.log(LogLevelDebug, "got token, but connect attempt is not current anymore", map[string]string{
+						"state": string(c.state),
+					})
+				}
+				c.mu.Unlock()
+				return nil
+			}
+			c.token = newToken
+			c.mu.Unlock()
+		}
+	}
 
 	wsConfig := websocketConfig{
 		Proxy:             c.config.Proxy,
@@ -1356,80 +1441,6 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 	}
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "new transport created", nil)
-	}
-
-	// Read after the dial: the application may have called SetToken during it.
-	c.mu.Lock()
-	refreshRequired := c.refreshRequired
-	token := c.token
-	getTokenFunc := c.config.GetToken
-	c.mu.Unlock()
-
-	if refreshRequired || (token == "" && getTokenFunc != nil) {
-		// Try to refresh token.
-		if c.logLevelEnabled(LogLevelDebug) {
-			c.log(LogLevelDebug, "refreshing token", nil)
-		}
-		newToken, err := c.refreshToken()
-		if err != nil {
-			if errors.Is(err, ErrUnauthorized) {
-				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "unauthorized error, move to disconnected", nil)
-				}
-				// Without GetToken the application can set a token when the
-				// configuration error is reported: SetToken clears refreshRequired,
-				// and the attempt connects with that token below.
-				disconnected := c.moveToDisconnectedIf(func() bool {
-					return c.isCurrentAttemptLocked(attempt) && (getTokenFunc != nil || c.refreshRequired)
-				}, disconnectedUnauthorized, "unauthorized")
-				if disconnected || getTokenFunc != nil {
-					// The transport was dialed before requesting the token and won't
-					// be used for this attempt, close it so the connection does not leak.
-					_ = t.Close()
-					return nil
-				}
-			} else {
-				// The transport was dialed before requesting the token and won't be
-				// used for this attempt, close it so the connection does not leak.
-				_ = t.Close()
-				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "error refreshing token", map[string]string{
-						"error": err.Error(),
-					})
-				}
-				c.handleError(RefreshError{err})
-				c.mu.Lock()
-				if !c.isCurrentAttemptLocked(attempt) {
-					if c.logLevelEnabled(LogLevelDebug) {
-						c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
-							"state": string(c.state),
-						})
-					}
-					c.mu.Unlock()
-					return nil
-				}
-				c.scheduleReconnectLocked()
-				c.mu.Unlock()
-				return err
-			}
-		} else {
-			c.mu.Lock()
-			if !c.isCurrentAttemptLocked(attempt) {
-				// Disconnect (and maybe SetToken and Connect) was called while the
-				// token was requested: the token belongs to an attempt that was
-				// abandoned and must not replace the current one.
-				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "got token, but connect attempt is not current anymore", map[string]string{
-						"state": string(c.state),
-					})
-				}
-				_ = t.Close()
-				c.mu.Unlock()
-				return nil
-			}
-			c.token = newToken
-			c.mu.Unlock()
-		}
 	}
 
 	c.mu.Lock()
@@ -1569,8 +1580,7 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "resolved connect futures", nil)
 		}
-		c.mu.Unlock()
-
+		var connected chan struct{}
 		if c.events != nil && c.events.onConnected != nil {
 			handler := c.events.onConnected
 			ev := ConnectedEvent{
@@ -1578,10 +1588,12 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 				Version:  res.Version,
 				Data:     res.Data,
 			}
-			c.runHandlerSync(func() {
+			connected = c.queueEvent(func() {
 				handler(ev)
 			})
 		}
+		c.mu.Unlock()
+		c.waitEvent(connected)
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "connected event called", nil)
 		}
@@ -1628,10 +1640,10 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 				}
 			}
 			c.serverSubs[channel] = sub
-			c.mu.Unlock()
 
+			var last chan struct{}
 			if subscribeHandler != nil {
-				c.runHandlerSync(func() {
+				last = c.queueEvent(func() {
 					ev := ServerSubscribedEvent{
 						Channel:       channel,
 						Data:          subRes.GetData(),
@@ -1650,7 +1662,7 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 				})
 			}
 			if len(subRes.Publications) > 0 {
-				c.runHandlerSync(func() {
+				last = c.queueEvent(func() {
 					for _, pub := range subRes.Publications {
 						c.mu.Lock()
 						sub, ok := c.serverSubs[channel]
@@ -1671,6 +1683,8 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 					}
 				})
 			}
+			c.mu.Unlock()
+			c.waitEvent(last)
 		}
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "connect server-side subscriptions processed", nil)
@@ -1684,25 +1698,23 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 			c.mu.Unlock()
 			return
 		}
-		serverUnsubscribedChannels := make([]string, 0)
-		for ch := range c.serverSubs {
-			if _, ok := res.Subs[ch]; !ok {
-				serverUnsubscribedChannels = append(serverUnsubscribedChannels, ch)
-				delete(c.serverSubs, ch)
-			}
-		}
-		c.mu.Unlock()
 		var serverUnsubscribedHandler ServerUnsubscribedHandler
 		if c.events != nil && c.events.onServerUnsubscribed != nil {
 			serverUnsubscribedHandler = c.events.onServerUnsubscribed
 		}
-		if serverUnsubscribedHandler != nil {
-			for _, ch := range serverUnsubscribedChannels {
-				c.runHandlerSync(func() {
-					serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
-				})
+		var unsubscribed chan struct{}
+		for ch := range c.serverSubs {
+			if _, ok := res.Subs[ch]; !ok {
+				delete(c.serverSubs, ch)
+				if serverUnsubscribedHandler != nil {
+					unsubscribed = c.queueEvent(func() {
+						serverUnsubscribedHandler(ServerUnsubscribedEvent{Channel: ch})
+					})
+				}
 			}
 		}
+		c.mu.Unlock()
+		c.waitEvent(unsubscribed)
 		if c.logLevelEnabled(LogLevelDebug) {
 			c.log(LogLevelDebug, "connect server-side unsubscriptions processed", nil)
 		}
@@ -1777,18 +1789,15 @@ func (c *Client) startConnecting() error {
 	}
 	c.setStateLocked(StateConnecting)
 	attempt := c.connectAttempt
-	c.mu.Unlock()
-
-	var handler ConnectingHandler
+	var connecting chan struct{}
 	if c.events != nil && c.events.onConnecting != nil {
-		handler = c.events.onConnecting
-	}
-	if handler != nil {
-		c.runHandlerSyncReentrant(func() {
-			event := ConnectingEvent{Code: connectingConnectCalled, Reason: "connect called"}
-			handler(event)
+		handler := c.events.onConnecting
+		connecting = c.queueEvent(func() {
+			handler(ConnectingEvent{Code: connectingConnectCalled, Reason: "connect called"})
 		})
 	}
+	c.mu.Unlock()
+	c.waitEvent(connecting)
 
 	return c.startReconnectingIf(func() bool { return c.connectAttempt == attempt })
 }

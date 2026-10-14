@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/centrifugal/fdelta"
 	"github.com/centrifugal/protocol"
 	"github.com/gorilla/websocket"
 )
@@ -778,6 +779,10 @@ func TestApplyDeltaErrorsReturned(t *testing.T) {
 		// An insert whose length runs past the end of the delta. The previous
 		// library sliced past the end and panicked here; fdelta rejects it.
 		{name: "insert past end of delta", client: protobufClient, pub: &protocol.Publication{Data: []byte("3\n3:a"), Delta: true}},
+		// A valid insert-only delta still needs a base: the server never sends
+		// a delta before the full publication it is based on.
+		{name: "insert without base", client: protobufClient, pub: &protocol.Publication{Data: fdelta.Create(nil, []byte("test")), Delta: true}},
+		{name: "json insert without base", client: jsonClient, pub: &protocol.Publication{Data: []byte(strconv.Quote(string(fdelta.Create(nil, []byte("test"))))), Delta: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sub, err := tc.client.NewSubscription(tc.name, SubscriptionConfig{Delta: DeltaTypeFossil})

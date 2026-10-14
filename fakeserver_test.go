@@ -28,6 +28,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/centrifugal/protocol"
 	"github.com/gorilla/websocket"
@@ -47,6 +48,10 @@ type FakeServer struct {
 	OnCommand func(cmd *protocol.Command) *protocol.Reply
 	// OnSubscribe customizes the subscribe result per channel (default: empty).
 	OnSubscribe func(channel string, req *protocol.SubscribeRequest) *protocol.SubscribeResult
+	// StaleCloseDelay, when set, closes a connection whose first message doesn't
+	// arrive within it, as Centrifugo's ClientStaleCloseDelay does for a
+	// connection that sends no connect command.
+	StaleCloseDelay time.Duration
 }
 
 func NewFakeServer(t *testing.T) *FakeServer {
@@ -116,11 +121,16 @@ func (s *FakeServer) CloseConnection() {
 }
 
 func (s *FakeServer) readLoop(conn *websocket.Conn) {
+	if s.StaleCloseDelay > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(s.StaleCloseDelay))
+	}
 	for {
 		_, data, err := conn.ReadMessage()
 		if err != nil {
+			_ = conn.Close()
 			return
 		}
+		_ = conn.SetReadDeadline(time.Time{})
 		decoder := protocol.NewProtobufCommandDecoder(data)
 		for {
 			cmd, err := decoder.Decode()
