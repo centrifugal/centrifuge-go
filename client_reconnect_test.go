@@ -575,20 +575,26 @@ func TestSetTokenFromOnErrorOfConfigurationErrorConnects(t *testing.T) {
 // A disconnect teardown moved subscriptions to subscribing after releasing the
 // client lock. A connect completing in between skipped the subscriptions still
 // subscribed, and the teardown then left them subscribing with nothing to
-// resubscribe them. The test holds the callback queue, so the teardown stops
-// when it queues its first subscribing event.
+// resubscribe them. The teardown is one lock hold now; the test connects while
+// its events still wait: a subscribing handler blocks the callback goroutine.
 func TestConnectDuringDisconnectTeardownResubscribesAllSubscriptions(t *testing.T) {
 	s := NewFakeServer(t)
 	client := NewProtobufClient(s.URL(), Config{})
 	closeOnCleanup(t, client)
 	const numSubs = 5
 	subs := make([]*Subscription, 0, numSubs)
+	var block atomic.Bool
+	release := make(chan struct{})
 	for i := 0; i < numSubs; i++ {
 		sub, err := client.NewSubscription(fmt.Sprintf("ch%d", i))
 		if err != nil {
 			t.Fatal(err)
 		}
-		sub.OnSubscribing(func(SubscribingEvent) {})
+		sub.OnSubscribing(func(SubscribingEvent) {
+			if block.Load() {
+				<-release
+			}
+		})
 		_ = sub.Subscribe()
 		subs = append(subs, sub)
 	}
@@ -606,15 +612,13 @@ func TestConnectDuringDisconnectTeardownResubscribesAllSubscriptions(t *testing.
 		return client.State() == StateConnected && countSubs(SubStateSubscribed) == numSubs
 	})
 
-	client.mu.RLock()
-	queue := client.cbQueue
-	client.mu.RUnlock()
-	queue.mu.Lock()
-	queueHeld := true
+	block.Store(true)
+	released := false
 	releaseQueue := func() {
-		if queueHeld {
-			queueHeld = false
-			queue.mu.Unlock()
+		if !released {
+			released = true
+			block.Store(false)
+			close(release)
 		}
 	}
 	defer releaseQueue()
@@ -1168,5 +1172,70 @@ func TestTransportClosedWhileConnectingRetriesWithoutConnectTimeout(t *testing.T
 	case <-connectedCh:
 	case <-time.After(3 * time.Second):
 		t.Fatalf("not connected %s after the connection closed while connecting: the client waits for the connect reply timeout (%s)", time.Since(started), client.config.ReadTimeout)
+	}
+}
+
+// Events used to be queued after the lock of their state change was released. A
+// subscribing handler calling Disconnect() and Connect() during a reconnect
+// teardown then got its events queued first: the application saw disconnected
+// and connecting before the teardown's connecting, and connecting twice in a
+// row. The teardown waits for the server-side subscribing handler, which makes
+// that deterministic: the restarting handler runs while the teardown waits.
+func TestEventsFollowStateOrderWhenHandlerRestartsDuringTeardown(t *testing.T) {
+	s := NewFakeServer(t)
+	s.ConnectResult.Subs = map[string]*protocol.SubscribeResult{"server": {}}
+	client := NewProtobufClient(s.URL(), Config{
+		MinReconnectDelay: 10 * time.Millisecond,
+		MaxReconnectDelay: 20 * time.Millisecond,
+	})
+	closeOnCleanup(t, client)
+
+	var mu sync.Mutex
+	var events []string
+	record := func(e string) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}
+	client.OnConnecting(func(e ConnectingEvent) { record(fmt.Sprintf("connecting %d", e.Code)) })
+	client.OnConnected(func(ConnectedEvent) { record("connected") })
+	client.OnDisconnected(func(e DisconnectedEvent) { record(fmt.Sprintf("disconnected %d", e.Code)) })
+	client.OnSubscribing(func(ServerSubscribingEvent) {})
+
+	sub, err := client.NewSubscription("ch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restarted atomic.Bool
+	sub.OnSubscribing(func(e SubscribingEvent) {
+		if e.Code == subscribingTransportClosed && restarted.CompareAndSwap(false, true) {
+			_ = client.Disconnect()
+			_ = client.Connect()
+		}
+	})
+	subscribed := make(chan struct{}, 4)
+	sub.OnSubscribed(func(SubscribedEvent) { subscribed <- struct{}{} })
+	_ = sub.Subscribe()
+	_ = client.Connect()
+	waitCh(t, subscribed, "subscribed")
+
+	mu.Lock()
+	events = nil
+	mu.Unlock()
+	s.CloseConnection()
+	waitCh(t, subscribed, "subscribed again after the restart from the handler")
+	waitCondition(t, "connected", func() bool { return client.State() == StateConnected })
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{
+		fmt.Sprintf("connecting %d", connectingTransportClosed),
+		fmt.Sprintf("disconnected %d", disconnectedDisconnectCalled),
+		fmt.Sprintf("connecting %d", connectingConnectCalled),
+		"connected",
+	}
+	if strings.Join(events, ", ") != strings.Join(want, ", ") {
+		t.Fatalf("events %v, want %v", events, want)
 	}
 }
