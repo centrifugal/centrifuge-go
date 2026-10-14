@@ -1330,6 +1330,79 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 	}
 	c.mu.Unlock()
 
+	// The token comes first, as in other SDKs: no connection is open while the
+	// application's GetToken runs. With the dial first, an attempt abandoned
+	// meanwhile (Disconnect, maybe followed by Connect) kept its connection open
+	// until GetToken returned, and Centrifugo closes a connection that sends no
+	// connect command for a while, so a slow GetToken failed the attempt. A token
+	// set with SetToken during the dial is still used: the connect command takes
+	// it after the dial.
+	c.mu.Lock()
+	refreshRequired := c.refreshRequired
+	token := c.token
+	getTokenFunc := c.config.GetToken
+	c.mu.Unlock()
+
+	if refreshRequired || (token == "" && getTokenFunc != nil) {
+		// Try to refresh token.
+		if c.logLevelEnabled(LogLevelDebug) {
+			c.log(LogLevelDebug, "refreshing token", nil)
+		}
+		newToken, err := c.refreshToken()
+		if err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				if c.logLevelEnabled(LogLevelDebug) {
+					c.log(LogLevelDebug, "unauthorized error, move to disconnected", nil)
+				}
+				// Without GetToken the application can set a token when the
+				// configuration error is reported: SetToken clears refreshRequired,
+				// and the attempt connects with that token below.
+				disconnected := c.moveToDisconnectedIf(func() bool {
+					return c.isCurrentAttemptLocked(attempt) && (getTokenFunc != nil || c.refreshRequired)
+				}, disconnectedUnauthorized, "unauthorized")
+				if disconnected || getTokenFunc != nil {
+					return nil
+				}
+			} else {
+				if c.logLevelEnabled(LogLevelDebug) {
+					c.log(LogLevelDebug, "error refreshing token", map[string]string{
+						"error": err.Error(),
+					})
+				}
+				c.handleError(RefreshError{err})
+				c.mu.Lock()
+				if !c.isCurrentAttemptLocked(attempt) {
+					if c.logLevelEnabled(LogLevelDebug) {
+						c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
+							"state": string(c.state),
+						})
+					}
+					c.mu.Unlock()
+					return nil
+				}
+				c.scheduleReconnectLocked()
+				c.mu.Unlock()
+				return err
+			}
+		} else {
+			c.mu.Lock()
+			if !c.isCurrentAttemptLocked(attempt) {
+				// Disconnect (and maybe SetToken and Connect) was called while the
+				// token was requested: the token belongs to an attempt that was
+				// abandoned and must not replace the current one.
+				if c.logLevelEnabled(LogLevelDebug) {
+					c.log(LogLevelDebug, "got token, but connect attempt is not current anymore", map[string]string{
+						"state": string(c.state),
+					})
+				}
+				c.mu.Unlock()
+				return nil
+			}
+			c.token = newToken
+			c.mu.Unlock()
+		}
+	}
+
 	wsConfig := websocketConfig{
 		Proxy:             c.config.Proxy,
 		NetDialContext:    c.config.NetDialContext,
@@ -1368,80 +1441,6 @@ func (c *Client) startReconnectingIf(current func() bool) error {
 	}
 	if c.logLevelEnabled(LogLevelDebug) {
 		c.log(LogLevelDebug, "new transport created", nil)
-	}
-
-	// Read after the dial: the application may have called SetToken during it.
-	c.mu.Lock()
-	refreshRequired := c.refreshRequired
-	token := c.token
-	getTokenFunc := c.config.GetToken
-	c.mu.Unlock()
-
-	if refreshRequired || (token == "" && getTokenFunc != nil) {
-		// Try to refresh token.
-		if c.logLevelEnabled(LogLevelDebug) {
-			c.log(LogLevelDebug, "refreshing token", nil)
-		}
-		newToken, err := c.refreshToken()
-		if err != nil {
-			if errors.Is(err, ErrUnauthorized) {
-				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "unauthorized error, move to disconnected", nil)
-				}
-				// Without GetToken the application can set a token when the
-				// configuration error is reported: SetToken clears refreshRequired,
-				// and the attempt connects with that token below.
-				disconnected := c.moveToDisconnectedIf(func() bool {
-					return c.isCurrentAttemptLocked(attempt) && (getTokenFunc != nil || c.refreshRequired)
-				}, disconnectedUnauthorized, "unauthorized")
-				if disconnected || getTokenFunc != nil {
-					// The transport was dialed before requesting the token and won't
-					// be used for this attempt, close it so the connection does not leak.
-					_ = t.Close()
-					return nil
-				}
-			} else {
-				// The transport was dialed before requesting the token and won't be
-				// used for this attempt, close it so the connection does not leak.
-				_ = t.Close()
-				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "error refreshing token", map[string]string{
-						"error": err.Error(),
-					})
-				}
-				c.handleError(RefreshError{err})
-				c.mu.Lock()
-				if !c.isCurrentAttemptLocked(attempt) {
-					if c.logLevelEnabled(LogLevelDebug) {
-						c.log(LogLevelDebug, "connect attempt is not current anymore, no need to continue", map[string]string{
-							"state": string(c.state),
-						})
-					}
-					c.mu.Unlock()
-					return nil
-				}
-				c.scheduleReconnectLocked()
-				c.mu.Unlock()
-				return err
-			}
-		} else {
-			c.mu.Lock()
-			if !c.isCurrentAttemptLocked(attempt) {
-				// Disconnect (and maybe SetToken and Connect) was called while the
-				// token was requested: the token belongs to an attempt that was
-				// abandoned and must not replace the current one.
-				if c.logLevelEnabled(LogLevelDebug) {
-					c.log(LogLevelDebug, "got token, but connect attempt is not current anymore", map[string]string{
-						"state": string(c.state),
-					})
-				}
-				_ = t.Close()
-				c.mu.Unlock()
-				return nil
-			}
-			c.token = newToken
-			c.mu.Unlock()
-		}
 	}
 
 	c.mu.Lock()

@@ -19,8 +19,8 @@ import (
 
 // connCountingServer accepts WebSocket connections and counts how many were
 // opened and how many were then closed by the client. It never replies, which
-// is enough here: the client dials the transport before it calls GetToken, so
-// these tests never get as far as sending a connect command.
+// is enough here: these tests are about the token step before the connect
+// command.
 type connCountingServer struct {
 	srv    *httptest.Server
 	opened atomic.Int64
@@ -76,14 +76,21 @@ func waitCondition(t *testing.T, label string, cond func() bool) {
 	}
 }
 
-// assertAllConnsClosed waits until every connection the client opened has been
-// closed by the client.
-func (s *connCountingServer) assertAllConnsClosed(t *testing.T) {
+// Regression tests for the token step of Client.startReconnecting. The token is
+// requested before the transport is dialed: no connection is open while
+// GetToken runs, and an attempt that ends at the token step opens none.
+// Centrifugo closes a connection that sends no connect command for a while
+// (ClientStaleCloseDelay), so with the dial first a slow GetToken could fail
+// every attempt, and an attempt abandoned meanwhile kept its connection open.
+
+// assertNoConnsOpen checks that every connection the client opened, if any, was
+// closed again.
+func (s *connCountingServer) assertNoConnsOpen(t *testing.T) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		opened, closed := s.opened.Load(), s.closed.Load()
-		if opened > 0 && opened == closed {
+		if opened == closed {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -93,29 +100,27 @@ func (s *connCountingServer) assertAllConnsClosed(t *testing.T) {
 	}
 }
 
-// Regression tests for the token refresh step of Client.startReconnecting.
-// The transport is dialed before GetToken is called, so every path that
-// abandons the attempt after the token step must close it. Otherwise the
-// WebSocket connection and its reader goroutine leak until the server drops
-// the unauthenticated connection.
-
-func TestReconnectClosesTransportOnGetTokenError(t *testing.T) {
+func TestReconnectDialsNothingOnGetTokenError(t *testing.T) {
 	server := newConnCountingServer(t)
+	var calls atomic.Int32
 	client := NewProtobufClient(server.URL(), Config{
 		GetToken: func(ConnectionTokenEvent) (string, error) {
+			calls.Add(1)
 			return "", errors.New("token service unavailable")
 		},
 		MinReconnectDelay: 10 * time.Millisecond,
 		MaxReconnectDelay: 20 * time.Millisecond,
 	})
 	_ = client.Connect()
-	// Several attempts, each dialing a transport and failing to get a token.
-	waitCondition(t, "several reconnect attempts", func() bool { return server.opened.Load() >= 3 })
+	// Several attempts, each failing to get a token.
+	waitCondition(t, "several reconnect attempts", func() bool { return calls.Load() >= 3 })
 	client.Close()
-	server.assertAllConnsClosed(t)
+	if opened := server.opened.Load(); opened != 0 {
+		t.Fatalf("%d connections opened for attempts that got no token", opened)
+	}
 }
 
-func TestReconnectClosesTransportOnGetTokenUnauthorized(t *testing.T) {
+func TestReconnectDialsNothingOnGetTokenUnauthorized(t *testing.T) {
 	server := newConnCountingServer(t)
 	client := NewProtobufClient(server.URL(), Config{
 		GetToken: func(ConnectionTokenEvent) (string, error) {
@@ -127,10 +132,12 @@ func TestReconnectClosesTransportOnGetTokenUnauthorized(t *testing.T) {
 	if state := client.State(); state != StateDisconnected {
 		t.Fatalf("expected disconnected state after unauthorized, got %s", state)
 	}
-	server.assertAllConnsClosed(t)
+	if opened := server.opened.Load(); opened != 0 {
+		t.Fatalf("%d connections opened for an unauthorized attempt", opened)
+	}
 }
 
-func TestReconnectClosesTransportWhenDisconnectedDuringGetToken(t *testing.T) {
+func TestNoConnectionOpenWhileGetTokenRuns(t *testing.T) {
 	server := newConnCountingServer(t)
 	getTokenCalled := make(chan struct{}, 1)
 	releaseToken := make(chan struct{})
@@ -147,13 +154,22 @@ func TestReconnectClosesTransportWhenDisconnectedDuringGetToken(t *testing.T) {
 	go func() { connectDone <- client.Connect() }()
 
 	waitCh(t, getTokenCalled, "GetToken call")
+	time.Sleep(50 * time.Millisecond)
+	if opened := server.opened.Load(); opened != 0 {
+		t.Fatalf("%d connections open while GetToken runs", opened)
+	}
+	// The application disconnects (e.g. to switch users) while the token is
+	// requested: the abandoned attempt leaves no connection behind.
 	if err := client.Disconnect(); err != nil {
 		t.Fatalf("disconnect: %v", err)
 	}
 	close(releaseToken)
 	_ = waitCh(t, connectDone, "Connect to return")
-
-	server.assertAllConnsClosed(t)
+	time.Sleep(50 * time.Millisecond)
+	if opened := server.opened.Load(); opened != 0 {
+		t.Fatalf("%d connections opened for an attempt abandoned during GetToken", opened)
+	}
+	server.assertNoConnsOpen(t)
 }
 
 func TestNoCommandBeforeConnectOnNewTransport(t *testing.T) {
@@ -465,37 +481,62 @@ func TestSetTokenFromOnErrorOfExpiredTokenConnects(t *testing.T) {
 	}
 }
 
-// Without GetToken, SetToken and Connect() during the dial of the reconnect
-// after a connect error 109 must connect with the token set: the attempt must
-// not decide from the token state it read before the dial.
-func TestSetTokenDuringReconnectDialAfterExpiredTokenConnects(t *testing.T) {
+// Centrifugo closes a connection that sends no connect command within its stale
+// close delay. With the dial before GetToken, a GetToken slower than that let the
+// server close the connection before its connect command: the attempt failed
+// and the client connected only with the next one.
+func TestSlowGetTokenConnectsWithTheFirstConnection(t *testing.T) {
 	s := NewFakeServer(t)
-	s.OnCommand = func(cmd *protocol.Command) *protocol.Reply {
-		if cmd.Connect != nil && cmd.Connect.Token == "expired" {
-			return &protocol.Reply{Id: cmd.Id, Error: &protocol.Error{Code: 109, Message: "token expired"}}
-		}
-		return nil
-	}
-	var dials atomic.Int32
-	reconnectDialStarted := make(chan struct{}, 1)
-	releaseReconnectDial := make(chan struct{})
+	s.StaleCloseDelay = 100 * time.Millisecond
+	var dials atomic.Int64
 	client := NewProtobufClient(s.URL(), Config{
-		Token:             "expired",
+		NetDialContext: countDials(&dials),
+		GetToken: func(ConnectionTokenEvent) (string, error) {
+			time.Sleep(300 * time.Millisecond)
+			return "token", nil
+		},
 		MinReconnectDelay: 10 * time.Millisecond,
 		MaxReconnectDelay: 20 * time.Millisecond,
-		HandshakeTimeout:  5 * time.Second,
+	})
+	closeOnCleanup(t, client)
+	connected := make(chan struct{}, 1)
+	client.OnConnected(func(ConnectedEvent) {
+		select {
+		case connected <- struct{}{}:
+		default:
+		}
+	})
+	_ = client.Connect()
+	select {
+	case <-connected:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("not connected with a GetToken slower than the server's stale close delay (state %s)", client.State())
+	}
+	if n := dials.Load(); n != 1 {
+		t.Fatalf("%d connections dialed: the first one was closed by the server while GetToken ran", n)
+	}
+}
+
+// The token is read for the connect command after the dial: a token set with
+// SetToken while the dial is in progress is the one the connect carries.
+func TestSetTokenDuringDialIsUsedForConnect(t *testing.T) {
+	s := NewFakeServer(t)
+	dialStarted := make(chan struct{}, 1)
+	releaseDial := make(chan struct{})
+	var dials atomic.Int32
+	client := NewProtobufClient(s.URL(), Config{
+		Token:            "old",
+		HandshakeTimeout: 5 * time.Second,
 		NetDialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if dials.Add(1) == 2 {
-				reconnectDialStarted <- struct{}{}
-				<-releaseReconnectDial
+			if dials.Add(1) == 1 {
+				dialStarted <- struct{}{}
+				<-releaseDial
 			}
 			var d net.Dialer
 			return d.DialContext(ctx, network, addr)
 		},
 	})
 	closeOnCleanup(t, client)
-	disconnected := make(chan DisconnectedEvent, 4)
-	client.OnDisconnected(func(e DisconnectedEvent) { disconnected <- e })
 	connected := make(chan struct{}, 1)
 	client.OnConnected(func(ConnectedEvent) {
 		select {
@@ -504,21 +545,21 @@ func TestSetTokenDuringReconnectDialAfterExpiredTokenConnects(t *testing.T) {
 		}
 	})
 
-	_ = client.Connect()
-	waitCh(t, reconnectDialStarted, "reconnect dial after the connect error 109")
+	go func() { _ = client.Connect() }()
+	waitCh(t, dialStarted, "dial")
 	client.SetToken("fresh")
-	if err := client.Connect(); err != nil {
-		t.Fatal(err)
-	}
-	close(releaseReconnectDial)
+	close(releaseDial)
+	waitCh(t, connected, "connected")
 
-	select {
-	case <-connected:
-	case e := <-disconnected:
-		t.Fatalf("disconnected (%d %s) instead of connecting with the token set during the dial", e.Code, e.Reason)
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting to connect with the token set during the dial")
+	for _, cmd := range s.Received() {
+		if cmd.Connect != nil {
+			if cmd.Connect.Token != "fresh" {
+				t.Fatalf("expected the connect to carry the token set during the dial, got %q", cmd.Connect.Token)
+			}
+			return
+		}
 	}
+	t.Fatal("no connect command received")
 }
 
 // Without GetToken, a reconnect with an expired token reports a configuration
