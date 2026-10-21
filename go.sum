@@ -1,5 +1,5 @@
-github.com/centrifugal/fdelta v0.0.2 h1:C/mXuhjWR2Zybto4eMG3r1Yhjqo02TimxSwDSlHpS1c=
-github.com/centrifugal/fdelta v0.0.2/go.mod h1:9coq4YBCDBGhScGS9KcKeGSW9xQ+Kzq3tcFiK0n5OcE=
+github.com/centrifugal/fdelta v0.0.3 h1:sYD/zCXH2xYDcELPPztXsF7VCZb6vtiRBEVCYjgzHj4=
+github.com/centrifugal/fdelta v0.0.3/go.mod h1:9coq4YBCDBGhScGS9KcKeGSW9xQ+Kzq3tcFiK0n5OcE=
 github.com/centrifugal/protocol v0.23.1 h1:UUawQRfk6w8vovblEgx27vUfPE40KO3CHdzhhu4Sg58=
 github.com/centrifugal/protocol v0.23.1/go.mod h1:K8qKv/y8ujLbYYN/orINUBaKDMmjTrpE9++vFT6x68E=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
