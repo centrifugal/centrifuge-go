@@ -181,7 +181,7 @@ func (s *FakeServer) dispatch(conn *websocket.Conn, cmd *protocol.Command) {
 // --- raw escape hatches -----------------------------------------------------
 
 func (s *FakeServer) sendReply(conn *websocket.Conn, reply *protocol.Reply) {
-	raw, err := reply.MarshalVT()
+	raw, err := reply.MarshalCF()
 	if err != nil {
 		return
 	}
