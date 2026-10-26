@@ -1,6 +1,8 @@
 package centrifuge
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"testing"
 
 	"github.com/gorilla/websocket"
@@ -46,4 +48,13 @@ func TestExtractDisconnectWebsocket(t *testing.T) {
 			}
 		})
 	}
+}
+
+// testDictionaryID is the derivation the protocol fixes for Dictionary.id:
+// SHA-256 of the content, first 12 bytes, base64url unpadded. This SDK never
+// computes one in earnest - its cache lives in memory, so there is nothing to
+// verify - but a test needs an id a server would actually have issued.
+func testDictionaryID(dict []byte) string {
+	sum := sha256.Sum256(dict)
+	return base64.RawURLEncoding.EncodeToString(sum[:12])
 }
