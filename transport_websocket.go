@@ -302,13 +302,13 @@ func (t *websocketTransport) reader() {
 			compressedLen := len(data)
 			data, err = codec.Decompress(nil, data, maxDecompressedFrameSize)
 			if err != nil {
-				// A dictionary that cannot decode is a stale or corrupted entry:
-				// drop it and start over without it, or the client would advertise
-				// it again on every reconnect and never recover.
+				// A frame that does not decode is a protocol error, terminal like
+				// any other. The dictionary is forgotten, so a later Connect does
+				// not offer it again.
 				if t.cache != nil {
 					t.cache.forget(codec.ID())
 				}
-				t.disconnect = &disconnect{Code: disconnectBadProtocol, Reconnect: true,
+				t.disconnect = &disconnect{Code: disconnectBadProtocol, Reconnect: false,
 					Reason: fmt.Sprintf("dictionary compression: frame does not decode with dictionary %s: %v", codec.ID(), err)}
 				return
 			}
@@ -348,13 +348,13 @@ func (t *websocketTransport) reader() {
 				} else if err != nil {
 					// The server named a dictionary this client does not hold or
 					// sent one it can not read, so nothing after this frame can be
-					// decoded. Forget the id and start over rather than misread
-					// everything that follows.
+					// decoded: a protocol error, terminal like any other. The id is
+					// forgotten, so a later Connect does not offer it again.
 					if t.cache != nil {
 						t.cache.forget(offered.Id)
 					}
 					t.disconnect = &disconnect{Code: disconnectBadProtocol,
-						Reason: "dictionary compression: " + err.Error(), Reconnect: true}
+						Reason: "dictionary compression: " + err.Error(), Reconnect: false}
 					return
 				}
 				select {

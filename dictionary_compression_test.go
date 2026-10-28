@@ -2,9 +2,7 @@ package centrifuge
 
 import (
 	"bytes"
-	"errors"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -52,67 +50,58 @@ func newDictionaryClient(t *testing.T, server *FakeServer) (*Client, chan Public
 	return client, pubCh
 }
 
-// recordConnecting collects the reasons the client reconnected with; they must
-// say what went wrong, since that is all an application gets to see.
-func recordConnecting(client *Client) func() []ConnectingEvent {
-	var mu sync.Mutex
-	var events []ConnectingEvent
-	client.OnConnecting(func(e ConnectingEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		events = append(events, e)
-	})
-	return func() []ConnectingEvent {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]ConnectingEvent(nil), events...)
+// disconnectedEvents delivers the client's disconnected events.
+func disconnectedEvents(client *Client) chan DisconnectedEvent {
+	ch := make(chan DisconnectedEvent, 4)
+	client.OnDisconnected(func(e DisconnectedEvent) { ch <- e })
+	return ch
+}
+
+// requireBadProtocol waits for the client to stop with bad protocol, the code
+// of any protocol error, and a reason starting with want: that is all an
+// application gets to see of what went wrong.
+func requireBadProtocol(t *testing.T, client *Client, events chan DisconnectedEvent, want string) {
+	t.Helper()
+	e := waitCh(t, events, "disconnected")
+	if e.Code != disconnectBadProtocol || !strings.HasPrefix(e.Reason, want) {
+		t.Fatalf("disconnected with %d %q, want %d and a reason starting with %q", e.Code, e.Reason, disconnectBadProtocol, want)
+	}
+	if state := client.State(); state != StateDisconnected {
+		t.Fatalf("a protocol error is terminal, client is %s", state)
 	}
 }
 
-// requireReconnectReason waits for a bad protocol reconnect whose reason
-// contains want.
-func requireReconnectReason(t *testing.T, events func() []ConnectingEvent, want string) {
+// requireConnectsWithoutDictionary connects the client again, as an
+// application would after a protocol error, and checks it does not offer the
+// dictionary that failed and still receives publications.
+func requireConnectsWithoutDictionary(t *testing.T, server *FakeServer, client *Client, pubCh chan PublicationEvent) {
 	t.Helper()
-	waitCondition(t, "reconnect reason "+want, func() bool {
-		for _, e := range events() {
-			if e.Code == disconnectBadProtocol && strings.Contains(e.Reason, want) {
-				return true
-			}
-		}
-		return false
-	})
-}
-
-// recordErrors collects the errors the client reported.
-func recordErrors(client *Client) func() []error {
-	var mu sync.Mutex
-	var errs []error
-	client.OnError(func(e ErrorEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		errs = append(errs, e.Error)
-	})
-	return func() []error {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]error(nil), errs...)
+	if n := len(connectCommands(server)); n != 1 {
+		t.Fatalf("a protocol error does not reconnect, got %d connects", n)
 	}
-}
-
-// requireConnectError waits for a connect error whose text is want: a connect
-// reply the client could not use is retried while still connecting, so this is
-// where the reason surfaces.
-func requireConnectError(t *testing.T, errs func() []error, want string) {
-	t.Helper()
-	waitCondition(t, "connect error "+want, func() bool {
-		for _, err := range errs() {
-			var connectErr ConnectError
-			if errors.As(err, &connectErr) && strings.Contains(err.Error(), want) {
-				return true
+	subscribes := func() int {
+		n := 0
+		for _, cmd := range server.Received() {
+			if cmd.Subscribe != nil {
+				n++
 			}
 		}
-		return false
-	})
+		return n
+	}
+	before := subscribes()
+	if err := client.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	waitCondition(t, "connect again", func() bool { return len(connectCommands(server)) == 2 })
+	if second := connectCommands(server)[1]; second.Dict != "" {
+		t.Fatalf("a dictionary that could not be used is not offered again, got %q", second.Dict)
+	}
+	waitCondition(t, "subscribe", func() bool { return subscribes() == before+1 })
+	data := []byte(`{"type":"quote","symbol":"BTC-USD","bid":99}`)
+	server.PublishChannel("prices", data)
+	if pub := waitCh(t, pubCh, "publication"); !bytes.Equal(pub.Data, data) {
+		t.Fatalf("publication data: got %s, want %s", pub.Data, data)
+	}
 }
 
 // A cold client is sent the dictionary and decodes every frame after the
@@ -170,8 +159,8 @@ func TestDictionaryCompression_ColdThenWarm(t *testing.T) {
 }
 
 // A dictionary the client can not use leaves it unable to read anything that
-// follows, so it must reconnect from scratch rather than misread the stream.
-func TestDictionaryCompression_UnusableOfferReconnects(t *testing.T) {
+// follows: a protocol error, so the client stops rather than misread the stream.
+func TestDictionaryCompression_UnusableOfferDisconnects(t *testing.T) {
 	id := testDictionaryID(testDictionary)
 	tests := []struct {
 		name   string
@@ -181,9 +170,9 @@ func TestDictionaryCompression_UnusableOfferReconnects(t *testing.T) {
 		{"id the client does not hold", &protocol.Dictionary{Id: id},
 			"dictionary compression: server named dictionary " + id + ", which this client does not hold"},
 		{"content that does not inflate", &protocol.Dictionary{Id: id, Data: []byte("not deflate")},
-			"dictionary compression: dictionary " + id + " does not inflate"},
+			"dictionary compression: dictionary " + id + " does not inflate: "},
 		{"base64 that does not decode", &protocol.Dictionary{Id: id, DataB64: "%%%"},
-			"dictionary compression: dictionary " + id + " is not valid base64"},
+			"dictionary compression: dictionary " + id + " is not valid base64: "},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -196,23 +185,11 @@ func TestDictionaryCompression_UnusableOfferReconnects(t *testing.T) {
 				return &protocol.Dictionary{Id: id, Data: protocol.DeflateDictionary(testDictionary, 7)}
 			}
 			client, pubCh := newDictionaryClient(t, server)
-			errs := recordErrors(client)
-			if err := client.Connect(); err != nil {
-				t.Fatal(err)
-			}
+			events := disconnectedEvents(client)
+			_ = client.Connect()
 
-			requireConnectError(t, errs, tt.reason)
-			waitCondition(t, "reconnect after the unusable offer", func() bool { return len(connectCommands(server)) == 2 })
-			if second := connectCommands(server)[1]; second.Dict != "" {
-				t.Fatalf("a dictionary that could not be used is not advertised again, got %q", second.Dict)
-			}
-
-			waitCondition(t, "subscribe", func() bool { return server.LastSubscribe() != nil })
-			data := []byte(`{"type":"quote","symbol":"BTC-USD","bid":99}`)
-			server.PublishChannel("prices", data)
-			if pub := waitCh(t, pubCh, "publication"); !bytes.Equal(pub.Data, data) {
-				t.Fatalf("publication data: got %s, want %s", pub.Data, data)
-			}
+			requireBadProtocol(t, client, events, tt.reason)
+			requireConnectsWithoutDictionary(t, server, client, pubCh)
 		})
 	}
 }
@@ -233,12 +210,12 @@ func TestDictionaryCompression_NotAccepted(t *testing.T) {
 	}
 }
 
-// A frame that does not decode against the dictionary in use means the
-// dictionary can not be trusted: the client drops it and reconnects without it.
-func TestDictionaryCompression_FrameDecodeErrorReconnects(t *testing.T) {
+// A frame that does not decode against the dictionary in use is a protocol
+// error: the client stops, and forgets the dictionary.
+func TestDictionaryCompression_FrameDecodeErrorDisconnects(t *testing.T) {
 	server := dictionaryServer(t)
 	client, pubCh := newDictionaryClient(t, server)
-	events := recordConnecting(client)
+	events := disconnectedEvents(client)
 	if err := client.Connect(); err != nil {
 		t.Fatal(err)
 	}
@@ -246,25 +223,7 @@ func TestDictionaryCompression_FrameDecodeErrorReconnects(t *testing.T) {
 	// A compressed marker followed by bytes that are not DEFLATE.
 	server.SendFrame([]byte{protocol.FrameCodecCompressed, 0xff, 0xff, 0xff, 0xff})
 
-	requireReconnectReason(t, events,
+	requireBadProtocol(t, client, events,
 		"dictionary compression: frame does not decode with dictionary "+testDictionaryID(testDictionary)+": ")
-
-	waitCondition(t, "reconnect after the decode error", func() bool { return len(connectCommands(server)) == 2 })
-	if second := connectCommands(server)[1]; second.Dict != "" {
-		t.Fatalf("a dictionary that failed to decode is not advertised again, got %q", second.Dict)
-	}
-	waitCondition(t, "resubscribe", func() bool {
-		n := 0
-		for _, cmd := range server.Received() {
-			if cmd.Subscribe != nil {
-				n++
-			}
-		}
-		return n == 2
-	})
-	data := []byte(`{"type":"quote","symbol":"BTC-USD","bid":98}`)
-	server.PublishChannel("prices", data)
-	if pub := waitCh(t, pubCh, "publication"); !bytes.Equal(pub.Data, data) {
-		t.Fatalf("publication data: got %s, want %s", pub.Data, data)
-	}
+	requireConnectsWithoutDictionary(t, server, client, pubCh)
 }
