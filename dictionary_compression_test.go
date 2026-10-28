@@ -2,6 +2,9 @@ package centrifuge
 
 import (
 	"bytes"
+	"errors"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,6 +50,69 @@ func newDictionaryClient(t *testing.T, server *FakeServer) (*Client, chan Public
 	sub.OnPublication(func(e PublicationEvent) { pubCh <- e })
 	_ = sub.Subscribe()
 	return client, pubCh
+}
+
+// recordConnecting collects the reasons the client reconnected with; they must
+// say what went wrong, since that is all an application gets to see.
+func recordConnecting(client *Client) func() []ConnectingEvent {
+	var mu sync.Mutex
+	var events []ConnectingEvent
+	client.OnConnecting(func(e ConnectingEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, e)
+	})
+	return func() []ConnectingEvent {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]ConnectingEvent(nil), events...)
+	}
+}
+
+// requireReconnectReason waits for a bad protocol reconnect whose reason
+// contains want.
+func requireReconnectReason(t *testing.T, events func() []ConnectingEvent, want string) {
+	t.Helper()
+	waitCondition(t, "reconnect reason "+want, func() bool {
+		for _, e := range events() {
+			if e.Code == disconnectBadProtocol && strings.Contains(e.Reason, want) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// recordErrors collects the errors the client reported.
+func recordErrors(client *Client) func() []error {
+	var mu sync.Mutex
+	var errs []error
+	client.OnError(func(e ErrorEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+		errs = append(errs, e.Error)
+	})
+	return func() []error {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]error(nil), errs...)
+	}
+}
+
+// requireConnectError waits for a connect error whose text is want: a connect
+// reply the client could not use is retried while still connecting, so this is
+// where the reason surfaces.
+func requireConnectError(t *testing.T, errs func() []error, want string) {
+	t.Helper()
+	waitCondition(t, "connect error "+want, func() bool {
+		for _, err := range errs() {
+			var connectErr ConnectError
+			if errors.As(err, &connectErr) && strings.Contains(err.Error(), want) {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // A cold client is sent the dictionary and decodes every frame after the
@@ -108,12 +174,16 @@ func TestDictionaryCompression_ColdThenWarm(t *testing.T) {
 func TestDictionaryCompression_UnusableOfferReconnects(t *testing.T) {
 	id := testDictionaryID(testDictionary)
 	tests := []struct {
-		name  string
-		offer *protocol.Dictionary
+		name   string
+		offer  *protocol.Dictionary
+		reason string
 	}{
-		{"id the client does not hold", &protocol.Dictionary{Id: id}},
-		{"content that does not inflate", &protocol.Dictionary{Id: id, Data: []byte("not deflate")}},
-		{"base64 that does not decode", &protocol.Dictionary{Id: id, DataB64: "%%%"}},
+		{"id the client does not hold", &protocol.Dictionary{Id: id},
+			"dictionary compression: server named dictionary " + id + ", which this client does not hold"},
+		{"content that does not inflate", &protocol.Dictionary{Id: id, Data: []byte("not deflate")},
+			"dictionary compression: dictionary " + id + " does not inflate"},
+		{"base64 that does not decode", &protocol.Dictionary{Id: id, DataB64: "%%%"},
+			"dictionary compression: dictionary " + id + " is not valid base64"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -126,10 +196,12 @@ func TestDictionaryCompression_UnusableOfferReconnects(t *testing.T) {
 				return &protocol.Dictionary{Id: id, Data: protocol.DeflateDictionary(testDictionary, 7)}
 			}
 			client, pubCh := newDictionaryClient(t, server)
+			errs := recordErrors(client)
 			if err := client.Connect(); err != nil {
 				t.Fatal(err)
 			}
 
+			requireConnectError(t, errs, tt.reason)
 			waitCondition(t, "reconnect after the unusable offer", func() bool { return len(connectCommands(server)) == 2 })
 			if second := connectCommands(server)[1]; second.Dict != "" {
 				t.Fatalf("a dictionary that could not be used is not advertised again, got %q", second.Dict)
@@ -166,12 +238,16 @@ func TestDictionaryCompression_NotAccepted(t *testing.T) {
 func TestDictionaryCompression_FrameDecodeErrorReconnects(t *testing.T) {
 	server := dictionaryServer(t)
 	client, pubCh := newDictionaryClient(t, server)
+	events := recordConnecting(client)
 	if err := client.Connect(); err != nil {
 		t.Fatal(err)
 	}
 	waitCondition(t, "subscribe", func() bool { return server.LastSubscribe() != nil })
 	// A compressed marker followed by bytes that are not DEFLATE.
 	server.SendFrame([]byte{protocol.FrameCodecCompressed, 0xff, 0xff, 0xff, 0xff})
+
+	requireReconnectReason(t, events,
+		"dictionary compression: frame does not decode with dictionary "+testDictionaryID(testDictionary)+": ")
 
 	waitCondition(t, "reconnect after the decode error", func() bool { return len(connectCommands(server)) == 2 })
 	if second := connectCommands(server)[1]; second.Dict != "" {

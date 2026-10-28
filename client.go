@@ -590,6 +590,12 @@ func (c *Client) moveToConnectingFrom(t transport, code uint32, reason string) {
 		c.clearConnectedState()
 		c.scheduleReconnectLocked()
 		c.mu.Unlock()
+		if code == disconnectBadProtocol {
+			// Still connecting, so no connecting event carries the reason: a
+			// connect reply this client could not use, such as a dictionary it
+			// can not read, would otherwise retry without a trace.
+			c.handleError(ConnectError{errors.New(reason)})
+		}
 		return
 	}
 	if c.state == StateDisconnected || c.state == StateClosed || c.state == StateConnecting {
