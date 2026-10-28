@@ -50,6 +50,23 @@ You can find similar limitations in [eclipse/paho.mqtt.golang](https://github.co
 
 If you are calling `Publish`, `RPC`, `History`, `Presence`, `PresenceStats` from the outside of event handler – you should not do any special care. Also, if you are calling your own blocking APIs from inside Centrifuge event handlers – you won't get the deadlock, but the read loop of the underlying connection will not proceed till the event handler returns.
 
+## Dictionary compression
+
+Centrifugo PRO can compress what it sends against a dictionary trained on your traffic. There is nothing to enable here: the client tells the server it can decode such frames, and the server decides whether this connection gets a dictionary. It arrives in the connect reply and works with both JSON and Protobuf. A client that does not get one works exactly as before.
+
+The client keeps the dictionary in memory for the life of the `Client`, so a reconnect is sent only its id.
+
+Which dictionary a connection gets depends on its profile, best set by your backend in the connection token. A client may also ask for one by name with `Config.Profile`, e.g. `"trading-dashboard"`; the server grants it only for profiles configured to allow that.
+
+To see what compression does for a connection:
+
+```go
+stats := client.DictionaryCompressionStats()
+log.Printf("accepted=%v active=%v saved=%d bytes", stats.Accepted, stats.Active, stats.BytesSaved())
+```
+
+`Accepted` says the server enabled compression for this connection, `DictionaryBytes` what the dictionary cost to receive (zero when the client already held it), and `BytesSaved` the net saving after that cost.
+
 ## Run tests
 
 Start Centrifugo and run tests:

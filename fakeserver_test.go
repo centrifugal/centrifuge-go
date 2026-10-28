@@ -17,6 +17,7 @@ package centrifuge
 //   - Push to a subscription:            s.PublishID(42, data) / s.PublishChannel("news", data)
 //   - Fully control any command reply:   s.OnCommand = func(cmd *protocol.Command) *protocol.Reply { ... return nil to fall through }
 //   - Send anything the protocol allows: s.SendPush(&protocol.Push{Disconnect: &protocol.Disconnect{Code: 3000}})
+//   - Compress with a dictionary:        s.Dictionary = dict (s.OfferDictionary to send a broken offer)
 //   - Drive a reconnect:                 s.CloseConnection()
 //   - Assert on what the client sent:    s.Received() / s.LastSubscribe()
 
@@ -32,6 +33,7 @@ import (
 
 	"github.com/centrifugal/protocol"
 	"github.com/gorilla/websocket"
+	"google.golang.org/protobuf/proto"
 )
 
 type FakeServer struct {
@@ -52,6 +54,18 @@ type FakeServer struct {
 	// arrive within it, as Centrifugo's ClientStaleCloseDelay does for a
 	// connection that sends no connect command.
 	StaleCloseDelay time.Duration
+	// Dictionary, when set, is offered in the connect reply to a client that
+	// advertises dictionary compression, and every frame after that reply is
+	// compressed against it, as Centrifugo PRO does. A client advertising its
+	// id is sent the id alone.
+	Dictionary []byte
+	// OfferDictionary, when set, replaces the offer built from Dictionary -
+	// return one that is unknown or broken. Frames are still compressed
+	// against Dictionary.
+	OfferDictionary func(req *protocol.ConnectRequest) *protocol.Dictionary
+
+	// codecs are the connections whose frames are compressed. Guarded by mu.
+	codecs map[*websocket.Conn]*protocol.DeflateFrameCodec
 }
 
 func NewFakeServer(t *testing.T) *FakeServer {
@@ -161,6 +175,10 @@ func (s *FakeServer) dispatch(conn *websocket.Conn, cmd *protocol.Command) {
 
 	switch {
 	case cmd.Connect != nil:
+		if len(s.Dictionary) > 0 && cmd.Connect.Flag&connectionFlagDictionaryCompression != 0 {
+			s.connectWithDictionary(conn, cmd)
+			return
+		}
 		s.sendReply(conn, &protocol.Reply{Id: cmd.Id, Connect: s.ConnectResult})
 	case cmd.Subscribe != nil:
 		result := &protocol.SubscribeResult{}
@@ -178,6 +196,30 @@ func (s *FakeServer) dispatch(conn *websocket.Conn, cmd *protocol.Command) {
 	}
 }
 
+// connectWithDictionary answers a connect with a dictionary and compresses
+// every frame after the reply: the reply itself can not be, as it is what tells
+// the client which dictionary applies.
+func (s *FakeServer) connectWithDictionary(conn *websocket.Conn, cmd *protocol.Command) {
+	id := testDictionaryID(s.Dictionary)
+	offer := &protocol.Dictionary{Id: id}
+	if cmd.Connect.Dict != id {
+		offer.Data = protocol.DeflateDictionary(s.Dictionary, 7)
+	}
+	if s.OfferDictionary != nil {
+		offer = s.OfferDictionary(cmd.Connect)
+	}
+	res := proto.Clone(s.ConnectResult).(*protocol.ConnectResult)
+	res.Flag |= connectionFlagDictionaryCompression
+	res.Dict = offer
+	s.sendReply(conn, &protocol.Reply{Id: cmd.Id, Connect: res})
+	s.mu.Lock()
+	if s.codecs == nil {
+		s.codecs = map[*websocket.Conn]*protocol.DeflateFrameCodec{}
+	}
+	s.codecs[conn] = protocol.NewDeflateFrameCodec(id, s.Dictionary, 7)
+	s.mu.Unlock()
+}
+
 // --- raw escape hatches -----------------------------------------------------
 
 func (s *FakeServer) sendReply(conn *websocket.Conn, reply *protocol.Reply) {
@@ -193,7 +235,20 @@ func (s *FakeServer) sendReply(conn *websocket.Conn, reply *protocol.Reply) {
 	// and gorilla connections are not safe for concurrent writers.
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if codec := s.codecs[conn]; codec != nil {
+		data = codec.Compress(nil, data)
+	}
 	_ = conn.WriteMessage(websocket.BinaryMessage, data)
+}
+
+// SendFrame writes bytes as they are to the active connection, bypassing any
+// compression - to send a frame a client can not decode.
+func (s *FakeServer) SendFrame(data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current != nil {
+		_ = s.current.WriteMessage(websocket.BinaryMessage, data)
+	}
 }
 
 // SendReply sends a raw reply to the active connection.
